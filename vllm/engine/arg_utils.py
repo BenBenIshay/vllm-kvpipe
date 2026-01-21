@@ -921,6 +921,19 @@ class EngineArgs:
                 "default": None,
             },
         )
+
+        cache_group.add_argument(
+            "--enable-kv-pipelining",
+            **cache_kwargs["enable_kv_pipelining"]
+        )
+        cache_group.add_argument(
+            "--kv-k-window",
+            **cache_kwargs["kv_k_window"]
+        )
+        cache_group.add_argument(
+            "--free-original-kv-cache",
+            **cache_kwargs["free_original_kv_cache"]
+        )
         cache_group.add_argument(
             "--prefix-caching-hash-algo", **cache_kwargs["prefix_caching_hash_algo"]
         )

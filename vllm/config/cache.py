@@ -160,6 +160,12 @@ class CacheConfig:
     'native' (vLLM native CPU offloading), 'lmcache' This option must be used
     together with kv_offloading_size."""
 
+    enable_kv_pipelining: bool = False
+    kv_k_window: int = 5
+    free_original_kv_cache: bool = False
+    """When KV pipelining is enabled, allow freeing per-layer KV buffers after
+    binding layers to the window. This reduces GPU memory footprint."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -187,6 +193,7 @@ class CacheConfig:
             "num_cpu_blocks",
             # WIP feature toggle not impacting compiled graph shape
             "kv_sharing_fast_prefill",
+            "free_original_kv_cache",
         }
 
         from vllm.config.utils import get_hash_factors, hash_factors

@@ -201,3 +201,9 @@ KVConnectorFactory.register_connector(
     "vllm.distributed.kv_transfer.kv_connector.v1.mooncake_connector",
     "MooncakeConnector",
 )
+
+KVConnectorFactory.register_connector(
+    "H100PcieConnector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.h100_pcie_connector",
+    "H100PcieConnector",
+)
