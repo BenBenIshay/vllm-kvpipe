@@ -827,6 +827,23 @@ class VllmConfig:
                 "Modify KVEventsConfig.enable_kv_cache_events "
                 "to True to enable."
             )
+        if self.cache_config.enable_kv_pipelining:
+            if self.cache_config.enable_prefix_caching:
+                logger.warning_once(
+                    "KV pipelining is enabled while prefix caching is enabled. "
+                    "Disable prefix caching to avoid incompatibilities."
+                )
+            kv_transfer_config = self.kv_transfer_config
+            if (
+                kv_transfer_config is None
+                or kv_transfer_config.kv_connector != "LayerwisePipelinedConnector"
+            ):
+                logger.warning_once(
+                    "KV pipelining is enabled but the KV connector is not "
+                    "LayerwisePipelinedConnector. "
+                    "Set --kv-transfer-config "
+                    "'{\"kv_connector\":\"LayerwisePipelinedConnector\"}'."
+                )
         current_platform.check_and_update_config(self)
 
         # If DCP, ensure the block size is right.

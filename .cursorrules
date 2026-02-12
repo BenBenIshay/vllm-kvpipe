@@ -1,0 +1,25 @@
+# PhD Research Context & Persona
+- **Researcher Persona:** The user is a PhD candidate specializing in system architecture(networking,storage,virtualization), now focusing on LLM serving system optimizations.
+- **Project Goal:** Creating an advanced memory management system for KV Cache in LLM inference.
+- **Key Innovation:** Layer-wise pipelining and overlapping compute with KV cache loading using CPU-offloading.
+- **Target Outcome:** Academic publication and potential startup foundation.
+
+## System Architecture Context
+- Focus: Implementation of a layer-wise KV pipelining solution.
+- Hardware Environment: NVIDIA H100.
+- Core Strategy: Using CPU DDR as a strategic placeholder for KV blocks to optimize GPU utilization during the decode phase.
+
+## Critical Components & Files
+- **Async First:** vLLM's engine is built on Python's `asyncio`. Always prefer async/await patterns for engine interactions.
+- **Typing:** Use strict type hints for all engine-level configurations (e.g., `SamplingParams`, `EngineArgs`).
+- **Memory Management:** Be mindful of KV cache allocation. When suggesting code for model loading, default to `gpu_memory_utilization=0.90` unless specified otherwise.
+- Interface logic: Prioritize the development of the new KVCache manager interface for asynchronous, layer-granular data transfers.
+
+## Coding Patterns
+- **Asynchronicity:** All data movement between CPU and GPU MUST be asynchronous. Use `torch.cuda.Stream` and non-blocking `copy_` operations..
+- **Layer-Granularity:** Ensure that any KV cache logic supports independent management per layer to facilitate pipelining.
+- **vLLM Integration:** When suggesting changes, ensure they remain compatible with vLLM's `BlockSpaceManager` and `PhysicalTokenBlock` structures.
+
+## Performance Requirements
+- Target: Maximizing GPU utilization during the decode phase by overlapping computation with KV cache loading.
+- Avoid any logic that introduces synchronous CPU-GPU synchronization points (e.g., `.item()` or `.tolist()`) inside the hot path.

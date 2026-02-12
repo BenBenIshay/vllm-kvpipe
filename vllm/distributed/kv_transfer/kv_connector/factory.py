@@ -203,7 +203,7 @@ KVConnectorFactory.register_connector(
 )
 
 KVConnectorFactory.register_connector(
-    "H100PcieConnector",
-    "vllm.distributed.kv_transfer.kv_connector.v1.h100_pcie_connector",
-    "H100PcieConnector",
+    "LayerwisePipelinedConnector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.layerwise_pipelined_connector",
+    "LayerwisePipelinedConnector",
 )

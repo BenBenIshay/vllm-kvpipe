@@ -4,9 +4,9 @@
 import torch
 
 from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole
-from vllm.distributed.kv_transfer.kv_connector.v1.h100_pcie_connector import (
-    H100PcieConnector,
-    H100PcieConnectorMetadata,
+from vllm.distributed.kv_transfer.kv_connector.v1.layerwise_pipelined_connector import (
+    LayerwisePipelinedConnector,
+    LayerwisePipelinedConnectorMetadata,
 )
 from tests.v1.kv_connector.unit.utils import create_vllm_config
 from vllm.v1.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
@@ -75,14 +75,14 @@ def _make_scheduler_output(
     )
 
 
-def test_h100_connector_metadata_decode_only():
+def test_layerwise_pipelined_connector_metadata_decode_only():
     vllm_config = create_vllm_config()
-    vllm_config.kv_transfer_config.kv_connector = "H100PcieConnector"
+    vllm_config.kv_transfer_config.kv_connector = "LayerwisePipelinedConnector"
     vllm_config.cache_config.enable_kv_pipelining = True
     vllm_config.cache_config.kv_k_window = 2
 
     kv_cache_config = _make_kv_cache_config(vllm_config.cache_config.block_size)
-    connector = H100PcieConnector(
+    connector = LayerwisePipelinedConnector(
         vllm_config=vllm_config,
         role=KVConnectorRole.SCHEDULER,
         kv_cache_config=kv_cache_config,
@@ -95,19 +95,19 @@ def test_h100_connector_metadata_decode_only():
         has_prefill=False,
     )
     metadata = connector.build_connector_meta(scheduler_output)
-    assert isinstance(metadata, H100PcieConnectorMetadata)
+    assert isinstance(metadata, LayerwisePipelinedConnectorMetadata)
     assert metadata.has_decode_work is True
     assert metadata.decode_max_seq_len == 6
 
 
-def test_h100_connector_metadata_prefill_gates_decode():
+def test_layerwise_pipelined_connector_metadata_prefill_gates_decode():
     vllm_config = create_vllm_config()
-    vllm_config.kv_transfer_config.kv_connector = "H100PcieConnector"
+    vllm_config.kv_transfer_config.kv_connector = "LayerwisePipelinedConnector"
     vllm_config.cache_config.enable_kv_pipelining = True
     vllm_config.cache_config.kv_k_window = 2
 
     kv_cache_config = _make_kv_cache_config(vllm_config.cache_config.block_size)
-    connector = H100PcieConnector(
+    connector = LayerwisePipelinedConnector(
         vllm_config=vllm_config,
         role=KVConnectorRole.SCHEDULER,
         kv_cache_config=kv_cache_config,
@@ -120,5 +120,5 @@ def test_h100_connector_metadata_prefill_gates_decode():
         has_prefill=True,
     )
     metadata = connector.build_connector_meta(scheduler_output)
-    assert isinstance(metadata, H100PcieConnectorMetadata)
+    assert isinstance(metadata, LayerwisePipelinedConnectorMetadata)
     assert metadata.has_decode_work is False

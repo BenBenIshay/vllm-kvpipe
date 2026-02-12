@@ -40,7 +40,6 @@ class WindowPool:
         if layer_name in self.layer_to_slot:
             self._touch(layer_name)
             return self.buffers[self.layer_to_slot[layer_name]], False
-        evicted_layer = None
         if len(self.layer_to_slot) < len(self.buffers):
             slot = len(self.layer_to_slot)
         else:
@@ -57,7 +56,7 @@ class WindowPool:
 
 
 @dataclass
-class H100PcieConnectorMetadata(KVConnectorMetadata):
+class LayerwisePipelinedConnectorMetadata(KVConnectorMetadata):
     layers_to_prefetch: list[str] = field(default_factory=list)
     has_work: bool = False
     active_req_ids: list[str] = field(default_factory=list)
@@ -66,8 +65,8 @@ class H100PcieConnectorMetadata(KVConnectorMetadata):
     decode_max_seq_len: int | None = None
 
 
-class H100PcieConnector(KVConnectorBase_V1):
-    """Experimental connector for layer-wise KV pipelining over PCIe."""
+class LayerwisePipelinedConnector(KVConnectorBase_V1):
+    """Decode-only, layer-wise KV pipelining connector."""
 
     def __init__(
         self,
@@ -75,8 +74,12 @@ class H100PcieConnector(KVConnectorBase_V1):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig" | None = None,
     ) -> None:
-        super().__init__(vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config)
-        self._enabled = bool(getattr(vllm_config.cache_config, "enable_kv_pipelining", False))
+        super().__init__(
+            vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
+        )
+        self._enabled = bool(
+            getattr(vllm_config.cache_config, "enable_kv_pipelining", False)
+        )
         self._k_window = int(getattr(vllm_config.cache_config, "kv_k_window", 0))
         self._layer_names = list(
             get_layers_from_vllm_config(vllm_config, AttentionLayerBase, None).keys()
@@ -191,7 +194,7 @@ class H100PcieConnector(KVConnectorBase_V1):
         if not self.has_connector_metadata():
             return
         metadata = self._get_connector_metadata()
-        if not isinstance(metadata, H100PcieConnectorMetadata):
+        if not isinstance(metadata, LayerwisePipelinedConnectorMetadata):
             return
         if not metadata.has_work or not metadata.has_decode_work:
             if self._free_original_buffers and self._freed_original_buffers:
@@ -287,7 +290,7 @@ class H100PcieConnector(KVConnectorBase_V1):
         self, scheduler_output: "SchedulerOutput"
     ) -> KVConnectorMetadata:
         if not self._enabled:
-            return H100PcieConnectorMetadata()
+            return LayerwisePipelinedConnectorMetadata()
         active_req_ids = (
             [req.req_id for req in scheduler_output.scheduled_new_reqs]
             + list(scheduler_output.scheduled_cached_reqs.req_ids)
@@ -311,14 +314,14 @@ class H100PcieConnector(KVConnectorBase_V1):
             decode_max_seq_len = max_len if max_len > 0 else None
         has_work = scheduler_output.total_num_scheduled_tokens > 0
         if self._k_window <= 0 or not has_work:
-            return H100PcieConnectorMetadata(
+            return LayerwisePipelinedConnectorMetadata(
                 has_work=has_work,
                 active_req_ids=active_req_ids,
                 has_decode_work=has_decode_work,
                 active_decode_req_ids=active_decode_req_ids,
                 decode_max_seq_len=decode_max_seq_len,
             )
-        return H100PcieConnectorMetadata(
+        return LayerwisePipelinedConnectorMetadata(
             layers_to_prefetch=self._layer_names[: self._k_window],
             has_work=has_work,
             active_req_ids=active_req_ids,

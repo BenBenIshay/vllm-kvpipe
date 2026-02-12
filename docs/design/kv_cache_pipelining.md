@@ -30,7 +30,7 @@ Enable pipelining (decode only) with:
 --enable-kv-pipelining
 --kv-k-window 4
 --free-original-kv-cache
---kv-transfer-config '{"kv_connector":"H100PcieConnector"}'
+--kv-transfer-config '{"kv_connector":"LayerwisePipelinedConnector"}'
 --enable-prefix-caching false
 ```
 
