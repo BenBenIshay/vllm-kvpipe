@@ -13,6 +13,8 @@ START_CONCURRENCY="${START_CONCURRENCY:-8}"
 END_CONCURRENCY="${END_CONCURRENCY:-128}"
 STEP="${STEP:-8}"
 K_WINDOW="${K_WINDOW:-32}"
+READY_TIMEOUT="${READY_TIMEOUT:-180}"
+READY_INTERVAL="${READY_INTERVAL:-2}"
 
 RESULT_DIR="${RESULT_DIR:-/tmp/vllm_kv_pipelining_results}"
 mkdir -p "${RESULT_DIR}"
@@ -51,6 +53,31 @@ function stop_server() {
 trap stop_server EXIT
 
 start_server "${MODE}"
+
+function wait_for_server() {
+  local deadline=$((SECONDS + READY_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if python3 - <<PY >/dev/null 2>&1; then
+import urllib.request
+import urllib.error
+url = "http://127.0.0.1:${PORT}/v1/models"
+try:
+    with urllib.request.urlopen(url, timeout=2) as resp:
+        resp.read()
+    raise SystemExit(0)
+except Exception:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep "${READY_INTERVAL}"
+  done
+  echo "Server did not become ready within ${READY_TIMEOUT}s"
+  return 1
+}
+
+wait_for_server
 
 for ((c = START_CONCURRENCY; c <= END_CONCURRENCY; c += STEP)); do
   echo "=== ${MODE} concurrency=${c} ==="

@@ -472,7 +472,8 @@ class KVCacheConfig:
     """
 
     num_blocks: int
-    """The number of KV cache blocks"""
+    """The number of KV cache blocks (virtual — may be inflated when
+    pipelining is enabled to reflect the reduced GPU footprint)."""
     kv_cache_tensors: list[KVCacheTensor]
     """How should model runner initialize the KV cache tensors for each layer"""
     kv_cache_groups: list[KVCacheGroupSpec]
@@ -483,3 +484,8 @@ class KVCacheConfig:
     For models with multiple types of attention, there will be multiple groups,
     see `_get_kv_cache_config_uniform_page_size` for more details.
     """
+    num_physical_blocks: int | None = None
+    """When KV pipelining inflates num_blocks, this stores the original
+    (physical) block count backed by the per-layer GPU tensors.  During prefill,
+    block IDs must stay below this limit.  None means num_blocks ==
+    num_physical_blocks (no inflation)."""

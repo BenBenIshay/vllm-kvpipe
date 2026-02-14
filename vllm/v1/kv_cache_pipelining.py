@@ -64,14 +64,60 @@ class LayerwisePipeliningState:
             self._layers[layer_name] = state
         return state
 
+    def ensure_cpu_buffer(
+        self, layer_name: str, kv_layer: torch.Tensor
+    ) -> None:
+        """Pre-allocate the CPU buffer at ``kv_layer``'s shape.
+
+        When pipelining inflates the window buffer (more blocks than the
+        physical per-layer tensor), the first ``stage_to_cpu`` receives a
+        *sliced* view.  If the CPU buffer were created at that smaller size,
+        the subsequent ``stage_delta_to_cpu`` (which uses the full window
+        buffer) would have to re-create it, losing previously staged data.
+
+        Call this once with the **full** window buffer before the first
+        ``stage_to_cpu`` to avoid that issue.
+        """
+        state = self._layers.get(layer_name)
+        if state is not None and state.cpu_buffer.shape == kv_layer.shape:
+            return  # already the right size
+        cpu_buffer = torch.empty_like(
+            kv_layer, device="cpu", pin_memory=True
+        )
+        self._layers[layer_name] = LayerTransferState(cpu_buffer=cpu_buffer)
+
     def has_layer(self, layer_name: str) -> bool:
         return layer_name in self._layers
 
+    @staticmethod
+    def _block_dim(kv: torch.Tensor) -> int:
+        """Block-dimension index: dim-1 when shape[0]==2, else dim-0."""
+        return 1 if kv.shape[0] == 2 else 0
+
     def stage_to_cpu(self, layer_name: str, kv_layer: torch.Tensor) -> None:
-        """Asynchronously stage the layer KV cache to pinned CPU memory."""
-        state = self._get_or_create_state(layer_name, kv_layer)
+        """Asynchronously stage the layer KV cache to pinned CPU memory.
+
+        If the pre-allocated CPU buffer is larger than *kv_layer* (e.g. because
+        ``ensure_cpu_buffer`` was called with the full inflated window buffer),
+        only the matching leading slice is copied.
+        """
+        state = self._layers.get(layer_name)
+        if state is None:
+            state = self._get_or_create_state(layer_name, kv_layer)
+
+        cpu_buf = state.cpu_buffer
+        if cpu_buf.shape == kv_layer.shape:
+            target = cpu_buf
+        else:
+            # CPU buffer is larger — copy into the leading slice.
+            bd = self._block_dim(kv_layer)
+            src_blocks = kv_layer.shape[bd]
+            slicer = [slice(None)] * kv_layer.ndim
+            slicer[bd] = slice(0, src_blocks)
+            target = cpu_buf[tuple(slicer)]
+
         with torch.cuda.stream(self._stream):
-            state.cpu_buffer.copy_(kv_layer, non_blocking=True)
+            target.copy_(kv_layer, non_blocking=True)
             state.save_event = torch.cuda.Event(blocking=False)
             state.save_event.record(self._stream)
 

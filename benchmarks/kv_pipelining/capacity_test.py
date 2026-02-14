@@ -33,19 +33,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", default="meta-llama/Meta-Llama-3.1-8B")
     p.add_argument("--port", type=int, default=8199)
     p.add_argument("--max-model-len", type=int, default=4096)
-    p.add_argument("--gpu-memory-utilization", type=float, default=0.75)
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    # Realistic workload: ShareGPT-like input (~512 tokens), generous output
+    # so decode dominates and pipelining savings are visible.  During prefill
+    # block IDs stay within num_physical_blocks because the pool starts with
+    # low IDs first and physical block counts are typically 10k+.
     p.add_argument("--input-len", type=int, default=512,
                     help="Approx input length in tokens")
-    p.add_argument("--output-len", type=int, default=128,
+    p.add_argument("--output-len", type=int, default=512,
                     help="Max output tokens per request")
     p.add_argument("--start-concurrency", type=int, default=4)
     p.add_argument("--end-concurrency", type=int, default=128)
     p.add_argument("--step", type=int, default=4)
-    p.add_argument("--k-window", type=int, default=32)
+    # k_window must be << num_layers to see benefit.  Llama-3.1-8B has 32
+    # attention layers; k_window=4 gives ~8x block inflation.
+    p.add_argument("--k-window", type=int, default=4)
     p.add_argument("--startup-timeout", type=int, default=300)
     p.add_argument("--result-dir", default="/tmp/kv_pipelining_capacity")
     p.add_argument("--modes", nargs="+",
-                    default=["baseline", "pipelined", "pipelined_free"],
+                    default=["baseline", "pipelined_free"],
                     help="Modes to test")
     return p.parse_args()
 
@@ -258,7 +264,7 @@ def main() -> None:
     result_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print("KV-Cache Pipelining Capacity Test")
+    print("KV-Cache Pipelining Capacity Test (Allocator-Aware)")
     print("=" * 70)
     print(f"  Model:        {args.model}")
     print(f"  Input len:    {args.input_len}")
@@ -268,6 +274,7 @@ def main() -> None:
     print(f"  K-window:     {args.k_window}")
     print(f"  GPU mem util: {args.gpu_memory_utilization}")
     print(f"  Modes:        {args.modes}")
+    print(f"  NOTE: pipelined_free inflates block pool by ~num_layers/k_window")
 
     all_summaries = {}
     for mode in args.modes:
@@ -278,6 +285,8 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
+    print(f"  k_window = {args.k_window}  (num_layers / k_window theoretical "
+          f"ratio for uniform models)")
     for mode, summary in all_summaries.items():
         max_conc = summary.get("max_successful_concurrency", 0)
         print(f"  {mode:20s}: max concurrency = {max_conc}")

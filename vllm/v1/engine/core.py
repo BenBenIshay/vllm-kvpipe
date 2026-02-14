@@ -265,6 +265,17 @@ class EngineCore:
         num_gpu_blocks = scheduler_kv_cache_config.num_blocks
         num_cpu_blocks = 0
 
+        # Report pipelining block inflation if active.
+        phys = getattr(scheduler_kv_cache_config, "num_physical_blocks", None)
+        if phys is not None:
+            logger.info(
+                "KV pipelining allocator: block pool = %d (physical = %d, "
+                "inflation = %.1fx)",
+                num_gpu_blocks,
+                phys,
+                num_gpu_blocks / max(phys, 1),
+            )
+
         # Initialize kv cache and warmup the execution
         self.model_executor.initialize_from_config(kv_cache_configs)
 

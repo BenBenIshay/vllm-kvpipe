@@ -1066,6 +1066,29 @@ def _get_kv_cache_groups_uniform_page_size(
     return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 
 
+def _get_pipelining_block_inflation(
+    vllm_config: VllmConfig,
+    num_layers: int,
+) -> tuple[bool, int]:
+    """Return (should_inflate, k_window) for pipelined KV cache.
+
+    When layer-wise pipelining with ``free_original_kv_cache`` is active only
+    *k_window* layers reside on GPU at any moment.  This means the effective
+    per-block GPU footprint shrinks by ``num_layers / k_window``, so we can
+    inflate the block-pool by the same factor while keeping physical per-layer
+    tensors at the base size.
+    """
+    cache_cfg = vllm_config.cache_config
+    if not getattr(cache_cfg, "enable_kv_pipelining", False):
+        return False, 0
+    if not getattr(cache_cfg, "free_original_kv_cache", False):
+        return False, 0
+    k_window = int(getattr(cache_cfg, "kv_k_window", 0))
+    if k_window <= 0 or k_window >= num_layers:
+        return False, 0
+    return True, k_window
+
+
 def get_kv_cache_config_from_groups(
     vllm_config: VllmConfig,
     kv_cache_groups: list[KVCacheGroupSpec],
@@ -1091,6 +1114,8 @@ def get_kv_cache_config_from_groups(
             kv_cache_groups=kv_cache_groups,
         )
 
+    num_physical_blocks: int | None = None  # set when pipelining inflates
+
     # Determine how model runners should initialize the KV cache tensors.
     if len(kv_cache_groups) == 1 and isinstance(
         kv_cache_groups[0].kv_cache_spec, UniformTypeKVCacheSpecs
@@ -1098,14 +1123,46 @@ def get_kv_cache_config_from_groups(
         # Special case: all layers have the same type of KV cache but with
         # different hidden size. Allocate different amount of memory for each
         # layer based on its hidden size.
-        num_blocks = (
-            available_memory // kv_cache_groups[0].kv_cache_spec.page_size_bytes
-        )
-        num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+        total_page_size = kv_cache_groups[0].kv_cache_spec.page_size_bytes
+        num_blocks_base = available_memory // total_page_size
+        num_blocks_base = may_override_num_blocks(vllm_config, num_blocks_base)
+
         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
+        num_layers = len(per_layer_specs)
+
+        # --- Pipelining-aware inflation -----------------------------------
+        should_inflate, k_window = _get_pipelining_block_inflation(
+            vllm_config, num_layers
+        )
+        if should_inflate:
+            # Only k_window layers live on GPU during decode, so the
+            # effective page cost shrinks to (k_window / num_layers) of
+            # the total.  Inflate the pool accordingly.
+            pipelined_page_size = total_page_size * k_window // num_layers
+            num_blocks_pipelined = max(
+                int(available_memory // pipelined_page_size), num_blocks_base
+            )
+            logger.info(
+                "KV pipelining: inflating block pool from %d to %d "
+                "(k_window=%d, num_layers=%d, ratio=%.1fx)",
+                num_blocks_base,
+                num_blocks_pipelined,
+                k_window,
+                num_layers,
+                num_blocks_pipelined / max(num_blocks_base, 1),
+            )
+            num_blocks = num_blocks_pipelined
+            num_physical_blocks = num_blocks_base
+        else:
+            num_blocks = num_blocks_base
+
+        # Physical tensors are always sized at the *base* block count so that
+        # they fit in GPU memory.  The connector creates larger window buffers
+        # at the inflated size during decode.
         kv_cache_tensors = [
             KVCacheTensor(
-                size=per_layer_specs[layer_name].page_size_bytes * num_blocks,
+                size=per_layer_specs[layer_name].page_size_bytes
+                * num_blocks_base,
                 shared_by=[layer_name],
             )
             for layer_name in kv_cache_groups[0].layer_names
@@ -1125,9 +1182,33 @@ def get_kv_cache_config_from_groups(
             [group.kv_cache_spec for group in kv_cache_groups]
         )
         assert group_size > 0, "group_size must be greater than 0"
-        num_blocks = get_num_blocks(
+        num_blocks_base = get_num_blocks(
             vllm_config, group_size, available_memory, page_size
         )
+
+        # --- Pipelining-aware inflation (general case) --------------------
+        should_inflate, k_window = _get_pipelining_block_inflation(
+            vllm_config, group_size
+        )
+        if should_inflate:
+            num_blocks_pipelined = get_num_blocks(
+                vllm_config, k_window, available_memory, page_size
+            )
+            num_blocks_pipelined = max(num_blocks_pipelined, num_blocks_base)
+            logger.info(
+                "KV pipelining (general): inflating block pool from %d to %d "
+                "(k_window=%d, group_size=%d, ratio=%.1fx)",
+                num_blocks_base,
+                num_blocks_pipelined,
+                k_window,
+                group_size,
+                num_blocks_pipelined / max(num_blocks_base, 1),
+            )
+            num_blocks = num_blocks_pipelined
+            num_physical_blocks = num_blocks_base
+        else:
+            num_blocks = num_blocks_base
+
         kv_cache_tensors = []
         for i in range(group_size):
             shared_by = []
@@ -1135,13 +1216,16 @@ def get_kv_cache_config_from_groups(
                 if i < len(kv_cache_groups[j].layer_names):
                     shared_by.append(kv_cache_groups[j].layer_names[i])
             kv_cache_tensors.append(
-                KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
+                KVCacheTensor(
+                    size=page_size * num_blocks_base, shared_by=shared_by
+                )
             )
 
     return KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=kv_cache_tensors,
         kv_cache_groups=kv_cache_groups,
+        num_physical_blocks=num_physical_blocks,
     )
 
 

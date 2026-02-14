@@ -161,10 +161,15 @@ class CacheConfig:
     together with kv_offloading_size."""
 
     enable_kv_pipelining: bool = False
-    kv_k_window: int = 5
+    kv_k_window: int = 4
+    """Number of KV cache layers to keep on GPU simultaneously during
+    layer-wise pipelined decode.  Must be << num_model_layers to see a
+    memory benefit.  The allocator inflates the block pool by
+    num_layers / kv_k_window when free_original_kv_cache is also enabled."""
     free_original_kv_cache: bool = False
     """When KV pipelining is enabled, allow freeing per-layer KV buffers after
-    binding layers to the window. This reduces GPU memory footprint."""
+    binding layers to the window.  Combined with the allocator integration
+    this inflates the block pool so more concurrent requests can be served."""
 
     def compute_hash(self) -> str:
         """

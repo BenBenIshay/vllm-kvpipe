@@ -102,17 +102,85 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
             )
         )
         self._freed_original_buffers = False
+
+        # Pipelining-aware block inflation: when num_physical_blocks is set,
+        # the block pool has been inflated and window buffers must be sized at
+        # the inflated num_blocks (not the physical per-layer tensor size).
+        self._num_blocks_pipelined: int | None = None
+        self._num_physical_blocks: int | None = None
+        if kv_cache_config is not None:
+            phys = getattr(kv_cache_config, "num_physical_blocks", None)
+            if phys is not None:
+                self._num_blocks_pipelined = kv_cache_config.num_blocks
+                self._num_physical_blocks = phys
+                logger.info(
+                    "Connector: block pool inflated to %d "
+                    "(physical per-layer tensors: %d blocks)",
+                    self._num_blocks_pipelined,
+                    self._num_physical_blocks,
+                )
+
         if role == KVConnectorRole.WORKER:
             self._worker_state = LayerwisePipeliningState()
+
+    # ------------------------------------------------------------------
+    # Window buffer helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_block_dim(kv_layer: torch.Tensor) -> int:
+        """Return the dimension index that corresponds to the num_blocks axis.
+
+        Convention in vLLM:
+        - shape[0] == 2  ->  [2(K/V), num_blocks, ...]  ->  block_dim = 1
+        - otherwise       ->  [num_blocks, ...]           ->  block_dim = 0
+        """
+        return 1 if kv_layer.shape[0] == 2 else 0
+
+    def _inflated_shape(self, kv_layer: torch.Tensor) -> torch.Size:
+        """Return the shape the window buffer should have (maybe inflated)."""
+        if self._num_blocks_pipelined is None:
+            return kv_layer.shape
+        block_dim = self._get_block_dim(kv_layer)
+        if self._num_blocks_pipelined <= kv_layer.shape[block_dim]:
+            return kv_layer.shape
+        new_shape = list(kv_layer.shape)
+        new_shape[block_dim] = self._num_blocks_pipelined
+        return torch.Size(new_shape)
+
+    def _make_inflated_buffer(self, kv_layer: torch.Tensor) -> torch.Tensor:
+        """Create a window buffer inflated to ``_num_blocks_pipelined``.
+
+        If the block pool was NOT inflated (no pipelining savings), this
+        simply returns ``torch.empty_like(kv_layer)`` — the old behaviour.
+        """
+        if self._num_blocks_pipelined is None:
+            return torch.empty_like(kv_layer)
+
+        block_dim = self._get_block_dim(kv_layer)
+        current_blocks = kv_layer.shape[block_dim]
+
+        if self._num_blocks_pipelined <= current_blocks:
+            return torch.empty_like(kv_layer)
+
+        new_shape = list(kv_layer.shape)
+        new_shape[block_dim] = self._num_blocks_pipelined
+        return torch.empty(
+            new_shape, dtype=kv_layer.dtype, device=kv_layer.device
+        )
 
     def _get_window_buffer(
         self, layer_name: str, kv_layer: torch.Tensor
     ) -> tuple[torch.Tensor, bool]:
-        key = (kv_layer.shape, kv_layer.dtype, kv_layer.device)
+        # Use inflated shape as the pool key so all windows share the same
+        # (potentially larger) geometry.
+        inflated_shape = self._inflated_shape(kv_layer)
+        key = (inflated_shape, kv_layer.dtype, kv_layer.device)
         pool = self._window_pools.get(key)
         if pool is None:
             buffers = [
-                torch.empty_like(kv_layer) for _ in range(max(self._k_window, 1))
+                self._make_inflated_buffer(kv_layer)
+                for _ in range(max(self._k_window, 1))
             ]
             pool = WindowPool(buffers=buffers)
             self._window_pools[key] = pool
@@ -263,6 +331,11 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
                 num_actual_tokens=num_actual_tokens,
             )
             return
+        # For the initial full save, ensure the CPU buffer is created at the
+        # FULL window buffer size (which may be inflated by pipelining).  This
+        # avoids a costly buffer re-creation when stage_delta_to_cpu is called
+        # on the next step with the full-size tensor.
+        self._worker_state.ensure_cpu_buffer(layer_name, kv_layer)
         max_seq_len = self._get_max_seq_len(attn_metadata)
         kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
         self._worker_state.stage_to_cpu(layer_name, kv_view)
