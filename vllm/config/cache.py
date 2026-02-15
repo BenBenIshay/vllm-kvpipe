@@ -170,6 +170,13 @@ class CacheConfig:
     """When KV pipelining is enabled, allow freeing per-layer KV buffers after
     binding layers to the window.  Combined with the allocator integration
     this inflates the block pool so more concurrent requests can be served."""
+    decode_only_pipelining: bool = False
+    """Decode-only P/D disaggregation mode.  When enabled, the node assumes
+    KV caches arrive pre-computed from a remote prefill node so no local
+    prefill GPU tensors are needed.  Per-layer KV tensors are allocated at a
+    minimal size (just for model-init compatibility), and the block pool is
+    fully inflated with NO num_physical_blocks constraint.  Implies
+    enable_kv_pipelining=True and free_original_kv_cache=True."""
 
     def compute_hash(self) -> str:
         """
@@ -199,6 +206,7 @@ class CacheConfig:
             # WIP feature toggle not impacting compiled graph shape
             "kv_sharing_fast_prefill",
             "free_original_kv_cache",
+            "decode_only_pipelining",
         }
 
         from vllm.config.utils import get_hash_factors, hash_factors

@@ -84,9 +84,54 @@ allocates low IDs first and physical pools are typically 10k+ blocks.
 Expected: `pipelined_free` supports ~8x more concurrent requests than baseline
 (32 layers / k_window=4 = 8x block inflation).
 
-## 7) Future: dynamic block pool expansion
+## 7) Decode-only P/D disaggregation mode  [DONE]
+
+With Prefill/Decode disaggregation, the decode node never performs local
+prefill — KV caches arrive pre-computed from a remote prefill node.  This
+simplifies and amplifies the pipelining benefit:
+
+- **No `num_physical_blocks` constraint**: since there is no local prefill,
+  any block ID is safe.  The allocator uses `num_physical_blocks = None`.
+- **Minimal per-layer GPU tensors**: only tiny placeholders (32 blocks) are
+  allocated for model-init compatibility.  The full GPU KV memory budget goes
+  to the `k_window` window buffers.
+- **Maximum inflation**: available memory is divided only by the pipelined
+  page size (`total_page_size * k_window / num_layers`), yielding the
+  largest possible block pool.
+
+Usage:
+```
+python -m vllm.entrypoints.openai.api_server \
+    --model meta-llama/Meta-Llama-3.1-8B \
+    --decode-only-pipelining \
+    --kv-k-window 4 \
+    --kv-transfer-config '{"kv_connector":"LayerwisePipelinedConnector","kv_role":"kv_both"}' \
+    --enable-prefix-caching false
+```
+
+`--decode-only-pipelining` auto-enables `--enable-kv-pipelining` and
+`--free-original-kv-cache`.  The connector never restores original (tiny)
+per-layer buffers and always uses inflated window buffers.
+
+Benchmark:
+```
+python benchmarks/kv_pipelining/capacity_test.py \
+    --model meta-llama/Meta-Llama-3.1-8B \
+    --k-window 4 \
+    --input-len 512 --output-len 512 \
+    --modes baseline pipelined_free decode_only
+```
+
+## 8) Future: dynamic block pool expansion
 
 Current approach inflates the pool at init time.  A more robust approach would
 dynamically expand the pool after the first decode step frees the original
 tensors.  This would allow prefill to use high block IDs too (no
 num_physical_blocks constraint).
+
+## 9) Future: P/D transfer integration
+
+Wire decode-only pipelining to vLLM's P2P NCCL / NiXL / LMCache connectors
+so KV arriving from a real prefill node flows directly into CPU pinned
+memory → layer-wise pipeline → GPU window buffers without intermediate
+GPU allocation.

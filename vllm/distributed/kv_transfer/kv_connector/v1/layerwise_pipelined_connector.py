@@ -77,9 +77,12 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
         super().__init__(
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
+        self._decode_only = bool(
+            getattr(vllm_config.cache_config, "decode_only_pipelining", False)
+        )
         self._enabled = bool(
             getattr(vllm_config.cache_config, "enable_kv_pipelining", False)
-        )
+        ) or self._decode_only
         self._k_window = int(getattr(vllm_config.cache_config, "kv_k_window", 0))
         self._layer_names = list(
             get_layers_from_vllm_config(vllm_config, AttentionLayerBase, None).keys()
@@ -95,7 +98,9 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
         self._original_kv_cache_meta: dict[
             tuple[str, int], tuple[torch.Size, torch.dtype, torch.device]
         ] = {}
-        self._free_original_buffers = bool(
+        # In decode-only mode, originals are always freed (they're tiny
+        # placeholders anyway and should never be restored).
+        self._free_original_buffers = self._decode_only or bool(
             getattr(vllm_config.cache_config, "free_original_kv_cache", False)
             or self._kv_transfer_config.get_from_extra_config(
                 "free_original_kv_cache", False
@@ -103,14 +108,14 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
         )
         self._freed_original_buffers = False
 
-        # Pipelining-aware block inflation: when num_physical_blocks is set,
-        # the block pool has been inflated and window buffers must be sized at
-        # the inflated num_blocks (not the physical per-layer tensor size).
+        # Pipelining-aware block inflation: window buffers must be sized at
+        # the inflated num_blocks, not the physical per-layer tensor size.
         self._num_blocks_pipelined: int | None = None
         self._num_physical_blocks: int | None = None
         if kv_cache_config is not None:
             phys = getattr(kv_cache_config, "num_physical_blocks", None)
             if phys is not None:
+                # Hybrid mode: both prefill & decode on same node.
                 self._num_blocks_pipelined = kv_cache_config.num_blocks
                 self._num_physical_blocks = phys
                 logger.info(
@@ -118,6 +123,17 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
                     "(physical per-layer tensors: %d blocks)",
                     self._num_blocks_pipelined,
                     self._num_physical_blocks,
+                )
+            elif self._decode_only:
+                # Decode-only P/D mode: per-layer tensors are tiny
+                # placeholders, window buffers are at full inflated size.
+                # No num_physical_blocks constraint.
+                self._num_blocks_pipelined = kv_cache_config.num_blocks
+                logger.info(
+                    "Connector (decode-only P/D): block pool = %d, "
+                    "per-layer placeholders are minimal, window buffers "
+                    "will be inflated to full block count.",
+                    self._num_blocks_pipelined,
                 )
 
         if role == KVConnectorRole.WORKER:
@@ -212,6 +228,11 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
     def _restore_original_buffers(
         self, forward_context: "ForwardContext" | None = None
     ) -> None:
+        if self._decode_only:
+            # Decode-only mode: original per-layer tensors are tiny
+            # placeholders — never restore them, the window buffers are
+            # the only valid KV storage.
+            return
         forward_context = forward_context or self._forward_context
         if forward_context is None:
             return
@@ -265,7 +286,11 @@ class LayerwisePipelinedConnector(KVConnectorBase_V1):
         if not isinstance(metadata, LayerwisePipelinedConnectorMetadata):
             return
         if not metadata.has_work or not metadata.has_decode_work:
-            if self._free_original_buffers and self._freed_original_buffers:
+            if self._decode_only:
+                # Decode-only P/D mode: no prefill fallback, nothing to
+                # restore — just skip.
+                pass
+            elif self._free_original_buffers and self._freed_original_buffers:
                 logger.warning_once(
                     "KV pipelining freed original KV buffers, but prefill is now "
                     "scheduled. Reinitializing empty KV buffers for prefill."

@@ -935,6 +935,10 @@ class EngineArgs:
             **cache_kwargs["free_original_kv_cache"]
         )
         cache_group.add_argument(
+            "--decode-only-pipelining",
+            **cache_kwargs["decode_only_pipelining"]
+        )
+        cache_group.add_argument(
             "--prefix-caching-hash-algo", **cache_kwargs["prefix_caching_hash_algo"]
         )
         cache_group.add_argument("--cpu-offload-gb", **cache_kwargs["cpu_offload_gb"])

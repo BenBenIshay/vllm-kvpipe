@@ -267,7 +267,17 @@ class EngineCore:
 
         # Report pipelining block inflation if active.
         phys = getattr(scheduler_kv_cache_config, "num_physical_blocks", None)
-        if phys is not None:
+        decode_only = getattr(
+            vllm_config.cache_config, "decode_only_pipelining", False
+        )
+        if decode_only:
+            logger.info(
+                "KV pipelining allocator (decode-only P/D): block pool = %d "
+                "(per-layer placeholders are minimal, no physical block "
+                "constraint)",
+                num_gpu_blocks,
+            )
+        elif phys is not None:
             logger.info(
                 "KV pipelining allocator: block pool = %d (physical = %d, "
                 "inflation = %.1fx)",

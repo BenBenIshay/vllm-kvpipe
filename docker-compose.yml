@@ -1,0 +1,31 @@
+services:
+  vllm-research:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-research-h100
+    restart: always
+    
+    volumes:
+      - /home/ben/vllm:/workspace/vllm        # Maps your code directory
+      - ${HF_HOME:-/workspace/.cache/huggingface}:/root/.cache/huggingface  # Persists downloaded models
+    
+    # Crucial for development/research access
+    tty: true
+    stdin_open: true
+    # Keep the container alive for devcontainer attach; run vLLM manually.
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+    shm_size: '32gb'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+    # For non-swarm docker-compose: use device requests instead of deploy.
+    gpus: all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - VLLM_GPU_MEMORY_UTILIZATION=0.90
+      - HF_TOKEN=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
+
+
+

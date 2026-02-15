@@ -1,0 +1,35 @@
+# Start from the base vLLM image
+FROM vllm/vllm-openai:latest
+
+# 1. Install build tools
+USER root
+RUN apt-get update && apt-get install -y \
+    git \
+    ccache \
+    libnuma-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1.5 Install Node.js for devcontainer server bootstrap
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get update && apt-get install -y nodejs \
+    && node -v \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Fix CUDA symlinks for H100 (SM 9.0)
+RUN ln -sf /usr/local/cuda/lib64/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so && \
+    ln -sf /usr/local/cuda/lib64/libcusparse.so.12 /usr/local/cuda/lib64/libcusparse.so && \
+    ln -sf /usr/local/cuda/lib64/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so
+
+# 3. Set environment variables for compilation
+ENV PATH="/usr/lib/ccache:$PATH"
+ENV MAX_JOBS=12
+ENV TORCH_CUDA_ARCH_LIST="9.0"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
+WORKDIR /workspace/vllm

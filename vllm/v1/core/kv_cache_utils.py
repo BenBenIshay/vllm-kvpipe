@@ -1069,24 +1069,32 @@ def _get_kv_cache_groups_uniform_page_size(
 def _get_pipelining_block_inflation(
     vllm_config: VllmConfig,
     num_layers: int,
-) -> tuple[bool, int]:
-    """Return (should_inflate, k_window) for pipelined KV cache.
+) -> tuple[bool, int, bool]:
+    """Return (should_inflate, k_window, decode_only) for pipelined KV cache.
 
     When layer-wise pipelining with ``free_original_kv_cache`` is active only
     *k_window* layers reside on GPU at any moment.  This means the effective
     per-block GPU footprint shrinks by ``num_layers / k_window``, so we can
     inflate the block-pool by the same factor while keeping physical per-layer
     tensors at the base size.
+
+    **decode_only mode** (P/D disaggregation): the node never performs local
+    prefill, so per-layer GPU tensors are reduced to a minimal placeholder
+    size and the block pool is inflated with **no** ``num_physical_blocks``
+    safety constraint.
     """
     cache_cfg = vllm_config.cache_config
-    if not getattr(cache_cfg, "enable_kv_pipelining", False):
-        return False, 0
-    if not getattr(cache_cfg, "free_original_kv_cache", False):
-        return False, 0
+    decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
+    if not getattr(cache_cfg, "enable_kv_pipelining", False) and not decode_only:
+        return False, 0, False
+    if not decode_only and not getattr(
+        cache_cfg, "free_original_kv_cache", False
+    ):
+        return False, 0, False
     k_window = int(getattr(cache_cfg, "kv_k_window", 0))
     if k_window <= 0 or k_window >= num_layers:
-        return False, 0
-    return True, k_window
+        return False, 0, False
+    return True, k_window, decode_only
 
 
 def get_kv_cache_config_from_groups(
@@ -1131,8 +1139,8 @@ def get_kv_cache_config_from_groups(
         num_layers = len(per_layer_specs)
 
         # --- Pipelining-aware inflation -----------------------------------
-        should_inflate, k_window = _get_pipelining_block_inflation(
-            vllm_config, num_layers
+        should_inflate, k_window, decode_only = (
+            _get_pipelining_block_inflation(vllm_config, num_layers)
         )
         if should_inflate:
             # Only k_window layers live on GPU during decode, so the
@@ -1142,27 +1150,55 @@ def get_kv_cache_config_from_groups(
             num_blocks_pipelined = max(
                 int(available_memory // pipelined_page_size), num_blocks_base
             )
-            logger.info(
-                "KV pipelining: inflating block pool from %d to %d "
-                "(k_window=%d, num_layers=%d, ratio=%.1fx)",
-                num_blocks_base,
-                num_blocks_pipelined,
-                k_window,
-                num_layers,
-                num_blocks_pipelined / max(num_blocks_base, 1),
-            )
-            num_blocks = num_blocks_pipelined
-            num_physical_blocks = num_blocks_base
+
+            if decode_only:
+                # ----- Decode-only P/D mode -----
+                # No local prefill → per-layer GPU tensors are just tiny
+                # placeholders for model-init compatibility.  The full GPU
+                # memory budget goes to window buffers and there is NO
+                # num_physical_blocks constraint.
+                _DECODE_ONLY_MIN_BLOCKS = 32  # enough for warmup
+                tensor_blocks = min(num_blocks_base, _DECODE_ONLY_MIN_BLOCKS)
+                logger.info(
+                    "KV pipelining (decode-only P/D): block pool = %d "
+                    "(per-layer placeholder = %d blocks, k_window=%d, "
+                    "num_layers=%d, ratio vs base=%.1fx)",
+                    num_blocks_pipelined,
+                    tensor_blocks,
+                    k_window,
+                    num_layers,
+                    num_blocks_pipelined / max(num_blocks_base, 1),
+                )
+                num_blocks = num_blocks_pipelined
+                # No num_physical_blocks constraint — decode-only never
+                # does local prefill so any block ID is safe.
+                num_physical_blocks = None
+            else:
+                # ----- Hybrid mode (prefill + decode on same node) -----
+                tensor_blocks = num_blocks_base
+                logger.info(
+                    "KV pipelining: inflating block pool from %d to %d "
+                    "(k_window=%d, num_layers=%d, ratio=%.1fx)",
+                    num_blocks_base,
+                    num_blocks_pipelined,
+                    k_window,
+                    num_layers,
+                    num_blocks_pipelined / max(num_blocks_base, 1),
+                )
+                num_blocks = num_blocks_pipelined
+                num_physical_blocks = num_blocks_base
         else:
+            tensor_blocks = num_blocks_base
             num_blocks = num_blocks_base
 
-        # Physical tensors are always sized at the *base* block count so that
-        # they fit in GPU memory.  The connector creates larger window buffers
-        # at the inflated size during decode.
+        # Physical tensors are sized at *tensor_blocks*.  In hybrid mode this
+        # equals num_blocks_base (fit in GPU memory); in decode-only mode it is
+        # a small placeholder.  The connector creates larger window buffers at
+        # the inflated size during decode.
         kv_cache_tensors = [
             KVCacheTensor(
                 size=per_layer_specs[layer_name].page_size_bytes
-                * num_blocks_base,
+                * tensor_blocks,
                 shared_by=[layer_name],
             )
             for layer_name in kv_cache_groups[0].layer_names
@@ -1187,26 +1223,45 @@ def get_kv_cache_config_from_groups(
         )
 
         # --- Pipelining-aware inflation (general case) --------------------
-        should_inflate, k_window = _get_pipelining_block_inflation(
-            vllm_config, group_size
+        should_inflate, k_window, decode_only = (
+            _get_pipelining_block_inflation(vllm_config, group_size)
         )
         if should_inflate:
             num_blocks_pipelined = get_num_blocks(
                 vllm_config, k_window, available_memory, page_size
             )
             num_blocks_pipelined = max(num_blocks_pipelined, num_blocks_base)
-            logger.info(
-                "KV pipelining (general): inflating block pool from %d to %d "
-                "(k_window=%d, group_size=%d, ratio=%.1fx)",
-                num_blocks_base,
-                num_blocks_pipelined,
-                k_window,
-                group_size,
-                num_blocks_pipelined / max(num_blocks_base, 1),
-            )
-            num_blocks = num_blocks_pipelined
-            num_physical_blocks = num_blocks_base
+
+            if decode_only:
+                _DECODE_ONLY_MIN_BLOCKS = 32
+                tensor_blocks = min(num_blocks_base, _DECODE_ONLY_MIN_BLOCKS)
+                logger.info(
+                    "KV pipelining general (decode-only P/D): block pool = %d "
+                    "(per-layer placeholder = %d blocks, k_window=%d, "
+                    "group_size=%d, ratio vs base=%.1fx)",
+                    num_blocks_pipelined,
+                    tensor_blocks,
+                    k_window,
+                    group_size,
+                    num_blocks_pipelined / max(num_blocks_base, 1),
+                )
+                num_blocks = num_blocks_pipelined
+                num_physical_blocks = None
+            else:
+                tensor_blocks = num_blocks_base
+                logger.info(
+                    "KV pipelining (general): inflating block pool from "
+                    "%d to %d (k_window=%d, group_size=%d, ratio=%.1fx)",
+                    num_blocks_base,
+                    num_blocks_pipelined,
+                    k_window,
+                    group_size,
+                    num_blocks_pipelined / max(num_blocks_base, 1),
+                )
+                num_blocks = num_blocks_pipelined
+                num_physical_blocks = num_blocks_base
         else:
+            tensor_blocks = num_blocks_base
             num_blocks = num_blocks_base
 
         kv_cache_tensors = []
@@ -1217,7 +1272,7 @@ def get_kv_cache_config_from_groups(
                     shared_by.append(kv_cache_groups[j].layer_names[i])
             kv_cache_tensors.append(
                 KVCacheTensor(
-                    size=page_size * num_blocks_base, shared_by=shared_by
+                    size=page_size * tensor_blocks, shared_by=shared_by
                 )
             )
 

@@ -7,8 +7,16 @@ Measures the max number of concurrent requests each mode can handle
 before OOM, demonstrating that pipelined + free-original-kv-cache
 allows serving more requests with the same GPU memory.
 
+Modes:
+  - baseline:        standard vLLM (no pipelining).
+  - pipelined_free:  hybrid pipelining (prefill + decode on same node).
+  - decode_only:     P/D disaggregated decode-only pipelining — assumes
+                     prefill happens on a remote node, per-layer GPU
+                     tensors are minimal placeholders, maximum block pool
+                     inflation with no physical block constraint.
+
 Approach:
-  1. Start a vLLM server (baseline or pipelined).
+  1. Start a vLLM server (baseline, pipelined, or decode-only).
   2. Ramp up concurrent requests until the server fails / OOMs.
   3. Record the max successful concurrency.
   4. Compare across modes.
@@ -51,8 +59,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--startup-timeout", type=int, default=300)
     p.add_argument("--result-dir", default="/tmp/kv_pipelining_capacity")
     p.add_argument("--modes", nargs="+",
-                    default=["baseline", "pipelined_free"],
-                    help="Modes to test")
+                    default=["baseline", "pipelined_free", "decode_only"],
+                    help="Modes to test (baseline, pipelined, "
+                         "pipelined_free, decode_only)")
     return p.parse_args()
 
 
@@ -85,7 +94,7 @@ def _launch_server(
         "--dtype", "auto",
         "--max-num-seqs", str(max_num_seqs),
     ]
-    if mode in ("pipelined", "pipelined_free"):
+    if mode in ("pipelined", "pipelined_free", "decode_only"):
         kv_config = {
             "kv_connector": "LayerwisePipelinedConnector",
             "kv_role": "kv_both",
@@ -98,6 +107,8 @@ def _launch_server(
         ]
         if mode == "pipelined_free":
             cmd += ["--free-original-kv-cache"]
+        elif mode == "decode_only":
+            cmd += ["--decode-only-pipelining"]
 
     log_fh = open(log_file, "w") if log_file else subprocess.DEVNULL
     proc = subprocess.Popen(
@@ -293,7 +304,7 @@ def main() -> None:
 
     baseline_max = all_summaries.get("baseline", {}).get(
         "max_successful_concurrency", 0)
-    for mode in ["pipelined", "pipelined_free"]:
+    for mode in ["pipelined", "pipelined_free", "decode_only"]:
         if mode in all_summaries:
             pipe_max = all_summaries[mode].get(
                 "max_successful_concurrency", 0)

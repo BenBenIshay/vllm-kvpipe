@@ -827,6 +827,21 @@ class VllmConfig:
                 "Modify KVEventsConfig.enable_kv_cache_events "
                 "to True to enable."
             )
+        # ---- Decode-only P/D pipelining: auto-enable implied flags ------
+        if self.cache_config.decode_only_pipelining:
+            if not self.cache_config.enable_kv_pipelining:
+                logger.info(
+                    "decode_only_pipelining implies enable_kv_pipelining; "
+                    "enabling automatically."
+                )
+                self.cache_config.enable_kv_pipelining = True
+            if not self.cache_config.free_original_kv_cache:
+                logger.info(
+                    "decode_only_pipelining implies free_original_kv_cache; "
+                    "enabling automatically."
+                )
+                self.cache_config.free_original_kv_cache = True
+
         if self.cache_config.enable_kv_pipelining:
             if self.cache_config.enable_prefix_caching:
                 logger.warning_once(
