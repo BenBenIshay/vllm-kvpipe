@@ -97,27 +97,36 @@ class LayerwisePipeliningState:
     def stage_to_cpu(self, layer_name: str, kv_layer: torch.Tensor) -> None:
         """Asynchronously stage the layer KV cache to pinned CPU memory.
 
-        If the pre-allocated CPU buffer is larger than *kv_layer* (e.g. because
-        ``ensure_cpu_buffer`` was called with the full inflated window buffer),
-        only the matching leading slice is copied.
+        If the sequence has grown since the last stage (decode added tokens),
+        the CPU buffer is re-allocated to match the new size.
         """
         state = self._layers.get(layer_name)
         if state is None:
             state = self._get_or_create_state(layer_name, kv_layer)
 
         cpu_buf = state.cpu_buffer
-        if cpu_buf.shape == kv_layer.shape:
-            target = cpu_buf
-        else:
-            # CPU buffer is larger — copy into the leading slice.
+        if cpu_buf.shape != kv_layer.shape:
             bd = self._block_dim(kv_layer)
-            src_blocks = kv_layer.shape[bd]
-            slicer = [slice(None)] * kv_layer.ndim
-            slicer[bd] = slice(0, src_blocks)
-            target = cpu_buf[tuple(slicer)]
+            if kv_layer.shape[bd] > cpu_buf.shape[bd]:
+                # Sequence grew — need a bigger CPU buffer.
+                new_buf = torch.empty_like(
+                    kv_layer, device="cpu", pin_memory=True
+                )
+                # Copy old data into the new buffer's leading slice.
+                old_blocks = cpu_buf.shape[bd]
+                slicer = [slice(None)] * kv_layer.ndim
+                slicer[bd] = slice(0, old_blocks)
+                new_buf[tuple(slicer)].copy_(cpu_buf)
+                state.cpu_buffer = new_buf
+                cpu_buf = new_buf
+            else:
+                # CPU buffer is larger — copy into leading slice.
+                slicer = [slice(None)] * kv_layer.ndim
+                slicer[bd] = slice(0, kv_layer.shape[bd])
+                cpu_buf = cpu_buf[tuple(slicer)]
 
         with torch.cuda.stream(self._stream):
-            target.copy_(kv_layer, non_blocking=True)
+            cpu_buf.copy_(kv_layer, non_blocking=True)
             state.save_event = torch.cuda.Event(blocking=False)
             state.save_event.record(self._stream)
 
@@ -188,9 +197,10 @@ class LayerwisePipeliningState:
     def prefetch_to_gpu(self, layer_name: str, kv_layer: torch.Tensor) -> None:
         """Asynchronously prefetch the layer KV cache back to GPU memory.
 
-        If the CPU buffer is larger than *kv_layer* (e.g. the GPU view is a
-        seq-len slice of the full tensor), only the matching leading portion
-        of the CPU buffer is copied.
+        Handles size mismatches between CPU buffer and GPU target:
+        - CPU buffer larger: copy only the leading portion that fits.
+        - GPU target larger (sequence grew during decode): copy what we
+          have and leave the extra GPU blocks for the model to fill.
         """
         state = self._layers.get(layer_name)
         if state is None:
@@ -198,14 +208,16 @@ class LayerwisePipeliningState:
         if state.ready_event is not None:
             return
         cpu_buf = state.cpu_buffer
-        if cpu_buf.shape != kv_layer.shape:
-            bd = self._block_dim(kv_layer)
-            dst_blocks = kv_layer.shape[bd]
-            slicer = [slice(None)] * kv_layer.ndim
-            slicer[bd] = slice(0, dst_blocks)
+        gpu_dst = kv_layer
+        if cpu_buf.shape != gpu_dst.shape:
+            bd = self._block_dim(gpu_dst)
+            common_blocks = min(cpu_buf.shape[bd], gpu_dst.shape[bd])
+            slicer = [slice(None)] * gpu_dst.ndim
+            slicer[bd] = slice(0, common_blocks)
             cpu_buf = cpu_buf[tuple(slicer)]
+            gpu_dst = gpu_dst[tuple(slicer)]
         with torch.cuda.stream(self._stream):
-            kv_layer.copy_(cpu_buf, non_blocking=True)
+            gpu_dst.copy_(cpu_buf, non_blocking=True)
             state.ready_event = torch.cuda.Event(blocking=False)
             state.ready_event.record(self._stream)
 
