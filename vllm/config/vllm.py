@@ -852,6 +852,7 @@ class VllmConfig:
             _pipelining_connectors = {
                 "LayerwisePipelinedConnector",
                 "PipelinedDecodeBenchConnector",
+                "PrefillStagingPipelinedConnector",
             }
             if (
                 kv_transfer_config is None
@@ -863,6 +864,8 @@ class VllmConfig:
                     "a pipelining-aware connector. "
                     "Set --kv-transfer-config "
                     "'{\"kv_connector\":\"LayerwisePipelinedConnector\"}' "
+                    "or "
+                    "'{\"kv_connector\":\"PrefillStagingPipelinedConnector\"}' "
                     "or "
                     "'{\"kv_connector\":\"PipelinedDecodeBenchConnector\"}'."
                 )
