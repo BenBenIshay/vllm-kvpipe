@@ -174,6 +174,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cooldown", type=int, default=8,
                    help="Seconds to wait between server restarts")
 
+    # Correctness
+    p.add_argument("--correctness", action="store_true",
+                   help="Run correctness validation (compare outputs at T=0)")
+    p.add_argument("--correctness-samples", type=int, default=5,
+                   help="Number of prompts for correctness check")
+
     # Output
     p.add_argument("--result-dir", default="/tmp/kv_pipelining_eval")
 
@@ -590,6 +596,125 @@ WORKLOAD_RUNNERS = {
 
 
 # =========================================================================
+# Correctness validation
+# =========================================================================
+
+def _send_completion(port: int, model: str, prompt: str,
+                     max_tokens: int) -> str | None:
+    """Send a non-streaming completion and return the generated text."""
+    url = f"http://127.0.0.1:{port}/v1/completions"
+    body = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+    }).encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        return data["choices"][0]["text"]
+    except Exception as e:
+        print(f"    [ERROR] Completion failed: {e}")
+        return None
+
+
+def run_correctness_check(
+    args: argparse.Namespace,
+    result_dir: Path,
+    num_samples: int = 5,
+) -> dict:
+    """
+    Validate that pipelined mode produces identical output to baseline.
+
+    Launches both servers sequentially, sends the same prompts at
+    temperature=0, and compares outputs token-by-token.
+    """
+    print(f"\n{'#' * 80}")
+    print(f"# CORRECTNESS VALIDATION")
+    print(f"{'#' * 80}")
+
+    # Generate a set of fixed test prompts
+    prompts = [
+        "The capital of France is",
+        "In a galaxy far, far away, there lived a",
+        "The quickest way to sort an array in Python is to",
+        "According to the laws of thermodynamics,",
+        "Once upon a time in a land of endless mountains,",
+    ][:num_samples]
+    max_tokens = 50
+
+    results = {"prompts": [], "match": True, "details": []}
+
+    for mode in ["baseline", "pipelined"]:
+        log_file = str(result_dir / f"server_correctness_{mode}.log")
+        print(f"\n  Launching {mode} server for correctness check ...")
+        proc = launch_server(args, mode, max_num_seqs=4, log_file=log_file)
+
+        try:
+            if not _wait_for_server(args.port, args.startup_timeout):
+                print(f"  [FAIL] {mode} server failed to start")
+                results["error"] = f"{mode}_startup_failed"
+                return results
+            print(f"  [OK] {mode} server ready")
+
+            # Send each prompt and record output
+            for i, prompt in enumerate(prompts):
+                output = _send_completion(args.port, args.model, prompt,
+                                          max_tokens)
+                if len(results["prompts"]) <= i:
+                    results["prompts"].append({
+                        "prompt": prompt,
+                        "outputs": {},
+                    })
+                results["prompts"][i]["outputs"][mode] = output
+        finally:
+            _kill_server(proc)
+            time.sleep(args.cooldown)
+
+    # Compare outputs
+    print(f"\n  Comparing outputs:")
+    all_match = True
+    for i, entry in enumerate(results["prompts"]):
+        baseline_out = entry["outputs"].get("baseline", "")
+        pipelined_out = entry["outputs"].get("pipelined", "")
+        match = (baseline_out == pipelined_out)
+        if not match:
+            all_match = False
+        status = "MATCH" if match else "MISMATCH"
+        detail = {
+            "prompt_idx": i,
+            "match": match,
+            "baseline_output": baseline_out[:200] if baseline_out else None,
+            "pipelined_output": pipelined_out[:200] if pipelined_out else None,
+        }
+        results["details"].append(detail)
+        prompt_preview = entry["prompt"][:60]
+        print(f"    [{status}] prompt {i}: \"{prompt_preview}...\"")
+        if not match:
+            print(f"      baseline : {(baseline_out or '')[:100]}")
+            print(f"      pipelined: {(pipelined_out or '')[:100]}")
+
+    results["match"] = all_match
+    results["num_matched"] = sum(1 for d in results["details"] if d["match"])
+    results["num_total"] = len(results["details"])
+
+    if all_match:
+        print(f"\n  ✓ All {len(prompts)} outputs match!")
+    else:
+        matched = results["num_matched"]
+        print(f"\n  ✗ {matched}/{len(prompts)} outputs match")
+
+    # Save results
+    with open(result_dir / "correctness_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+    return results
+
+
+# =========================================================================
 # Orchestrator: per workload × mode × concurrency
 # =========================================================================
 
@@ -792,6 +917,15 @@ def main() -> None:
     print(f"  Request rate    : {args.request_rate}")
     print(f"  Result dir      : {args.result_dir}")
 
+    # ---- Correctness validation (optional, runs first) ----
+    correctness_results = None
+    if args.correctness:
+        correctness_dir = result_dir / "correctness"
+        correctness_dir.mkdir(parents=True, exist_ok=True)
+        correctness_results = run_correctness_check(
+            args, correctness_dir, args.correctness_samples,
+        )
+
     all_summaries: dict[str, dict[str, dict]] = {}
     # all_summaries[workload][mode] = { mode, workload, concurrency_results }
 
@@ -896,6 +1030,12 @@ def main() -> None:
         "results": all_summaries,
         "summary_table": summary_table,
     }
+    if correctness_results is not None:
+        final_output["correctness"] = {
+            "all_match": correctness_results.get("match", False),
+            "num_matched": correctness_results.get("num_matched", 0),
+            "num_total": correctness_results.get("num_total", 0),
+        }
     summary_path = result_dir / "summary.json"
     with open(summary_path, "w") as f:
         json.dump(final_output, f, indent=2, default=str)
