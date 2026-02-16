@@ -282,6 +282,14 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         if self._forward_context is None or self._kv_caches is None:
             return
         for next_layer in self._orchestrator.plan_prefetch(layer_name):
+            # Before prefetching into the shared tensor, ensure any
+            # in-flight save from the previous occupant has completed.
+            next_idx = self._layer_index.get(next_layer, -1)
+            prev_occupant_idx = next_idx - self._num_physical_tensors
+            if prev_occupant_idx >= 0:
+                prev_occupant = self._layer_names[prev_occupant_idx]
+                self._worker_state.wait_for_layer_save(prev_occupant)
+
             kv_layer = self._kv_caches[next_layer]
             attn_metadata = self._forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
@@ -303,12 +311,11 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             return
 
         # ------------------------------------------------------------------
-        # Prefill step: stage the FULL layer KV to CPU.
-        # This captures the real attention output from the model so that
-        # subsequent decode steps can prefetch it layer-by-layer.
+        # Prefill step: stage the layer KV to CPU.
+        # Only copy the blocks that are actually in use (up to max_seq_len),
+        # not the full shared tensor.  This keeps CPU memory manageable.
         # ------------------------------------------------------------------
         if self._has_prefill_work:
-            self._worker_state.ensure_cpu_buffer(layer_name, kv_layer)
             max_seq_len = self._get_max_seq_len(attn_metadata)
             kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
             self._worker_state.stage_to_cpu(layer_name, kv_view)
@@ -335,7 +342,6 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             return
         # Fall back to full staging if this is the first time we see the
         # layer in decode mode.
-        self._worker_state.ensure_cpu_buffer(layer_name, kv_layer)
         max_seq_len = self._get_max_seq_len(attn_metadata)
         kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
         self._worker_state.stage_to_cpu(layer_name, kv_view)

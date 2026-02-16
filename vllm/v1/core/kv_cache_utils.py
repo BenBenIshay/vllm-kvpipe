@@ -1087,14 +1087,7 @@ def _get_pipelining_block_inflation(
     decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
     enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
     k_window = int(getattr(cache_cfg, "kv_k_window", 0))
-    logger.info(
-        "_get_pipelining_block_inflation: enable_pip=%s, decode_only=%s, "
-        "k_window=%d, num_layers=%d, cache_cfg_type=%s",
-        enable_pip, decode_only, k_window, num_layers,
-        type(cache_cfg).__name__,
-    )
     if not enable_pip and not decode_only:
-        logger.info("  -> returning False (not enabled)")
         return False, 0, False
     # Note: free_original_kv_cache is no longer required.  The K+1 tensor
     # layout inherently uses only (k_window+1)/num_layers of the memory.
@@ -1155,31 +1148,28 @@ def get_kv_cache_config_from_groups(
             # + 1 spare for loading the next layer from CPU.  Layers map
             # to tensors round-robin: layer_i → tensor[i % (K+1)].
             #
-            # Block pool is inflated by num_layers / (K+1) so the
-            # scheduler can admit proportionally more concurrent requests.
+            # Phase-1: keep num_blocks = num_blocks_base (same concurrency).
+            # GPU memory drops from num_layers to (K+1) tensors.
             num_physical_tensors = k_window + 1
-            # per_layer_page_size is the cost of one block in ONE layer.
             per_layer_page_size = total_page_size // num_layers
-            num_blocks_pipelined = max(
-                int(available_memory
-                    // (per_layer_page_size * num_physical_tensors)),
-                num_blocks_base,
-            )
-            num_blocks = num_blocks_pipelined
+            num_blocks = num_blocks_base
 
+            gpu_mem = per_layer_page_size * num_blocks * num_physical_tensors
+            baseline_mem = total_page_size * num_blocks_base
             logger.info(
                 "KV pipelining: K+1 tensor layout with %d physical "
                 "tensors (k_window=%d, num_layers=%d, decode_only=%s). "
-                "Block pool: %d (base: %d, ratio=%.1fx). "
-                "Memory per tensor: %.2f GiB",
+                "Block pool: %d (same as baseline). "
+                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
+                "savings: %.1f%%)",
                 num_physical_tensors,
                 k_window,
                 num_layers,
                 decode_only,
-                num_blocks_pipelined,
-                num_blocks_base,
-                num_blocks_pipelined / max(num_blocks_base, 1),
-                per_layer_page_size * num_blocks_pipelined / (1 << 30),
+                num_blocks,
+                gpu_mem / (1 << 30),
+                baseline_mem / (1 << 30),
+                (1.0 - gpu_mem / max(baseline_mem, 1)) * 100,
             )
 
             # Build K+1 tensors with round-robin layer assignment.
@@ -1194,12 +1184,10 @@ def get_kv_cache_config_from_groups(
                 ]
                 kv_cache_tensors.append(
                     KVCacheTensor(
-                        size=per_layer_page_size * num_blocks_pipelined,
+                        size=per_layer_page_size * num_blocks,
                         shared_by=shared,
                     )
                 )
-            # No num_physical_blocks constraint — every block ID is valid
-            # because every tensor has num_blocks_pipelined entries.
         else:
             tensor_blocks = num_blocks_base
             num_blocks = num_blocks_base
@@ -1236,25 +1224,35 @@ def get_kv_cache_config_from_groups(
         )
         if should_inflate:
             num_physical_tensors = k_window + 1
-            num_blocks_pipelined = get_num_blocks(
-                vllm_config, num_physical_tensors, available_memory, page_size
-            )
-            num_blocks_pipelined = max(num_blocks_pipelined, num_blocks_base)
-            num_blocks = num_blocks_pipelined
+            # ---- Phase-1: same concurrency, less GPU memory ----
+            # Keep num_blocks = num_blocks_base (same concurrency as
+            # baseline).  GPU memory drops from group_size tensors to
+            # (K+1) tensors, freeing (group_size - K - 1) tensors' worth
+            # of HBM for other uses.
+            #
+            # In a future phase, the block pool could be inflated to
+            # admit more concurrent requests (requires proportionally
+            # more CPU memory for layer staging).
+            num_blocks = num_blocks_base
+
+            gpu_mem_per_tensor = page_size * num_blocks / (1 << 30)
+            gpu_mem_total = gpu_mem_per_tensor * num_physical_tensors
+            baseline_gpu_mem = page_size * num_blocks * group_size / (1 << 30)
 
             logger.info(
                 "KV pipelining (general): K+1 layout with %d physical "
                 "tensors (k_window=%d, group_size=%d, decode_only=%s). "
-                "Block pool: %d (base: %d, ratio=%.1fx). "
-                "Memory per tensor: %.2f GiB",
+                "Block pool: %d (same as baseline). "
+                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
+                "savings: %.1f%%)",
                 num_physical_tensors,
                 k_window,
                 group_size,
                 decode_only,
-                num_blocks_pipelined,
-                num_blocks_base,
-                num_blocks_pipelined / max(num_blocks_base, 1),
-                page_size * num_blocks_pipelined / (1 << 30),
+                num_blocks,
+                gpu_mem_total,
+                baseline_gpu_mem,
+                (1.0 - gpu_mem_total / max(baseline_gpu_mem, 1e-9)) * 100,
             )
 
             # Build K+1 tensors.  For a single-group model (most common),
@@ -1274,7 +1272,7 @@ def get_kv_cache_config_from_groups(
                     ]
                     kv_cache_tensors.append(
                         KVCacheTensor(
-                            size=page_size * num_blocks_pipelined,
+                            size=page_size * num_blocks,
                             shared_by=shared,
                         )
                     )
@@ -1290,7 +1288,7 @@ def get_kv_cache_config_from_groups(
                             )
                     kv_cache_tensors.append(
                         KVCacheTensor(
-                            size=page_size * num_blocks_pipelined,
+                            size=page_size * num_blocks,
                             shared_by=shared_by,
                         )
                     )
