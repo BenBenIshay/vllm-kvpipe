@@ -186,14 +186,26 @@ class LayerwisePipeliningState:
         )
 
     def prefetch_to_gpu(self, layer_name: str, kv_layer: torch.Tensor) -> None:
-        """Asynchronously prefetch the layer KV cache back to GPU memory."""
+        """Asynchronously prefetch the layer KV cache back to GPU memory.
+
+        If the CPU buffer is larger than *kv_layer* (e.g. the GPU view is a
+        seq-len slice of the full tensor), only the matching leading portion
+        of the CPU buffer is copied.
+        """
         state = self._layers.get(layer_name)
         if state is None:
             return
         if state.ready_event is not None:
             return
+        cpu_buf = state.cpu_buffer
+        if cpu_buf.shape != kv_layer.shape:
+            bd = self._block_dim(kv_layer)
+            dst_blocks = kv_layer.shape[bd]
+            slicer = [slice(None)] * kv_layer.ndim
+            slicer[bd] = slice(0, dst_blocks)
+            cpu_buf = cpu_buf[tuple(slicer)]
         with torch.cuda.stream(self._stream):
-            kv_layer.copy_(state.cpu_buffer, non_blocking=True)
+            kv_layer.copy_(cpu_buf, non_blocking=True)
             state.ready_event = torch.cuda.Event(blocking=False)
             state.ready_event.record(self._stream)
 
@@ -204,6 +216,20 @@ class LayerwisePipeliningState:
             return
         torch.cuda.current_stream().wait_event(state.ready_event)
         state.ready_event = None
+
+    def wait_for_layer_save(self, layer_name: str) -> None:
+        """Wait for a specific layer's async CPU staging to complete.
+
+        This is needed when physical GPU tensors are shared among layers
+        (K+1 tensor layout): before a new layer writes to a tensor, any
+        in-flight GPU→CPU copy from the tensor's previous occupant must
+        finish first.
+        """
+        state = self._layers.get(layer_name)
+        if state is None or state.save_event is None:
+            return
+        torch.cuda.current_stream().wait_event(state.save_event)
+        state.save_event = None
 
     def wait_for_saves(self) -> None:
         """Order the current stream after outstanding async saves."""

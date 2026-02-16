@@ -190,6 +190,19 @@ def parse_args() -> argparse.Namespace:
 # Server management
 # =========================================================================
 
+def _cleanup_gpu_and_port(port: int) -> None:
+    """Kill any leftover processes on the target port and free GPU memory."""
+    # Kill processes on port
+    try:
+        result = subprocess.run(
+            ["fuser", "-k", f"{port}/tcp"],
+            capture_output=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(1)
+
+
 def _wait_for_server(port: int, timeout: int) -> bool:
     """Poll /health until the server is ready."""
     url = f"http://127.0.0.1:{port}/health"
@@ -257,10 +270,13 @@ def launch_server(
         cmd += [
             "--enable-kv-pipelining",
             "--kv-k-window", str(args.k_window),
-            "--free-original-kv-cache",
             "--kv-transfer-config", json.dumps(kv_config),
             "--enable-prefix-caching", "false",
         ]
+        # K+1 tensor layout: only (k_window+1) physical GPU tensors are
+        # allocated, shared round-robin across all layers.  This gives
+        # num_layers/(K+1) more blocks for the scheduler.  No
+        # --free-original-kv-cache needed.
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -649,6 +665,7 @@ def run_correctness_check(
     results = {"prompts": [], "match": True, "details": []}
 
     for mode in ["baseline", "pipelined"]:
+        _cleanup_gpu_and_port(args.port)
         log_file = str(result_dir / f"server_correctness_{mode}.log")
         print(f"\n  Launching {mode} server for correctness check ...")
         proc = launch_server(args, mode, max_num_seqs=4, log_file=log_file)
@@ -727,6 +744,8 @@ def run_evaluation(
     """Run all concurrency levels for a given (workload, mode) pair."""
     max_conc = max(args.concurrency)
     log_file = str(workload_dir / f"server_{mode}.log")
+
+    _cleanup_gpu_and_port(args.port)
 
     print(f"\n  Launching server [{mode}] ...")
     proc = launch_server(args, mode, max_num_seqs=max_conc, log_file=log_file)
