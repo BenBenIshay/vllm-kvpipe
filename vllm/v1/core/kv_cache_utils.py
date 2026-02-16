@@ -1087,7 +1087,14 @@ def _get_pipelining_block_inflation(
     decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
     enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
     k_window = int(getattr(cache_cfg, "kv_k_window", 0))
+    logger.info(
+        "_get_pipelining_block_inflation: enable_pip=%s, decode_only=%s, "
+        "k_window=%d, num_layers=%d, cache_cfg_type=%s",
+        enable_pip, decode_only, k_window, num_layers,
+        type(cache_cfg).__name__,
+    )
     if not enable_pip and not decode_only:
+        logger.info("  -> returning False (not enabled)")
         return False, 0, False
     # Note: free_original_kv_cache is no longer required.  The K+1 tensor
     # layout inherently uses only (k_window+1)/num_layers of the memory.

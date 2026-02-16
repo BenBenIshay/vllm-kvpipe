@@ -577,6 +577,9 @@ class EngineArgs:
     kv_offloading_backend: KVOffloadingBackend | None = (
         CacheConfig.kv_offloading_backend
     )
+    enable_kv_pipelining: bool = CacheConfig.enable_kv_pipelining
+    kv_k_window: int = CacheConfig.kv_k_window
+    free_original_kv_cache: bool = CacheConfig.free_original_kv_cache
     tokens_only: bool = False
 
     def __post_init__(self):
@@ -1432,6 +1435,9 @@ class EngineArgs:
             mamba_block_size=self.mamba_block_size,
             kv_offloading_size=self.kv_offloading_size,
             kv_offloading_backend=self.kv_offloading_backend,
+            enable_kv_pipelining=self.enable_kv_pipelining,
+            kv_k_window=self.kv_k_window,
+            free_original_kv_cache=self.free_original_kv_cache,
         )
 
         ray_runtime_env = None
