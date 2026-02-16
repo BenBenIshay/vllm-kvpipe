@@ -849,15 +849,22 @@ class VllmConfig:
                     "Disable prefix caching to avoid incompatibilities."
                 )
             kv_transfer_config = self.kv_transfer_config
+            _pipelining_connectors = {
+                "LayerwisePipelinedConnector",
+                "PipelinedDecodeBenchConnector",
+            }
             if (
                 kv_transfer_config is None
-                or kv_transfer_config.kv_connector != "LayerwisePipelinedConnector"
+                or kv_transfer_config.kv_connector
+                not in _pipelining_connectors
             ):
                 logger.warning_once(
                     "KV pipelining is enabled but the KV connector is not "
-                    "LayerwisePipelinedConnector. "
+                    "a pipelining-aware connector. "
                     "Set --kv-transfer-config "
-                    "'{\"kv_connector\":\"LayerwisePipelinedConnector\"}'."
+                    "'{\"kv_connector\":\"LayerwisePipelinedConnector\"}' "
+                    "or "
+                    "'{\"kv_connector\":\"PipelinedDecodeBenchConnector\"}'."
                 )
         current_platform.check_and_update_config(self)
 

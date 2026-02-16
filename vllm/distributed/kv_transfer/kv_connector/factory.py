@@ -207,3 +207,15 @@ KVConnectorFactory.register_connector(
     "vllm.distributed.kv_transfer.kv_connector.v1.layerwise_pipelined_connector",
     "LayerwisePipelinedConnector",
 )
+
+KVConnectorFactory.register_connector(
+    "PipelinedDecodeBenchConnector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.pipelined_decode_bench_connector",
+    "PipelinedDecodeBenchConnector",
+)
+
+KVConnectorFactory.register_connector(
+    "PrefillStagingPipelinedConnector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.prefill_staging_pipelined_connector",
+    "PrefillStagingPipelinedConnector",
+)
