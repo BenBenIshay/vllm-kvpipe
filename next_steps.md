@@ -250,6 +250,79 @@ Expected results:
    `--decode-only-pipelining`) to measure the maximum number of concurrent
    decode requests (~num_layers/k_window improvement).
 
+## 10) Comprehensive Evaluation Benchmark  [DONE]
+
+A single evaluation script that compares baseline (DecodeBenchConnector,
+all KV on GPU) vs pipelined (PrefillStagingPipelinedConnector, real prefill
++ CPU→GPU layer-wise decode) across four workloads using `vllm bench serve`
+as the metrics-collection client.
+
+### Workloads
+
+1. **random** — synthetic prompts of fixed token length (vLLM built-in
+   random dataset).
+2. **sharegpt** — real multi-turn QA conversations from ShareGPT.
+3. **longbench** — long-context QA from THUDM/LongBench (auto-download
+   from HuggingFace, converted to JSONL for the custom dataset loader).
+4. **multi_round** — emulated multi-turn chat with growing context
+   (sequential turns with increasing input length per "session").
+
+### Metrics (decode-focused)
+
+- TTFT, TPOT, ITL (mean + p99), E2EL — all in milliseconds
+- Output throughput (tok/s)
+- Request throughput (req/s)
+- Max concurrency before failure
+
+### Correctness validation
+
+`--correctness` sends identical prompts at temperature=0 to both modes
+and compares outputs token-by-token.
+
+### Files
+
+- `benchmarks/kv_pipelining_bench/eval_kv_pipelining.py`
+
+### Usage
+
+```bash
+# Quick random-only test:
+python benchmarks/kv_pipelining_bench/eval_kv_pipelining.py \
+    --model meta-llama/Meta-Llama-3.1-8B \
+    --workloads random \
+    --modes baseline pipelined \
+    --k-window 4
+
+# Full paper evaluation (all workloads + correctness):
+python benchmarks/kv_pipelining_bench/eval_kv_pipelining.py \
+    --model meta-llama/Meta-Llama-3.1-8B \
+    --workloads random sharegpt longbench multi_round \
+    --modes baseline pipelined \
+    --k-window 4 \
+    --concurrency 1 4 16 64 \
+    --correctness
+
+# ShareGPT with local dataset:
+python benchmarks/kv_pipelining_bench/eval_kv_pipelining.py \
+    --model meta-llama/Meta-Llama-3.1-8B \
+    --workloads sharegpt \
+    --sharegpt-path /data/ShareGPT_V3_unfiltered.json \
+    --modes baseline pipelined
+```
+
+### Output
+
+Results saved to `--result-dir` (default `/tmp/kv_pipelining_eval/`):
+```
+<result-dir>/
+  <workload>/
+    results_<mode>_conc<N>.json   — raw vllm bench serve output
+    server_<mode>.log             — server stdout/stderr
+  correctness/
+    correctness_results.json      — token-level comparison
+  summary.json                    — aggregated cross-mode comparison
+```
+
 ## 11) Future: dynamic block pool expansion
 
 Current approach inflates the pool at init time.  A more robust approach would
