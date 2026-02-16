@@ -1085,11 +1085,12 @@ def _get_pipelining_block_inflation(
     """
     cache_cfg = vllm_config.cache_config
     decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
-    if not getattr(cache_cfg, "enable_kv_pipelining", False) and not decode_only:
+    enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
+    k_window = int(getattr(cache_cfg, "kv_k_window", 0))
+    if not enable_pip and not decode_only:
         return False, 0, False
     # Note: free_original_kv_cache is no longer required.  The K+1 tensor
     # layout inherently uses only (k_window+1)/num_layers of the memory.
-    k_window = int(getattr(cache_cfg, "kv_k_window", 0))
     if k_window <= 0 or k_window >= num_layers:
         return False, 0, False
     return True, k_window, decode_only
@@ -1232,50 +1233,75 @@ def get_kv_cache_config_from_groups(
                 vllm_config, num_physical_tensors, available_memory, page_size
             )
             num_blocks_pipelined = max(num_blocks_pipelined, num_blocks_base)
+            num_blocks = num_blocks_pipelined
 
-            if decode_only:
-                _DECODE_ONLY_MIN_BLOCKS = 32
-                tensor_blocks = min(num_blocks_base, _DECODE_ONLY_MIN_BLOCKS)
-                logger.info(
-                    "KV pipelining general (decode-only P/D): block pool = %d "
-                    "(per-layer placeholder = %d blocks, k_window=%d, "
-                    "group_size=%d, ratio vs base=%.1fx)",
-                    num_blocks_pipelined,
-                    tensor_blocks,
-                    k_window,
-                    group_size,
-                    num_blocks_pipelined / max(num_blocks_base, 1),
-                )
-                num_blocks = num_blocks_pipelined
-                num_physical_blocks = None
+            logger.info(
+                "KV pipelining (general): K+1 layout with %d physical "
+                "tensors (k_window=%d, group_size=%d, decode_only=%s). "
+                "Block pool: %d (base: %d, ratio=%.1fx). "
+                "Memory per tensor: %.2f GiB",
+                num_physical_tensors,
+                k_window,
+                group_size,
+                decode_only,
+                num_blocks_pipelined,
+                num_blocks_base,
+                num_blocks_pipelined / max(num_blocks_base, 1),
+                page_size * num_blocks_pipelined / (1 << 30),
+            )
+
+            # Build K+1 tensors.  For a single-group model (most common),
+            # layers are assigned round-robin.  For multi-group models,
+            # each tensor is shared by the corresponding layers from all
+            # groups (same as baseline) but we only create K+1 of them.
+            kv_cache_tensors = []
+            if len(kv_cache_groups) == 1:
+                # Single group: round-robin across K+1 tensors.
+                layer_names = kv_cache_groups[0].layer_names
+                for t in range(num_physical_tensors):
+                    shared = [
+                        layer_names[i]
+                        for i in range(
+                            t, len(layer_names), num_physical_tensors
+                        )
+                    ]
+                    kv_cache_tensors.append(
+                        KVCacheTensor(
+                            size=page_size * num_blocks_pipelined,
+                            shared_by=shared,
+                        )
+                    )
             else:
-                tensor_blocks = num_blocks_base
-                logger.info(
-                    "KV pipelining (general): inflated block pool from "
-                    "%d to %d (k_window=%d, group_size=%d, ratio=%.1fx)",
-                    num_blocks_base,
-                    num_blocks_pipelined,
-                    k_window,
-                    group_size,
-                    num_blocks_pipelined / max(num_blocks_base, 1),
-                )
-                num_blocks = num_blocks_pipelined
-                num_physical_blocks = num_blocks_base
+                # Multi-group: use min(K+1, group_size) tensors.
+                n_tensors = min(num_physical_tensors, group_size)
+                for i in range(n_tensors):
+                    shared_by = []
+                    for j in range(len(kv_cache_groups)):
+                        if i < len(kv_cache_groups[j].layer_names):
+                            shared_by.append(
+                                kv_cache_groups[j].layer_names[i]
+                            )
+                    kv_cache_tensors.append(
+                        KVCacheTensor(
+                            size=page_size * num_blocks_pipelined,
+                            shared_by=shared_by,
+                        )
+                    )
         else:
             tensor_blocks = num_blocks_base
             num_blocks = num_blocks_base
 
-        kv_cache_tensors = []
-        for i in range(group_size):
-            shared_by = []
-            for j in range(len(kv_cache_groups)):
-                if i < len(kv_cache_groups[j].layer_names):
-                    shared_by.append(kv_cache_groups[j].layer_names[i])
-            kv_cache_tensors.append(
-                KVCacheTensor(
-                    size=page_size * tensor_blocks, shared_by=shared_by
+            kv_cache_tensors = []
+            for i in range(group_size):
+                shared_by = []
+                for j in range(len(kv_cache_groups)):
+                    if i < len(kv_cache_groups[j].layer_names):
+                        shared_by.append(kv_cache_groups[j].layer_names[i])
+                kv_cache_tensors.append(
+                    KVCacheTensor(
+                        size=page_size * tensor_blocks, shared_by=shared_by
+                    )
                 )
-            )
 
     return KVCacheConfig(
         num_blocks=num_blocks,

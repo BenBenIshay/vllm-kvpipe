@@ -271,7 +271,7 @@ def launch_server(
             "--enable-kv-pipelining",
             "--kv-k-window", str(args.k_window),
             "--kv-transfer-config", json.dumps(kv_config),
-            "--enable-prefix-caching", "false",
+            "--no-enable-prefix-caching",
         ]
         # K+1 tensor layout: only (k_window+1) physical GPU tensors are
         # allocated, shared round-robin across all layers.  This gives
