@@ -1224,35 +1224,52 @@ def get_kv_cache_config_from_groups(
         )
         if should_inflate:
             num_physical_tensors = k_window + 1
-            # ---- Phase-1: same concurrency, less GPU memory ----
-            # Keep num_blocks = num_blocks_base (same concurrency as
-            # baseline).  GPU memory drops from group_size tensors to
-            # (K+1) tensors, freeing (group_size - K - 1) tensors' worth
-            # of HBM for other uses.
-            #
-            # In a future phase, the block pool could be inflated to
-            # admit more concurrent requests (requires proportionally
-            # more CPU memory for layer staging).
-            num_blocks = num_blocks_base
+            cache_cfg = vllm_config.cache_config
+            inflate_pool = bool(
+                getattr(cache_cfg, "inflate_kv_pool", False)
+            )
+
+            if inflate_pool:
+                # ---- Phase-2: inflate block pool for more capacity ----
+                # Use the same total GPU memory as baseline but spread it
+                # across only K+1 tensors.  Each tensor is larger (more
+                # blocks), giving the scheduler a proportionally larger
+                # block pool.  CPU pinned memory backs the full KV for
+                # all layers.
+                inflation_factor = group_size / num_physical_tensors
+                num_blocks = int(num_blocks_base * inflation_factor)
+            else:
+                # ---- Phase-1: same concurrency, less GPU memory ----
+                # Keep num_blocks = num_blocks_base (same concurrency as
+                # baseline).  GPU memory drops from group_size tensors to
+                # (K+1) tensors, freeing HBM for other uses.
+                num_blocks = num_blocks_base
 
             gpu_mem_per_tensor = page_size * num_blocks / (1 << 30)
             gpu_mem_total = gpu_mem_per_tensor * num_physical_tensors
-            baseline_gpu_mem = page_size * num_blocks * group_size / (1 << 30)
+            baseline_gpu_mem = page_size * num_blocks_base * group_size / (1 << 30)
 
+            pool_label = (
+                f"{num_blocks} (inflated {num_blocks/num_blocks_base:.1f}x)"
+                if inflate_pool
+                else f"{num_blocks} (same as baseline)"
+            )
             logger.info(
                 "KV pipelining (general): K+1 layout with %d physical "
                 "tensors (k_window=%d, group_size=%d, decode_only=%s). "
-                "Block pool: %d (same as baseline). "
+                "Block pool: %s. "
                 "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
                 "savings: %.1f%%)",
                 num_physical_tensors,
                 k_window,
                 group_size,
                 decode_only,
-                num_blocks,
+                pool_label,
                 gpu_mem_total,
                 baseline_gpu_mem,
-                (1.0 - gpu_mem_total / max(baseline_gpu_mem, 1e-9)) * 100,
+                (1.0 - gpu_mem_total / max(baseline_gpu_mem, 1e-9)) * 100
+                if not inflate_pool
+                else 0.0,
             )
 
             # Build K+1 tensors.  For a single-group model (most common),

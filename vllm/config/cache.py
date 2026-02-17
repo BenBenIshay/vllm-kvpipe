@@ -170,6 +170,14 @@ class CacheConfig:
     """When KV pipelining is enabled, allow freeing per-layer KV buffers after
     binding layers to the window.  Combined with the allocator integration
     this inflates the block pool so more concurrent requests can be served."""
+    inflate_kv_pool: bool = False
+    """When KV pipelining is enabled, inflate the block pool by
+    num_layers / (kv_k_window + 1).  The K+1 physical GPU tensors are
+    enlarged to hold the inflated block count while still using the same
+    total GPU KV memory as baseline.  This allows the scheduler to admit
+    proportionally more concurrent decode requests.  Requires enough CPU
+    pinned memory for the additional layer staging."""
+
     decode_only_pipelining: bool = False
     """Decode-only P/D disaggregation mode.  When enabled, the node assumes
     KV caches arrive pre-computed from a remote prefill node so no local

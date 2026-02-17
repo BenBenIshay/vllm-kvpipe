@@ -580,6 +580,7 @@ class EngineArgs:
     enable_kv_pipelining: bool = CacheConfig.enable_kv_pipelining
     kv_k_window: int = CacheConfig.kv_k_window
     free_original_kv_cache: bool = CacheConfig.free_original_kv_cache
+    inflate_kv_pool: bool = CacheConfig.inflate_kv_pool
     tokens_only: bool = False
 
     def __post_init__(self):
@@ -936,6 +937,10 @@ class EngineArgs:
         cache_group.add_argument(
             "--free-original-kv-cache",
             **cache_kwargs["free_original_kv_cache"]
+        )
+        cache_group.add_argument(
+            "--inflate-kv-pool",
+            **cache_kwargs["inflate_kv_pool"]
         )
         cache_group.add_argument(
             "--decode-only-pipelining",
@@ -1438,6 +1443,7 @@ class EngineArgs:
             enable_kv_pipelining=self.enable_kv_pipelining,
             kv_k_window=self.kv_k_window,
             free_original_kv_cache=self.free_original_kv_cache,
+            inflate_kv_pool=self.inflate_kv_pool,
         )
 
         ray_runtime_env = None
