@@ -181,6 +181,39 @@ def test_get_num_new_matched_tokens_returns_zero():
     assert is_async is False
 
 
+def test_build_connector_meta_chunked_prefill_running_request():
+    """Chunked prefill (running request, no new reqs) must stay prefill work.
+
+    If misclassified as decode-only, pipelined prefetch runs during prefill
+    and corrupts KV.
+    """
+    connector = _make_connector(k_window=2)
+    connector._req_prompt_tokens["r1"] = 100
+    scheduler_output = SchedulerOutput(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=CachedRequestData(
+            req_ids=["r1"],
+            resumed_req_ids=set(),
+            new_token_ids=[[]],
+            all_token_ids={},
+            new_block_ids=[None],
+            num_computed_tokens=[50],
+            num_output_tokens=[0],
+        ),
+        num_scheduled_tokens={"r1": 8192},
+        total_num_scheduled_tokens=8192,
+        scheduled_spec_decode_tokens={},
+        scheduled_encoder_inputs={},
+        num_common_prefix_blocks=[0],
+        finished_req_ids=set(),
+        free_encoder_mm_hashes=[],
+    )
+    metadata = connector.build_connector_meta(scheduler_output)
+    assert metadata.has_prefill_work is True
+    assert metadata.has_decode_work is False
+    assert len(metadata.layers_to_prefetch) == 0
+
+
 def test_build_connector_meta_pure_prefill():
     """A pure prefill step should have has_prefill_work=True and
     has_decode_work=False."""

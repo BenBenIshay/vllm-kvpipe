@@ -129,6 +129,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--offloading-size-gb", type=float, default=40.0,
                    help="CPU memory budget for native offloading (GB)")
 
+    # LMCache params
+    p.add_argument("--lmcache-cpu-size-gb", type=float, default=40.0,
+                   help="CPU memory budget for LMCache offloading (GB)")
+
     # Evaluation scope
     p.add_argument(
         "--workloads", nargs="+",
@@ -138,7 +142,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--modes", nargs="+", default=["baseline", "pipelined"],
-        choices=["baseline", "pipelined", "pipelined_inflated", "offloading"],
+        choices=["baseline", "pipelined", "pipelined_inflated", "offloading",
+                 "lmcache"],
         help="Server modes to compare",
     )
 
@@ -338,12 +343,33 @@ def launch_server(
             "--disable-hybrid-kv-cache-manager",
         ]
 
+    elif mode == "lmcache":
+        # LMCache CPU offloading for comparison.
+        kv_config = {
+            "kv_connector": "LMCacheConnectorV1",
+            "kv_role": "kv_both",
+            "use_native": False,
+        }
+        cmd += [
+            "--kv-transfer-config", json.dumps(kv_config),
+        ]
+
     else:
         raise ValueError(f"Unknown mode: {mode}")
+
+    env = os.environ.copy()
+    if mode == "lmcache":
+        env["LMCACHE_LOCAL_CPU"] = "True"
+        env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+            getattr(args, "lmcache_cpu_size_gb", 40.0)
+        )
+        env["LMCACHE_CHUNK_SIZE"] = "256"
+        env["LMCACHE_USE_EXPERIMENTAL"] = "True"
 
     log_fh = open(log_file, "w")
     proc = subprocess.Popen(
         cmd, stdout=log_fh, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env=env,
     )
     return proc
 

@@ -46,8 +46,9 @@ Usage
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 import torch
 
@@ -59,7 +60,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.logger import init_logger
-from vllm.utils.math_utils import cdiv
 from vllm.v1.kv_cache_pipelining import (
     LayerwisePipeliningState,
     PipeliningOrchestrator,
@@ -77,6 +77,38 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _env_truthy(name: str) -> bool:
+    v = os.environ.get(name, "")
+    return v in ("1", "true", "True", "yes", "YES")
+
+
+def _pipeline_debug_enabled() -> bool:
+    """Set ``VLLM_PIPELINE_DEBUG_LOG=1`` for detailed K+1 connector logs."""
+    return _env_truthy("VLLM_PIPELINE_DEBUG_LOG")
+
+
+def _layer_names_aligned_with_kv_cache(
+    vllm_config: "VllmConfig",
+    kv_cache_config: "KVCacheConfig | None",
+) -> list[str]:
+    """Layer order for K+1 pipelining must match ``get_kv_cache_config`` / tensor
+    round-robin (``kv_cache_groups[*].layer_names``), not only
+    ``static_forward_context`` (which can include extra ``AttentionLayerBase``
+    modules without their own KV tensors).
+    """
+    if kv_cache_config is not None and kv_cache_config.kv_cache_groups:
+        names: list[str] = []
+        for group in kv_cache_config.kv_cache_groups:
+            names.extend(group.layer_names)
+        if names:
+            return names
+    return list(
+        get_layers_from_vllm_config(
+            vllm_config, AttentionLayerBase, None
+        ).keys()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Metadata
 # ---------------------------------------------------------------------------
@@ -89,7 +121,11 @@ class PrefillStagingPipelinedConnectorMetadata(KVConnectorMetadata):
     has_decode_work: bool = False
     active_decode_req_ids: list[str] = field(default_factory=list)
     decode_max_seq_len: int | None = None
+    decode_max_block_id: int | None = None
     has_prefill_work: bool = False
+    # Disjoint inclusive [lo, hi] spans along the physical block dimension for
+    # all active requests. Empty => stage/prefetch the full KV tensor (fallback).
+    kv_block_runs: list[tuple[int, int]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +161,28 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self._k_window = int(getattr(cache_cfg, "kv_k_window", 4))
         self._block_size = cache_cfg.block_size
 
-        # Layer list (deterministic order)
-        self._layer_names: list[str] = list(
+        # Layer list: must match K+1 tensor round-robin in kv_cache_utils
+        # (kv_cache_groups layer order), not merely all AttentionLayerBase keys.
+        fallback_attn = list(
             get_layers_from_vllm_config(
                 vllm_config, AttentionLayerBase, None
             ).keys()
         )
+        self._layer_names = _layer_names_aligned_with_kv_cache(
+            vllm_config, kv_cache_config
+        )
+        if (
+            fallback_attn
+            and self._layer_names
+            and fallback_attn != self._layer_names
+        ):
+            logger.warning(
+                "PrefillStagingPipelined: KV cache layer order differs from "
+                "AttentionLayerBase list (using KV group order). "
+                "attn_layers=%d kv_group_layers=%d",
+                len(fallback_attn),
+                len(self._layer_names),
+            )
         self._layer_index: dict[str, int] = {
             name: idx for idx, name in enumerate(self._layer_names)
         }
@@ -146,14 +198,33 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self._has_decode_work = False
         self._has_prefill_work = False
         self._decode_max_seq_len: int | None = None
+        self._decode_max_block_id: int | None = None
+        self._kv_block_runs: list[tuple[int, int]] = []
+
+        # Scheduler-side: track block IDs per request for correct decode slicing
+        # (same fix as PipelinedDecodeBenchConnector — real prefill uses pool
+        # block IDs that can exceed per-sequence block count).
+        self._active_req_blocks: dict[str, set[int]] = {}
+        # num_prompt_tokens per request — used to detect chunked-prefill steps
+        # (running request with num_computed_tokens < num_prompt_tokens must
+        # not be classified as decode-only; see build_connector_meta).
+        self._req_prompt_tokens: dict[str, int] = {}
 
         if role == KVConnectorRole.WORKER:
             self._worker_state = LayerwisePipeliningState()
+
+        # Set in register_kv_caches: True when K+1 layout shares physical tensors
+        # across layers. If False (one GPU tensor per layer), decode must not
+        # prefetch from CPU — that would overwrite correct on-GPU KV with stale
+        # or partial CPU copies.
+        self._physical_kv_is_shared: bool = True
 
         # Timing stats
         self._step_count = 0
         self._prefill_steps = 0
         self._decode_steps = 0
+        # Per execute_model forward (incremented in start_load_kv when has_work).
+        self._dbg_forward_id: int = 0
 
     # ======================================================================
     # Worker-side: KV cache registration
@@ -166,13 +237,22 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         for name, tensor in kv_caches.items():
             tid = tensor.data_ptr()
             tensor_ids.setdefault(tid, []).append(name)
+        self._physical_kv_is_shared = len(tensor_ids) < len(kv_caches)
         logger.info(
             "PrefillStagingPipelined: registered %d layers across %d "
-            "physical GPU tensors (K+1=%d)",
+            "physical GPU tensors (K+1=%d, shared_across_layers=%s)",
             len(kv_caches),
             len(tensor_ids),
             self._num_physical_tensors,
+            self._physical_kv_is_shared,
         )
+        # Pre-allocate pinned CPU buffers at full window size before the first
+        # sliced prefill ``stage_to_cpu``.  Otherwise a small buffer from the
+        # first slice can interact badly with decode ``stage_delta_to_cpu``
+        # (see ``LayerwisePipeliningState.ensure_cpu_buffer``).
+        if self._worker_state is not None:
+            for name, tensor in kv_caches.items():
+                self._worker_state.ensure_cpu_buffer(name, tensor)
 
     # ======================================================================
     # Worker-side: helpers
@@ -189,22 +269,89 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             return None
         return getattr(attn_metadata, "max_seq_len", None)
 
-    def _slice_kv_layer(
+    def _kv_span_debug_stats(
         self, kv_layer: torch.Tensor, max_seq_len: int | None
-    ) -> torch.Tensor:
-        """Return a view covering only the blocks needed for max_seq_len."""
-        if max_seq_len is None or kv_layer.ndim < 3:
-            return kv_layer
+    ) -> dict[str, Any]:
+        """Bounds for VLLM_PIPELINE_DEBUG_LOG (physical block-id span)."""
+        if kv_layer.ndim < 3:
+            return {"ndim": kv_layer.ndim, "shape": tuple(kv_layer.shape)}
         block_dim = self._get_block_dim(kv_layer)
-        max_blocks = min(
-            cdiv(max_seq_len, self._block_size),
-            kv_layer.shape[block_dim],
-        )
-        if max_blocks == kv_layer.shape[block_dim]:
-            return kv_layer
-        slicer = [slice(None)] * kv_layer.ndim
-        slicer[block_dim] = slice(0, max_blocks)
-        return kv_layer[tuple(slicer)]
+        full = int(kv_layer.shape[block_dim])
+        return {
+            "block_dim": block_dim,
+            "kv_shape": tuple(kv_layer.shape),
+            "full_blocks_along_block_dim": full,
+            "kv_block_runs": self._kv_block_runs,
+            "decode_max_block_id": self._decode_max_block_id,
+            "decode_max_seq_len": self._decode_max_seq_len,
+            "max_seq_len_arg": max_seq_len,
+            "block_size": self._block_size,
+            "data_ptr": kv_layer.data_ptr(),
+        }
+
+    @staticmethod
+    def _contiguous_runs_from_block_ids(
+        ids: Iterable[int],
+    ) -> list[tuple[int, int]]:
+        """Merge physical block ids into inclusive contiguous spans."""
+        u = sorted(set(ids))
+        if not u:
+            return []
+        out: list[tuple[int, int]] = []
+        lo = hi = u[0]
+        for x in u[1:]:
+            if x == hi + 1:
+                hi = x
+            else:
+                out.append((lo, hi))
+                lo = hi = x
+        out.append((lo, hi))
+        return out
+
+    def _stage_physical_kv_to_cpu(
+        self, layer_name: str, kv_layer: torch.Tensor
+    ) -> None:
+        runs = self._kv_block_runs
+        if not runs:
+            self._worker_state.stage_to_cpu(layer_name, kv_layer)
+        elif len(runs) == 1:
+            lo, hi = runs[0]
+            self._worker_state.stage_to_cpu_block_span(
+                layer_name, kv_layer, lo, hi
+            )
+        else:
+            self._worker_state.stage_to_cpu_block_runs(
+                layer_name, kv_layer, runs
+            )
+
+    def _prefetch_physical_kv_to_gpu(
+        self, layer_name: str, kv_layer: torch.Tensor
+    ) -> None:
+        runs = self._kv_block_runs
+        if not runs:
+            self._worker_state.prefetch_to_gpu(layer_name, kv_layer)
+        elif len(runs) == 1:
+            lo, hi = runs[0]
+            self._worker_state.prefetch_to_gpu_block_span(
+                layer_name, kv_layer, lo, hi
+            )
+        else:
+            self._worker_state.prefetch_to_gpu_block_runs(
+                layer_name, kv_layer, runs
+            )
+
+    def _log_pipeline(self, msg: str) -> None:
+        if _pipeline_debug_enabled():
+            logger.info("%s", msg)
+
+    def _fmt_slot_mapping(self, sm: torch.Tensor | None) -> str:
+        if sm is None or not isinstance(sm, torch.Tensor):
+            return "None"
+        if sm.numel() == 0:
+            return "empty"
+        mn = int(sm.min().item())
+        mx = int(sm.max().item())
+        return f"len={sm.numel()} min={mn} max={mx} dtype={sm.dtype}"
 
     # ======================================================================
     # Worker-side: main hooks
@@ -225,23 +372,38 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         if not metadata.has_work:
             return
 
+        self._dbg_forward_id += 1
         self._forward_context = forward_context
         self._has_decode_work = metadata.has_decode_work
         self._has_prefill_work = metadata.has_prefill_work
         self._decode_max_seq_len = metadata.decode_max_seq_len
+        self._decode_max_block_id = metadata.decode_max_block_id
+        self._kv_block_runs = list(metadata.kv_block_runs)
+
+        self._log_pipeline(
+            "[pipeline-debug] start_load_kv "
+            f"fwd={self._dbg_forward_id} "
+            f"has_prefill={self._has_prefill_work} has_decode={self._has_decode_work} "
+            f"decode_max_block_id={metadata.decode_max_block_id} "
+            f"decode_max_seq_len={metadata.decode_max_seq_len} "
+            f"kv_block_runs={metadata.kv_block_runs!r} "
+            f"layers_to_prefetch={metadata.layers_to_prefetch!r} "
+            f"physical_kv_shared={self._physical_kv_is_shared}"
+        )
 
         # ------------------------------------------------------------------
-        # Prefill step: no prefetching needed.  The model runs real
-        # attention and populates the GPU tensors natively.
-        # save_kv_layer will stage each layer's KV to CPU.
+        # Pure prefill (no decode-phase requests): no CPU→GPU prefetch.
+        # Mixed prefill+decode: decode requests still need prefetch below.
         # ------------------------------------------------------------------
-        if self._has_prefill_work:
-            return
 
         # ------------------------------------------------------------------
-        # Pure decode step: prefetch the first K layers from CPU → GPU.
+        # Decode step: prefetch the first K layers from CPU → GPU.
         # ------------------------------------------------------------------
         if not self._has_decode_work or self._kv_caches is None:
+            return
+        if not self._physical_kv_is_shared:
+            # One dedicated GPU tensor per layer — KV is already on GPU; never
+            # overwrite it from CPU during decode.
             return
 
         for layer_name in metadata.layers_to_prefetch:
@@ -250,8 +412,14 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata.get(layer_name)
             max_seq_len = self._get_max_seq_len(attn_metadata)
-            kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
-            self._worker_state.prefetch_to_gpu(layer_name, kv_view)
+            st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+            li = self._layer_index.get(layer_name, -1)
+            self._log_pipeline(
+                "[pipeline-debug] prefetch_batch(start_load_kv) "
+                f"fwd={self._dbg_forward_id} layer={layer_name!r} idx={li} "
+                f"{st}"
+            )
+            self._prefetch_physical_kv_to_gpu(layer_name, kv_layer)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if self._worker_state is None:
@@ -263,40 +431,69 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         # writes new KV data into it.
         # ------------------------------------------------------------------
         if self._has_prefill_work:
-            layer_idx = self._layer_index.get(layer_name, -1)
-            prev_idx = layer_idx - self._num_physical_tensors
-            if prev_idx >= 0:
-                prev_layer = self._layer_names[prev_idx]
-                self._worker_state.wait_for_layer_save(prev_layer)
-            return
+            if self._physical_kv_is_shared:
+                layer_idx = self._layer_index.get(layer_name, -1)
+                prev_idx = layer_idx - self._num_physical_tensors
+                waited_prev: str | None = None
+                if prev_idx >= 0:
+                    prev_layer = self._layer_names[prev_idx]
+                    self._worker_state.wait_for_layer_save(prev_layer)
+                    waited_prev = prev_layer
+                self._log_pipeline(
+                    "[pipeline-debug] wait_load prefill "
+                    f"fwd={self._dbg_forward_id} layer={layer_name!r} idx={layer_idx} "
+                    f"wait_save_prev={waited_prev!r}"
+                )
+            if not self._has_decode_work:
+                return
 
         # ------------------------------------------------------------------
-        # Pure decode step: wait for this layer's CPU→GPU prefetch,
+        # Decode step: wait for this layer's CPU→GPU prefetch,
         # then trigger prefetching the next layer(s) in the pipeline.
         # ------------------------------------------------------------------
         if not self._has_decode_work:
             return
+        if not self._physical_kv_is_shared:
+            return
+
+        cur_idx = self._layer_index.get(layer_name, -1)
+        self._log_pipeline(
+            "[pipeline-debug] wait_load decode before_wait_layer "
+            f"fwd={self._dbg_forward_id} layer={layer_name!r} idx={cur_idx}"
+        )
 
         self._worker_state.wait_for_layer(layer_name)
 
         if self._forward_context is None or self._kv_caches is None:
             return
-        for next_layer in self._orchestrator.plan_prefetch(layer_name):
+        planned = self._orchestrator.plan_prefetch(layer_name)
+        self._log_pipeline(
+            "[pipeline-debug] wait_load decode plan_prefetch "
+            f"fwd={self._dbg_forward_id} after_layer={layer_name!r} -> {planned!r}"
+        )
+        for next_layer in planned:
             # Before prefetching into the shared tensor, ensure any
             # in-flight save from the previous occupant has completed.
             next_idx = self._layer_index.get(next_layer, -1)
             prev_occupant_idx = next_idx - self._num_physical_tensors
+            prev_occ_name: str | None = None
             if prev_occupant_idx >= 0:
                 prev_occupant = self._layer_names[prev_occupant_idx]
                 self._worker_state.wait_for_layer_save(prev_occupant)
+                prev_occ_name = prev_occupant
 
             kv_layer = self._kv_caches[next_layer]
             attn_metadata = self._forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata.get(next_layer)
             max_seq_len = self._get_max_seq_len(attn_metadata)
-            kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
-            self._worker_state.prefetch_to_gpu(next_layer, kv_view)
+            st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+            self._log_pipeline(
+                "[pipeline-debug] prefetch_chain(wait_load) "
+                f"fwd={self._dbg_forward_id} next_layer={next_layer!r} idx={next_idx} "
+                f"wait_save_prev_occ={prev_occ_name!r} {st}"
+            )
+            self._prefetch_physical_kv_to_gpu(next_layer, kv_layer)
 
     def save_kv_layer(
         self,
@@ -311,14 +508,16 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             return
 
         # ------------------------------------------------------------------
-        # Prefill step: stage the layer KV to CPU.
-        # Only copy the blocks that are actually in use (up to max_seq_len),
-        # not the full shared tensor.  This keeps CPU memory manageable.
+        # Prefill step: stage the layer KV to CPU (physical block-id span).
         # ------------------------------------------------------------------
         if self._has_prefill_work:
             max_seq_len = self._get_max_seq_len(attn_metadata)
-            kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
-            self._worker_state.stage_to_cpu(layer_name, kv_view)
+            st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+            self._log_pipeline(
+                "[pipeline-debug] save_kv prefill "
+                f"fwd={self._dbg_forward_id} layer={layer_name!r} {st}"
+            )
+            self._stage_physical_kv_to_cpu(layer_name, kv_layer)
             return
 
         # ------------------------------------------------------------------
@@ -326,6 +525,22 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         # The full KV is already on CPU from the prefill phase; we only
         # need to update it with the newly generated token's KV.
         # ------------------------------------------------------------------
+        if not self._physical_kv_is_shared:
+            return
+
+        # Debug: full tensor staging every decode step (slow, high PCIe BW).
+        # If outputs match baseline with this set, the bug is likely in
+        # stage_delta_to_cpu / _apply_delta_updates scatter.
+        if _env_truthy("VLLM_PIPELINE_FULL_DECODE_STAGE"):
+            max_seq_len = self._get_max_seq_len(attn_metadata)
+            st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+            self._log_pipeline(
+                "[pipeline-debug] save_kv decode FULL_STAGE "
+                f"fwd={self._dbg_forward_id} layer={layer_name!r} {st}"
+            )
+            self._stage_physical_kv_to_cpu(layer_name, kv_layer)
+            return
+
         slot_mapping = getattr(attn_metadata, "slot_mapping", None)
         num_actual_tokens = getattr(
             attn_metadata, "num_actual_tokens", None
@@ -333,6 +548,15 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         if self._worker_state.has_layer(layer_name) and isinstance(
             slot_mapping, torch.Tensor
         ):
+            st = self._kv_span_debug_stats(
+                kv_layer, self._get_max_seq_len(attn_metadata)
+            )
+            self._log_pipeline(
+                "[pipeline-debug] save_kv decode DELTA "
+                f"fwd={self._dbg_forward_id} layer={layer_name!r} "
+                f"slot_mapping={self._fmt_slot_mapping(slot_mapping)} "
+                f"num_actual_tokens={num_actual_tokens!r} {st}"
+            )
             self._worker_state.stage_delta_to_cpu(
                 layer_name,
                 kv_layer,
@@ -343,8 +567,12 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         # Fall back to full staging if this is the first time we see the
         # layer in decode mode.
         max_seq_len = self._get_max_seq_len(attn_metadata)
-        kv_view = self._slice_kv_layer(kv_layer, max_seq_len)
-        self._worker_state.stage_to_cpu(layer_name, kv_view)
+        st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+        self._log_pipeline(
+            "[pipeline-debug] save_kv decode FALLBACK_FULL "
+            f"fwd={self._dbg_forward_id} layer={layer_name!r} {st}"
+        )
+        self._stage_physical_kv_to_cpu(layer_name, kv_layer)
 
     def wait_for_save(self) -> None:
         if self._worker_state is None:
@@ -360,6 +588,8 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self._has_decode_work = False
         self._has_prefill_work = False
         self._decode_max_seq_len = None
+        self._decode_max_block_id = None
+        self._kv_block_runs = []
 
         self._step_count += 1
         if self._step_count % 100 == 0:
@@ -386,7 +616,13 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        return
+        """Track block IDs for this request so decode can slice the full range."""
+        self._req_prompt_tokens[request.request_id] = request.num_prompt_tokens
+        block_groups = blocks.get_block_ids()
+        all_ids: set[int] = set()
+        for group in block_groups:
+            all_ids.update(group)
+        self._active_req_blocks[request.request_id] = all_ids
 
     # ======================================================================
     # Scheduler-side: build metadata
@@ -396,25 +632,57 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self, scheduler_output: "SchedulerOutput"
     ) -> KVConnectorMetadata:
         has_work = scheduler_output.total_num_scheduled_tokens > 0
-        has_prefill = len(scheduler_output.scheduled_new_reqs) > 0
+        # Prefill work: brand-new requests from the waiting queue, OR a
+        # running request still processing prompt tokens (chunked prefill).
+        # The old check (scheduled_new_reqs only) misclassified chunked
+        # prefill as decode-only, running pipelined prefetch during prefill
+        # and corrupting KV.
+        cached_reqs = scheduler_output.scheduled_cached_reqs
+        any_chunked_prefill = False
+        for i, req_id in enumerate(cached_reqs.req_ids):
+            n_prompt = self._req_prompt_tokens.get(req_id)
+            if n_prompt is None:
+                continue
+            if cached_reqs.num_computed_tokens[i] < n_prompt:
+                any_chunked_prefill = True
+                break
+        has_prefill = (
+            len(scheduler_output.scheduled_new_reqs) > 0 or any_chunked_prefill
+        )
 
-        # Identify decode requests
-        decode_req_ids = set(
-            scheduler_output.scheduled_cached_reqs.req_ids
-        )
-        decode_req_ids.update(
-            scheduler_output.scheduled_spec_decode_tokens.keys()
-        )
-        decode_only = not has_prefill
-        active_decode_req_ids = (
-            sorted(decode_req_ids) if decode_only else []
-        )
+        # Decode work: any request has finished its prompt and is generating
+        # (decode phase).  This must be true even when the same batch still
+        # contains chunked-prefill requests — otherwise decode_only stays false,
+        # has_decode_work becomes false, and K+1 prefetch / decode hooks are
+        # skipped while other sequences are still prefilling (conc>1 bug).
+        active_decode_req_ids: list[str] = []
+        for i, req_id in enumerate(cached_reqs.req_ids):
+            n_prompt = self._req_prompt_tokens.get(req_id)
+            if n_prompt is None:
+                continue
+            if cached_reqs.num_computed_tokens[i] >= n_prompt:
+                active_decode_req_ids.append(req_id)
+        active_decode_req_ids.sort()
         has_decode_work = len(active_decode_req_ids) > 0
 
-        # Compute decode max_seq_len for CPU→GPU slice optimization
+        # Accumulate new block IDs for decode requests (each step can add blocks).
+        for i, req_id in enumerate(cached_reqs.req_ids):
+            new_blks = cached_reqs.new_block_ids[i]
+            if new_blks is not None:
+                existing = self._active_req_blocks.get(req_id)
+                if existing is None:
+                    existing = set()
+                    self._active_req_blocks[req_id] = existing
+                for group in new_blks:
+                    existing.update(group)
+        for req_id in scheduler_output.finished_req_ids:
+            self._active_req_blocks.pop(req_id, None)
+            self._req_prompt_tokens.pop(req_id, None)
+
+        # Compute decode max_seq_len and decode_max_block_id for slicing
         decode_max_seq_len: int | None = None
+        decode_max_block_id: int | None = None
         if has_decode_work:
-            cached_reqs = scheduler_output.scheduled_cached_reqs
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens
             max_len = 0
             for req_id, num_computed in zip(
@@ -426,11 +694,26 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
                     num_computed + num_scheduled_tokens.get(req_id, 0),
                 )
             decode_max_seq_len = max_len if max_len > 0 else None
+            max_bid = -1
+            for blocks in self._active_req_blocks.values():
+                if blocks:
+                    max_bid = max(max_bid, max(blocks))
+            if max_bid >= 0:
+                decode_max_block_id = max_bid
 
         # Layers to prefetch for decode (first K layers)
         layers_to_prefetch: list[str] = []
         if self._k_window > 0 and has_work and has_decode_work:
             layers_to_prefetch = self._layer_names[: self._k_window]
+
+        kv_block_runs: list[tuple[int, int]] = []
+        merged_block_ids: list[int] = []
+        for blocks in self._active_req_blocks.values():
+            merged_block_ids.extend(blocks)
+        if merged_block_ids:
+            kv_block_runs = self._contiguous_runs_from_block_ids(
+                merged_block_ids
+            )
 
         return PrefillStagingPipelinedConnectorMetadata(
             layers_to_prefetch=layers_to_prefetch,
@@ -438,7 +721,9 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             has_decode_work=has_decode_work,
             active_decode_req_ids=active_decode_req_ids,
             decode_max_seq_len=decode_max_seq_len,
+            decode_max_block_id=decode_max_block_id,
             has_prefill_work=has_prefill,
+            kv_block_runs=kv_block_runs,
         )
 
     def request_finished(
@@ -446,4 +731,6 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
+        self._active_req_blocks.pop(request.request_id, None)
+        self._req_prompt_tokens.pop(request.request_id, None)
         return False, None

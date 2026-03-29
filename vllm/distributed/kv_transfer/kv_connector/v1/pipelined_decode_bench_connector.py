@@ -116,6 +116,7 @@ class PipelinedDecodeBenchConnectorMetadata(KVConnectorMetadata):
     has_decode_work: bool = False
     active_decode_req_ids: list[str] = field(default_factory=list)
     decode_max_seq_len: int | None = None
+    decode_max_block_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,8 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         self._pending_fills: dict[
             str, tuple[tuple[list[int], ...], int]
         ] = {}
+        # Track all block IDs per active request for correct decode slicing
+        self._active_req_blocks: dict[str, set[int]] = {}
 
         # --- Worker-side state ---
         self._kv_caches: dict[str, torch.Tensor] | None = None
@@ -180,6 +183,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         self._forward_context: ForwardContext | None = None
         self._has_decode_work = False
         self._decode_max_seq_len: int | None = None
+        self._decode_max_block_id: int | None = None
         self._window_pools: dict[WindowKey, WindowPool] = {}
         self._original_kv_cache: dict[
             tuple[str, int], torch.Tensor
@@ -366,13 +370,33 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
     def _slice_kv_layer(
         self, kv_layer: torch.Tensor, max_seq_len: int | None
     ) -> torch.Tensor:
-        if max_seq_len is None or kv_layer.ndim < 3:
+        """Return a view covering only the blocks in use.
+
+        During decode, uses the tracked max_block_id (the highest block
+        index allocated to ANY active sequence) to ensure all scattered
+        blocks are included in the transfer.  Falls back to the
+        per-sequence max_seq_len estimate when block tracking is
+        unavailable.
+        """
+        if kv_layer.ndim < 3:
             return kv_layer
-        block_size = self._block_size
-        max_blocks = cdiv(max_seq_len, block_size)
         block_dim = 1 if kv_layer.shape[0] == 2 else 0
-        max_blocks = min(max_blocks, kv_layer.shape[block_dim])
-        if max_blocks == kv_layer.shape[block_dim]:
+
+        # Prefer decode_max_block_id (covers all active sequences).
+        if self._decode_max_block_id is not None:
+            max_blocks = min(
+                self._decode_max_block_id + 1,
+                kv_layer.shape[block_dim],
+            )
+        elif max_seq_len is not None:
+            max_blocks = min(
+                cdiv(max_seq_len, self._block_size),
+                kv_layer.shape[block_dim],
+            )
+        else:
+            return kv_layer
+
+        if max_blocks <= 0 or max_blocks == kv_layer.shape[block_dim]:
             return kv_layer
         slicer = [slice(None)] * kv_layer.ndim
         slicer[block_dim] = slice(0, max_blocks)
@@ -399,6 +423,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         self._forward_context = forward_context
         self._has_decode_work = metadata.has_decode_work
         self._decode_max_seq_len = metadata.decode_max_seq_len
+        self._decode_max_block_id = metadata.decode_max_block_id
 
         # --- Phase 1: Fill + stage on first step for new requests ----------
         if metadata.reqs_to_fill:
@@ -487,16 +512,23 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         self._forward_context = None
         self._has_decode_work = False
         self._decode_max_seq_len = None
+        self._decode_max_block_id = None
         self._original_kv_cache.clear()
 
         self._step_count += 1
         if self._step_count % 100 == 0:
+            pinned_gb = (
+                self._worker_state.pinned_bytes_allocated / 1e9
+                if self._worker_state is not None
+                else 0.0
+            )
             logger.info(
                 "PipelinedDecodeBench step %d: cumulative fill=%.3fs, "
-                "stage=%.3fs",
+                "stage=%.3fs, pinned CPU memory: %.2f GB",
                 self._step_count,
                 self._total_fill_time,
                 self._total_stage_time,
+                pinned_gb,
             )
 
     # ======================================================================
@@ -532,6 +564,12 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         self._pending_fills[req_id] = (block_ids_per_group, num_external_tokens)
         self._filled_requests.add(req_id)
 
+        # Track ALL block IDs for this request (for decode slicing).
+        all_ids: set[int] = set()
+        for group in block_groups:
+            all_ids.update(group)
+        self._active_req_blocks[req_id] = all_ids
+
     # ======================================================================
     # Scheduler-side: build metadata
     # ======================================================================
@@ -543,9 +581,26 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         reqs_to_fill = dict(self._pending_fills)
         self._pending_fills.clear()
 
+        # --- Track block allocations for correct decode slicing ----------
+        # Accumulate newly appended blocks for cached (ongoing) requests.
+        cached_reqs = scheduler_output.scheduled_cached_reqs
+        for i, req_id in enumerate(cached_reqs.req_ids):
+            new_blks = cached_reqs.new_block_ids[i]
+            if new_blks is not None:
+                existing = self._active_req_blocks.get(req_id)
+                if existing is None:
+                    existing = set()
+                    self._active_req_blocks[req_id] = existing
+                for group in new_blks:
+                    existing.update(group)
+
+        # Finished requests: clean up.
+        for req_id in scheduler_output.finished_req_ids:
+            self._active_req_blocks.pop(req_id, None)
+
         has_work = scheduler_output.total_num_scheduled_tokens > 0
         decode_only = not scheduler_output.scheduled_new_reqs
-        decode_req_ids = set(scheduler_output.scheduled_cached_reqs.req_ids)
+        decode_req_ids = set(cached_reqs.req_ids)
         decode_req_ids.update(
             scheduler_output.scheduled_spec_decode_tokens.keys()
         )
@@ -563,7 +618,6 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
 
         decode_max_seq_len: int | None = None
         if has_decode_work:
-            cached_reqs = scheduler_output.scheduled_cached_reqs
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens
             max_len = 0
             for req_id, num_computed in zip(
@@ -578,6 +632,17 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
                 max_len = max(max_len, num_tokens + 1)
             decode_max_seq_len = max_len if max_len > 0 else None
 
+        # Compute max block ID across ALL active requests for correct
+        # decode-phase slicing (fixes the per-sequence slice bug).
+        decode_max_block_id: int | None = None
+        if has_decode_work:
+            max_bid = -1
+            for blocks in self._active_req_blocks.values():
+                if blocks:
+                    max_bid = max(max_bid, max(blocks))
+            if max_bid >= 0:
+                decode_max_block_id = max_bid
+
         layers_to_prefetch: list[str] = []
         if self._k_window > 0 and has_work and has_decode_work:
             layers_to_prefetch = self._layer_names[: self._k_window]
@@ -589,6 +654,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
             has_decode_work=has_decode_work,
             active_decode_req_ids=active_decode_req_ids,
             decode_max_seq_len=decode_max_seq_len,
+            decode_max_block_id=decode_max_block_id,
         )
 
     def request_finished(
@@ -597,4 +663,5 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1):
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
         self._filled_requests.discard(request.request_id)
+        self._active_req_blocks.pop(request.request_id, None)
         return False, None
