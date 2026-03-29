@@ -29,6 +29,13 @@ Modes
                    Suitable for correctness validation and realistic latency
                    measurement on academic datasets (LongBench, ShareGPT, etc).
 
+K sweep (optimal ``kv-k-window``)
+---------------------------------
+  For **dummy-KV pipelined decode only**, use
+  ``benchmarks/kv_pipelining_bench/find_optimal_k.py`` (wraps
+  ``pipelined_decode_fast_bench``), which sweeps **decreasing K** and writes
+  ``optimal_k_report.json``. Use ``--lite`` on a small GPU or tight time budget.
+
 Metrics
 -------
   - Time-to-first-token (TTFT)
