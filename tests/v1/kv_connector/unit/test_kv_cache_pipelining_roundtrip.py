@@ -101,6 +101,38 @@ def test_stage_delta_scatter_blocks_first_layout():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_stage_delta_scatter_ignores_invalid_slot_sentinels():
+    """Negative sentinel slots must be ignored, not wrapped as valid indices."""
+    torch.cuda.set_device(0)
+    num_blocks, block_size, heads, dim = 8, 16, 2, 8
+    kv = torch.randn(
+        2, num_blocks, block_size, heads, dim, device="cuda", dtype=torch.float16
+    )
+    flat_slots = torch.tensor([3, -1, 41, -1], device="cuda", dtype=torch.long)
+    valid_slots = torch.tensor([3, 41], device="cuda", dtype=torch.long)
+
+    state = LayerwisePipeliningState()
+    state.stage_to_cpu("L0", kv.clone())
+    state.wait_for_saves()
+    base_cpu = state._layers["L0"].cpu_buffer.clone()
+
+    delta_pattern = torch.randn(
+        2, valid_slots.numel(), heads, dim, device="cuda", dtype=torch.float16
+    )
+    kv2 = kv.clone()
+    view = kv2.reshape(2, num_blocks * block_size, heads, dim)
+    view[:, valid_slots, ...] = delta_pattern
+
+    state.stage_delta_to_cpu("L0", kv2, flat_slots, num_actual_tokens=4)
+    state.wait_for_saves()
+
+    ref = base_cpu.clone()
+    ref_view = ref.reshape(2, num_blocks * block_size, heads, dim)
+    ref_view[:, valid_slots.cpu(), ...] = delta_pattern.cpu()
+    assert torch.allclose(state._layers["L0"].cpu_buffer, ref, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_stage_to_cpu_prefetch_roundtrip_blocks_first_layout():
     """Full tensor GPU→CPU→GPU for Triton (num_blocks, 2, block_size, …)."""
     torch.cuda.set_device(0)

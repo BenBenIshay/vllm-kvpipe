@@ -87,6 +87,14 @@ def _pipeline_debug_enabled() -> bool:
     return _env_truthy("VLLM_PIPELINE_DEBUG_LOG")
 
 
+def _decode_stage_mode() -> str:
+    """Decode staging mode: block (default), full, or delta."""
+    mode = os.environ.get("VLLM_PIPELINE_DECODE_STAGE_MODE", "block").strip().lower()
+    if mode not in {"block", "full", "delta"}:
+        return "block"
+    return mode
+
+
 def _layer_names_aligned_with_kv_cache(
     vllm_config: "VllmConfig",
     kv_cache_config: "KVCacheConfig | None",
@@ -225,6 +233,7 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self._decode_steps = 0
         # Per execute_model forward (incremented in start_load_kv when has_work).
         self._dbg_forward_id: int = 0
+        self._decode_stage_mode = _decode_stage_mode()
 
     # ======================================================================
     # Worker-side: KV cache registration
@@ -323,6 +332,32 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             self._worker_state.stage_to_cpu_block_runs(
                 layer_name, kv_layer, runs
             )
+
+    def _stage_blocks_from_slot_mapping(
+        self,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        num_actual_tokens: int | None,
+    ) -> bool:
+        """Stage only KV blocks that contain updated decode-token slots."""
+        valid_slots = slot_mapping
+        if num_actual_tokens is not None:
+            valid_slots = valid_slots[:num_actual_tokens]
+        valid_slots = valid_slots[valid_slots >= 0]
+        if valid_slots.numel() == 0:
+            return False
+
+        block_ids = torch.div(valid_slots, self._block_size, rounding_mode="floor")
+        # NOTE: this host transfer is used only in block-stage mode to compute
+        # compact contiguous runs; correctness-first and still cheaper than
+        # full active-span staging at higher concurrency.
+        uniq = torch.unique(block_ids).to("cpu")
+        runs = self._contiguous_runs_from_block_ids(uniq.tolist())
+        if not runs:
+            return False
+        self._worker_state.stage_to_cpu_block_runs(layer_name, kv_layer, runs)
+        return True
 
     def _prefetch_physical_kv_to_gpu(
         self, layer_name: str, kv_layer: torch.Tensor
@@ -528,6 +563,17 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         if not self._physical_kv_is_shared:
             return
 
+        if self._decode_stage_mode == "full":
+            st = self._kv_span_debug_stats(
+                kv_layer, self._get_max_seq_len(attn_metadata)
+            )
+            self._log_pipeline(
+                "[pipeline-debug] save_kv decode FULL_STAGE_MODE "
+                f"fwd={self._dbg_forward_id} layer={layer_name!r} {st}"
+            )
+            self._stage_physical_kv_to_cpu(layer_name, kv_layer)
+            return
+
         # Debug: full tensor staging every decode step (slow, high PCIe BW).
         # If outputs match baseline with this set, the bug is likely in
         # stage_delta_to_cpu / _apply_delta_updates scatter.
@@ -545,14 +591,37 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         num_actual_tokens = getattr(
             attn_metadata, "num_actual_tokens", None
         )
-        if self._worker_state.has_layer(layer_name) and isinstance(
-            slot_mapping, torch.Tensor
+        if (
+            self._decode_stage_mode == "block"
+            and self._worker_state.has_layer(layer_name)
+            and isinstance(slot_mapping, torch.Tensor)
         ):
+            staged = self._stage_blocks_from_slot_mapping(
+                layer_name=layer_name,
+                kv_layer=kv_layer,
+                slot_mapping=slot_mapping,
+                num_actual_tokens=num_actual_tokens,
+            )
+            if staged:
+                st = self._kv_span_debug_stats(
+                    kv_layer, self._get_max_seq_len(attn_metadata)
+                )
+                self._log_pipeline(
+                    "[pipeline-debug] save_kv decode BLOCK_STAGE_MODE "
+                    f"fwd={self._dbg_forward_id} layer={layer_name!r} "
+                    f"slot_mapping={self._fmt_slot_mapping(slot_mapping)} "
+                    f"num_actual_tokens={num_actual_tokens!r} {st}"
+                )
+                return
+
+        if self._decode_stage_mode == "delta" and self._worker_state.has_layer(
+            layer_name
+        ) and isinstance(slot_mapping, torch.Tensor):
             st = self._kv_span_debug_stats(
                 kv_layer, self._get_max_seq_len(attn_metadata)
             )
             self._log_pipeline(
-                "[pipeline-debug] save_kv decode DELTA "
+                "[pipeline-debug] save_kv decode DELTA_STAGE_MODE "
                 f"fwd={self._dbg_forward_id} layer={layer_name!r} "
                 f"slot_mapping={self._fmt_slot_mapping(slot_mapping)} "
                 f"num_actual_tokens={num_actual_tokens!r} {st}"
@@ -564,6 +633,13 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
                 num_actual_tokens=num_actual_tokens,
             )
             return
+
+        if self._worker_state.has_layer(layer_name) and isinstance(
+            slot_mapping, torch.Tensor
+        ):
+            # block mode can fail to derive non-empty runs (rare edge cases).
+            # Fall through to full span staging for correctness.
+            pass
         # Fall back to full staging if this is the first time we see the
         # layer in decode mode.
         max_seq_len = self._get_max_seq_len(attn_metadata)
@@ -622,7 +698,14 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         all_ids: set[int] = set()
         for group in block_groups:
             all_ids.update(group)
-        self._active_req_blocks[request.request_id] = all_ids
+        # Allocation callbacks can arrive multiple times per request lifetime.
+        # Merge rather than overwrite so we don't lose older prompt/decode
+        # blocks that are still live in the pool.
+        existing = self._active_req_blocks.get(request.request_id)
+        if existing is None:
+            self._active_req_blocks[request.request_id] = all_ids
+        else:
+            existing.update(all_ids)
 
     # ======================================================================
     # Scheduler-side: build metadata
@@ -669,10 +752,16 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         for i, req_id in enumerate(cached_reqs.req_ids):
             new_blks = cached_reqs.new_block_ids[i]
             if new_blks is not None:
-                existing = self._active_req_blocks.get(req_id)
-                if existing is None:
+                # For resumed requests, scheduler semantics define new_block_ids
+                # as a full replacement of block IDs (not an append delta).
+                if req_id in cached_reqs.resumed_req_ids:
                     existing = set()
                     self._active_req_blocks[req_id] = existing
+                else:
+                    existing = self._active_req_blocks.get(req_id)
+                    if existing is None:
+                        existing = set()
+                        self._active_req_blocks[req_id] = existing
                 for group in new_blks:
                     existing.update(group)
         for req_id in scheduler_output.finished_req_ids:

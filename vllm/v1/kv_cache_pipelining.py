@@ -393,6 +393,17 @@ class LayerwisePipeliningState:
         slot_mapping = slot_mapping
         if num_actual_tokens is not None:
             slot_mapping = slot_mapping[:num_actual_tokens]
+        if slot_mapping.numel() == 0:
+            return
+        # Attn metadata may carry padding/sentinel entries (e.g. -1) in
+        # slot_mapping. These are invalid cache slots and must never be used
+        # for index_select/scatter, especially at higher concurrency where
+        # mixed batches often contain padded rows.
+        valid_slots = slot_mapping >= 0
+        if not bool(valid_slots.any()):
+            return
+        if not bool(valid_slots.all()):
+            slot_mapping = slot_mapping[valid_slots]
 
         flat = self._kv_to_delta_flat(kv_layer)
         if flat.shape[0] == 2:
@@ -443,6 +454,13 @@ class LayerwisePipeliningState:
         slot_mapping = slot_mapping
         if num_actual_tokens is not None:
             slot_mapping = slot_mapping[:num_actual_tokens]
+        if slot_mapping.numel() == 0:
+            return
+        valid_slots = slot_mapping >= 0
+        if not bool(valid_slots.any()):
+            return
+        if not bool(valid_slots.all()):
+            slot_mapping = slot_mapping[valid_slots]
 
         cpu_slots = torch.empty_like(slot_mapping, device="cpu", pin_memory=True)
         with torch.cuda.stream(self._stream):

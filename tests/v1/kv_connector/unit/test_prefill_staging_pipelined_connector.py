@@ -240,6 +240,7 @@ def test_build_connector_meta_pure_decode():
     """A pure decode step should have has_decode_work=True and
     has_prefill_work=False."""
     connector = _make_connector(k_window=2)
+    connector._req_prompt_tokens["r1"] = 10
 
     scheduler_output = _make_scheduler_output(
         req_id="r1",
@@ -260,10 +261,13 @@ def test_build_connector_meta_pure_decode():
 
 
 def test_build_connector_meta_mixed_step():
-    """A mixed step (prefill + decode) should have both flags, but
-    has_decode_work should be False (decode pipelining only on pure
-    decode steps)."""
+    """A mixed step (prefill + decode) should set both flags.
+
+    Decode requests in mixed batches still need decode metadata so the worker
+    keeps K+1 prefetching consistent for active decode streams.
+    """
     connector = _make_connector()
+    connector._req_prompt_tokens["r2"] = 10
 
     scheduler_output = _make_mixed_scheduler_output(
         prefill_req_id="r1",
@@ -275,15 +279,15 @@ def test_build_connector_meta_mixed_step():
         metadata, PrefillStagingPipelinedConnectorMetadata
     )
     assert metadata.has_prefill_work is True
-    # In mixed steps, has_decode_work is False (we don't pipeline)
-    assert metadata.has_decode_work is False
-    # No prefetch during mixed steps
-    assert len(metadata.layers_to_prefetch) == 0
+    assert metadata.has_decode_work is True
+    assert metadata.decode_max_seq_len == 51
+    assert len(metadata.layers_to_prefetch) > 0
 
 
 def test_build_connector_meta_decode_max_seq_len():
     """decode_max_seq_len should reflect the computed + scheduled tokens."""
     connector = _make_connector()
+    connector._req_prompt_tokens["r1"] = 10
 
     scheduler_output = _make_scheduler_output(
         req_id="r1",
@@ -326,3 +330,33 @@ def test_build_connector_meta_no_work():
     assert metadata.has_work is False
     assert metadata.has_prefill_work is False
     assert metadata.has_decode_work is False
+
+
+def test_build_connector_meta_resumed_req_replaces_block_ids():
+    """resumed_req_ids must replace tracked blocks, not append stale ones."""
+    connector = _make_connector()
+    connector._req_prompt_tokens["r1"] = 10
+    connector._active_req_blocks["r1"] = {1, 2, 3}
+
+    scheduler_output = SchedulerOutput(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=CachedRequestData(
+            req_ids=["r1"],
+            resumed_req_ids={"r1"},
+            new_token_ids=[[]],
+            all_token_ids={},
+            new_block_ids=[([11, 12],)],
+            num_computed_tokens=[10],
+            num_output_tokens=[1],
+        ),
+        num_scheduled_tokens={"r1": 1},
+        total_num_scheduled_tokens=1,
+        scheduled_spec_decode_tokens={},
+        scheduled_encoder_inputs={},
+        num_common_prefix_blocks=[0],
+        finished_req_ids=set(),
+        free_encoder_mm_hashes=[],
+    )
+    metadata = connector.build_connector_meta(scheduler_output)
+    assert metadata.has_decode_work is True
+    assert connector._active_req_blocks["r1"] == {11, 12}
