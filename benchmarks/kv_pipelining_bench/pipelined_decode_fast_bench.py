@@ -5,10 +5,11 @@
 Fast decode-only benchmark (dummy KV) — pipelined by default
 ============================================================
 
-Uses **PipelinedDecodeBenchConnector** so there is no real prefill: the
-connector fills KV with dummy values, then decode runs with layer-wise
-CPU↔GPU pipelining. Suitable for tuning **K** (`--kv-k-window`) and
-scheduler limits when you do not need a baseline comparison on a shared GPU.
+Uses **PipelinedDecodeBenchConnector** in decode-only mode
+(``--decode-only-pipelining``) for dummy-KV layer-wise CPU↔GPU pipelining.
+Optional **DecodeBenchConnector** baseline (``--with-baseline``). Suitable for
+tuning **K** (``--kv-k-window``) and scheduler limits. Default
+**--inflate-kv-pool** enlarges the block pool for the rolling K-tensor layout.
 
 Optional `--with-baseline` runs **DecodeBenchConnector** in a second pass for
 same-day comparison (only when the GPU is idle enough to be meaningful).
@@ -52,6 +53,7 @@ if str(_BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(_BENCH_DIR))
 
 import decode_only_bench as dob  # noqa: E402
+from hf_env import apply_hf_token_from_user_file, hf_token_file_path  # noqa: E402
 
 
 def query_gpu_memory_mib(gpu_index: int = 0) -> tuple[int, int, int]:
@@ -103,6 +105,64 @@ def apply_auto_gpu_memory(ns: argparse.Namespace) -> None:
             f"{getattr(ns, 'gpu_memory_utilization', 0.8):.2f}",
             file=sys.stderr,
         )
+
+
+def clamp_gpu_mem_for_pipelined_window_buffers(ns: argparse.Namespace) -> None:
+    """Optionally cap ``gpu_memory_utilization`` for legacy WindowPool runs.
+
+    The target rolling-tensor implementation does not allocate a second
+    K-window pool, so capacity measurements should normally disable this cap
+    and use ``--inflate-kv-pool``.  The cap remains useful for legacy/debug
+    experiments that still stack connector-owned window buffers.
+
+    Default: **tiered by max concurrency** (higher conc → stricter cap). Override
+    with ``--pipelined-gpu-mem-cap 0.7`` or disable with ``--no-pipelined-gpu-mem-cap``.
+    """
+    if getattr(ns, "no_pipelined_gpu_mem_cap", False):
+        return
+    modes = ns.modes or []
+    if "pipelined" not in modes:
+        return
+    override = getattr(ns, "pipelined_gpu_mem_cap", None)
+    if getattr(ns, "inflate_kv_pool", False) and override is None:
+        return
+    if override is not None:
+        cap = float(override)
+    else:
+        max_c = max(ns.concurrency)
+        # Leave headroom for K-window + runtime; high concurrency needs a lower cap.
+        if max_c >= 128:
+            cap = 0.62
+        elif max_c >= 64:
+            cap = 0.65
+        elif max_c >= 32:
+            cap = 0.68
+        else:
+            cap = 0.74
+    if ns.gpu_memory_utilization > cap:
+        print(
+            "  [pipelined] clamping --gpu-memory-utilization "
+            f"{ns.gpu_memory_utilization:.3f} -> {cap} "
+            "(KV pool + K-window balance; --pipelined-gpu-mem-cap to override; "
+            "--no-pipelined-gpu-mem-cap to disable)",
+            flush=True,
+        )
+        ns.gpu_memory_utilization = cap
+
+    # vLLM startup requires free HBM >= target fraction of total (see
+    # request_memory in gpu_worker). Tiered caps can still exceed free memory
+    # if other processes hold VRAM — clamp again to ~92% of (free/total).
+    total_mib, _used_mib, free_mib = query_gpu_memory_mib(ns.gpu_index)
+    if total_mib > 0 and free_mib > 0:
+        max_safe = max(0.12, min(0.92, (free_mib / total_mib) * 0.92))
+        if ns.gpu_memory_utilization > max_safe:
+            print(
+                "  [pipelined] clamping --gpu-memory-utilization "
+                f"{ns.gpu_memory_utilization:.3f} -> {max_safe:.3f} "
+                f"(fit free HBM: {free_mib}/{total_mib} MiB)",
+                flush=True,
+            )
+            ns.gpu_memory_utilization = max_safe
 
 
 def compute_gpu_memory_utilization(
@@ -236,6 +296,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Used only when --no-auto-gpu-memory (default 0.80)",
     )
     p.add_argument(
+        "--no-pipelined-gpu-mem-cap",
+        action="store_true",
+        help=(
+            "Do not cap --gpu-memory-utilization for pipelined mode "
+            "(default: tiered cap by max concurrency)"
+        ),
+    )
+    p.add_argument(
+        "--pipelined-gpu-mem-cap",
+        type=float,
+        default=None,
+        dest="pipelined_gpu_mem_cap",
+        metavar="FRAC",
+        help=(
+            "Fixed gpu_memory_utilization cap for pipelined mode (overrides tiered "
+            "default). Example: 0.70"
+        ),
+    )
+    p.add_argument(
+        "--inflate-kv-pool",
+        dest="inflate_kv_pool",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Pipelined mode: pass --inflate-kv-pool so the KV block pool is inflated "
+            "for the rolling K-tensor layout. This is the capacity mode: same "
+            "HBM KV budget, larger block pool. Default: true."
+        ),
+    )
+    p.add_argument(
         "--max-num-batched-tokens",
         type=int,
         default=None,
@@ -306,6 +396,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input-len", type=int, default=512)
     p.add_argument("--output-len", type=int, default=128)
     p.add_argument(
+        "--ignore-eos",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Request ignore_eos so fixed decode lengths are honored (default: true)",
+    )
+    p.add_argument(
+        "--itl-steady-skip",
+        type=int,
+        default=1,
+        help="Number of initial ITL gaps to skip in steady-state ITL summaries",
+    )
+    p.add_argument(
         "--concurrency",
         type=int,
         nargs="+",
@@ -314,6 +416,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--startup-timeout", type=int, default=600)
     p.add_argument("--request-timeout", type=int, default=300)
     p.add_argument("--warmup-requests", type=int, default=2)
+    p.add_argument(
+        "--concurrent-itl-throughput",
+        dest="concurrent_itl_throughput",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Throughput phase: use concurrent streaming completions and report ITL "
+            "under load (mean/p99 per request + global p99 over all gaps). "
+            "Default: on. Use --no-concurrent-itl-throughput for legacy non-streaming "
+            "HTTP completions (tok/s only)."
+        ),
+    )
+    p.add_argument(
+        "--skip-isolated-latency",
+        dest="skip_isolated_latency",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Skip the single-request streaming latency phase (TTFT / ITL from one "
+            "request only). Use when you only care about ITL from the concurrent "
+            "throughput phase."
+        ),
+    )
     p.add_argument(
         "--result-dir",
         type=Path,
@@ -334,6 +459,7 @@ def launch_server(
     enforce_eager: bool,
     max_num_batched_tokens: int | None,
     log_file: str | None,
+    inflate_kv_pool: bool = False,
 ) -> subprocess.Popen:
     cmd = [
         sys.executable,
@@ -372,16 +498,16 @@ def launch_server(
             "kv_connector_extra_config": {"fill_mean": 0.015, "fill_std": 0.0},
         }
         cmd += [
+            "--enable-kv-pipelining",
             "--decode-only-pipelining",
             "--kv-k-window",
             str(k_window),
             "--kv-transfer-config",
             json.dumps(kv_config),
-            "--enable-prefix-caching",
-            "false",
+            "--no-enable-prefix-caching",
         ]
-        # Inflated pool is required for this benchmark path (capacity story).
-        cmd.append("--inflate-kv-pool")
+        if inflate_kv_pool:
+            cmd.append("--inflate-kv-pool")
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -433,6 +559,9 @@ def run_mode(ns: argparse.Namespace, mode: str, result_dir: Path) -> dict[str, A
         enforce_eager=ns.enforce_eager,
         max_num_batched_tokens=ns.max_num_batched_tokens,
         log_file=log_file,
+        inflate_kv_pool=bool(
+            getattr(ns, "inflate_kv_pool", False) and mode == "pipelined"
+        ),
     )
 
     abort_mem = threading.Event()
@@ -473,14 +602,23 @@ def run_mode(ns: argparse.Namespace, mode: str, result_dir: Path) -> dict[str, A
                 json.dump(summary, f, indent=2)
             return summary
 
-        latency = dob._run_latency_test(
-            ns.port,
-            model_name,
-            ns.input_len,
-            ns.output_len,
-            ns.request_timeout,
-            ns.warmup_requests,
-        )
+        use_stream_itl = getattr(ns, "concurrent_itl_throughput", True)
+        if getattr(ns, "skip_isolated_latency", False):
+            latency = {
+                "skipped": True,
+                "reason": "skip_isolated_latency",
+            }
+        else:
+            latency = dob._run_latency_test(
+                ns.port,
+                model_name,
+                ns.input_len,
+                ns.output_len,
+                ns.request_timeout,
+                ns.warmup_requests,
+                ns.itl_steady_skip,
+                ns.ignore_eos,
+            )
         if abort_mem.is_set():
             summary = _aborted_summary(mode, ns, latency, [], 0, "gpu_memory_after_latency")
             with open(result_dir / f"results_{mode}.json", "w") as f:
@@ -493,23 +631,52 @@ def run_mode(ns: argparse.Namespace, mode: str, result_dir: Path) -> dict[str, A
             if abort_mem.is_set():
                 print("  [ABORT] Skipping remaining concurrency levels (GPU memory)", flush=True)
                 break
-            r = dob._run_throughput_test(
-                ns.port,
-                model_name,
-                ns.input_len,
-                ns.output_len,
-                conc,
-                ns.request_timeout,
-            )
+            if use_stream_itl:
+                r = dob._run_throughput_test_streaming(
+                    ns.port,
+                    model_name,
+                    ns.input_len,
+                    ns.output_len,
+                    conc,
+                    ns.request_timeout,
+                    ns.itl_steady_skip,
+                    ns.ignore_eos,
+                )
+            else:
+                r = dob._run_throughput_test(
+                    ns.port,
+                    model_name,
+                    ns.input_len,
+                    ns.output_len,
+                    conc,
+                    ns.request_timeout,
+                    ns.ignore_eos,
+                )
             throughput_results.append(r)
             if r["failures"] == 0:
                 max_ok = conc
             tag = "OK" if r["failures"] == 0 else "FAIL"
-            print(
-                f"  conc={conc:4d} [{tag}] "
-                f"{r['throughput_tok_per_s']} tok/s "
-                f"ok={r['successes']}/{conc}"
-            )
+            if use_stream_itl:
+                mitl = r.get("concurrent_mean_itl_s_mean")
+                pitl = r.get("concurrent_mean_p99_itl_s")
+                gitl = r.get("concurrent_global_p99_itl_s")
+                extra = ""
+                if mitl is not None and pitl is not None and gitl is not None:
+                    extra = (
+                        f" mean_ITL={mitl:.4f}s p99_req={pitl:.4f}s "
+                        f"p99_global={gitl:.4f}s"
+                    )
+                print(
+                    f"  conc={conc:4d} [{tag}] "
+                    f"{r['throughput_tok_per_s']} tok/s{extra} "
+                    f"ok={r['successes']}/{conc}"
+                )
+            else:
+                print(
+                    f"  conc={conc:4d} [{tag}] "
+                    f"{r['throughput_tok_per_s']} tok/s "
+                    f"ok={r['successes']}/{conc}"
+                )
             if abort_mem.is_set():
                 print("  [ABORT] Stopping after this level (GPU memory)", flush=True)
                 break
@@ -545,7 +712,8 @@ def run_benchmark(ns: argparse.Namespace) -> dict[str, Any]:
         "model": ns.model,
         "k_window": ns.k_window,
         "concurrency": list(ns.concurrency),
-        "inflate_kv_pool": True,
+        "inflate_kv_pool": getattr(ns, "inflate_kv_pool", False),
+        "pipelined_gpu_mem_cap": getattr(ns, "pipelined_gpu_mem_cap", None),
         "enforce_eager": ns.enforce_eager,
         "gpu_index": ns.gpu_index,
         "auto_gpu_memory": ns.auto_gpu_memory,
@@ -564,6 +732,8 @@ def run_benchmark(ns: argparse.Namespace) -> dict[str, Any]:
         "memory_monitor_start_delay": getattr(ns, "memory_monitor_start_delay", 90.0),
         "memory_abort_on_warn": getattr(ns, "memory_abort_on_warn", True),
         "memory_kill_server_on_abort": getattr(ns, "memory_kill_server_on_abort", True),
+        "concurrent_itl_throughput": getattr(ns, "concurrent_itl_throughput", True),
+        "skip_isolated_latency": getattr(ns, "skip_isolated_latency", False),
     }
     try:
         rev = subprocess.run(
@@ -601,6 +771,8 @@ def run_benchmark(ns: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     p = build_parser()
     ns = p.parse_args()
+    if apply_hf_token_from_user_file():
+        print(f"  HF auth       : token from {hf_token_file_path()}", flush=True)
     if not ns.model:
         p.error("--model is required (HF id or path under e.g. /data/ben/...)")
 
@@ -616,6 +788,8 @@ def main() -> None:
             f"(manual --gpu-memory-utilization {ns.gpu_memory_utilization})"
         )
 
+    clamp_gpu_mem_for_pipelined_window_buffers(ns)
+
     print("=" * 70)
     print("pipelined_decode_fast_bench (dummy KV)")
     print("=" * 70)
@@ -623,7 +797,18 @@ def main() -> None:
     print(f"  K (kv-k-window): {ns.k_window}")
     print(f"  Modes          : {ns.modes}")
     print(f"  Concurrency    : {ns.concurrency}")
-    print(f"  Inflate pool   : True (always, pipelined path)")
+    print(
+        f"  Throughput ITL : {getattr(ns, 'concurrent_itl_throughput', True)} "
+        f"(concurrent streaming gaps; --no-concurrent-itl-throughput = tok/s only)"
+    )
+    print(
+        f"  Isolated latency: {not getattr(ns, 'skip_isolated_latency', False)} "
+        f"(single-request TTFT/ITL; --skip-isolated-latency to skip)"
+    )
+    print(
+        f"  Inflate pool   : {getattr(ns, 'inflate_kv_pool', False)} "
+        f"(capacity mode; --no-inflate-kv-pool for HBM-saving debug runs)"
+    )
     print(f"  Enforce eager  : {ns.enforce_eager}")
     print(f"  GPU mem util   : {ns.gpu_memory_utilization:.4f}")
     print(f"  Result dir     : {ns.result_dir}")
