@@ -336,3 +336,110 @@ Wire decode-only pipelining to vLLM's P2P NCCL / NiXL / LMCache connectors
 so KV arriving from a real prefill node flows directly into CPU pinned
 memory → layer-wise pipeline → GPU window buffers without intermediate
 GPU allocation.
+
+## 13) `_slice_kv_layer` correctness fix  [DONE — 2026-02-22]
+
+### Bug
+
+`_slice_kv_layer` computed `max_blocks = cdiv(max_seq_len, block_size)`,
+which is the block count for a SINGLE sequence.  With N concurrent
+sequences, blocks are scattered across positions 0 to N*blocks_per_seq.
+Only blocks 0 through blocks_per_seq were copied during prefetch,
+causing most sequences to read stale/random data from window buffers.
+
+### Fix
+
+Both `PrefillStagingPipelinedConnector` and `PipelinedDecodeBenchConnector`
+now track the maximum allocated block ID across ALL active sequences:
+
+1. **Scheduler side**: `_active_req_blocks: dict[str, set[int]]`
+   accumulates all block IDs per request from `update_state_after_alloc`
+   and `scheduled_cached_reqs.new_block_ids`.
+
+2. **Metadata**: `decode_max_block_id: int | None` is the maximum block
+   ID across all active requests, sent from scheduler to worker.
+
+3. **Worker side**: `_slice_kv_layer` uses `decode_max_block_id + 1`
+   during decode instead of `cdiv(max_seq_len, block_size)`.  Falls back
+   to the per-sequence estimate for prefill (where it is correct).
+
+4. **Cleanup**: `request_finished` removes the request from
+   `_active_req_blocks`.
+
+### Impact
+
+- Correct data is now transferred for all active sequences.
+- Transfer volume is proportional to total allocated blocks (as expected).
+- The fundamental PCIe vs. concurrency trade-off documented in
+  SESSION_CONTEXT.md section 6 applies.
+
+## 14) P/D decode-only evaluation  [DONE — 2026-02-22]
+
+### Goal
+
+DistServe/Splitwise-style capacity benchmark focusing on TTFT, E2E, P99
+E2E — metrics that capture the *queuing advantage* of the inflated block
+pool.
+
+### Script
+
+`benchmarks/kv_pipelining_bench/eval_pd_decode.py`
+
+### Design
+
+- Uses `PrefillStagingPipelinedConnector` with `--inflate-kv-pool` for
+  pipelined mode (real prefill + inflated capacity).
+- Concurrency sweep: 64, 128, 256, 384, 512.
+- Pushes N requests simultaneously (closed-loop, request_rate=inf).
+- Focuses on TTFT, E2E latency, P99 E2E (not ITL/TPOT).
+- Saves raw JSON results for later graph generation.
+
+### Usage
+
+```bash
+# Llama-8B:
+python benchmarks/kv_pipelining_bench/eval_pd_decode.py \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --k-window 5 \
+    --concurrency 64 128 256 384 512 \
+    --num-prompts 200 \
+    --result-dir /tmp/kv_pd_eval/llama8b
+
+# Qwen-14B:
+python benchmarks/kv_pipelining_bench/eval_pd_decode.py \
+    --model Qwen/Qwen2.5-14B-Instruct \
+    --k-window 5 \
+    --concurrency 64 128 256 384 512 \
+    --num-prompts 200 \
+    --result-dir /tmp/kv_pd_eval/qwen14b
+```
+
+### Results
+
+Results saved to `--result-dir`:
+```
+<result-dir>/
+  results_baseline_conc<N>.json    — raw vllm bench serve output
+  results_pipelined_conc<N>.json   — raw vllm bench serve output
+  server_baseline.log              — server stdout/stderr
+  server_pipelined.log             — server stdout/stderr
+  summary.json                     — aggregated comparison
+```
+
+## 15) Remaining next steps
+
+### Immediate
+
+1. Measure real ITL with correct transfers (after `_slice_kv_layer` fix)
+2. Run P/D eval on Qwen-14B for two-model comparison
+3. Regenerate publication graphs incorporating P/D eval results
+
+### Paper
+
+4. Acknowledge transfer volume trade-off as known limitation
+5. Focus narrative on capacity advantage (TTFT/E2E)
+
+### Longer term
+
+6. Explore adaptive K (auto-tune based on concurrency)
+7. Upstream: clean patches, tests, prepare PR

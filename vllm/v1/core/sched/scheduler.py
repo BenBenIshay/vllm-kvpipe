@@ -45,6 +45,7 @@ from vllm.v1.core.sched.output import (
     SchedulerOutput,
 )
 from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
+from vllm.v1.core.sched.transfer_aware_admission import TransferAwareAdmissionController
 from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -81,6 +82,9 @@ class Scheduler(SchedulerInterface):
         self.kv_events_config = vllm_config.kv_events_config
         self.parallel_config = vllm_config.parallel_config
         self.log_stats = log_stats
+        self.transfer_aware_admission = TransferAwareAdmissionController(
+            self.scheduler_config
+        )
         self.observability_config = vllm_config.observability_config
         self.kv_metrics_collector: KVCacheMetricsCollector | None = None
         if self.observability_config.kv_cache_metrics:
@@ -250,6 +254,7 @@ class Scheduler(SchedulerInterface):
             )
 
     def schedule(self) -> SchedulerOutput:
+        self.transfer_aware_admission.begin_schedule_step()
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -509,6 +514,19 @@ class Scheduler(SchedulerInterface):
                     # Scheduling would exceed max_loras, skip.
                     self.waiting.pop_request()
                     skipped_waiting_requests.prepend_request(request)
+                    continue
+
+                admit, admit_reason = (
+                    self.transfer_aware_admission.should_admit_from_waiting(
+                        request=request,
+                        running_requests=self.running,
+                        token_budget=token_budget,
+                    )
+                )
+                if not admit:
+                    self.waiting.pop_request()
+                    skipped_waiting_requests.prepend_request(request)
+                    self.transfer_aware_admission.record_skip(admit_reason)
                     continue
 
                 num_external_computed_tokens = 0
@@ -1609,6 +1627,17 @@ class Scheduler(SchedulerInterface):
             kv_connector_stats=connector_stats_payload,
             cudagraph_stats=cudagraph_stats,
             perf_stats=perf_stats,
+            transfer_aware_admission_enabled=(
+                self.scheduler_config.enable_transfer_aware_admission
+            ),
+            transfer_pressure_bytes_per_step_estimate=(
+                self.transfer_aware_admission.estimate_running_transfer_pressure_bytes_per_step(
+                    self.running
+                )
+            ),
+            transfer_aware_admission_events=(
+                self.transfer_aware_admission.drain_events()
+            ),
         )
 
     def make_spec_decoding_stats(

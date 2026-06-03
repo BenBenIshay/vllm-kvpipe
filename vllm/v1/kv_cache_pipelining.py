@@ -391,6 +391,8 @@ class LayerwisePipeliningState:
         delta_scratch: torch.Tensor | None = None,
     ) -> None:
         """Batched n>1 D2H: one gather + one copy per layer (not per sequence)."""
+        from vllm.v1.kv_pipelining_step import kv_pipelining_fake_transfer_enabled
+
         table = self._cpu_kv_table
         if (
             table is None
@@ -430,8 +432,12 @@ class LayerwisePipeliningState:
             return
         state.save_event = save_ev
         state.snap_event = snap_ev
-        state.pending_cpu_delta = True
-        state.cpu_delta_ready.clear()
+        if kv_pipelining_fake_transfer_enabled():
+            state.pending_cpu_delta = False
+            state.cpu_delta_ready.set()
+        else:
+            state.pending_cpu_delta = True
+            state.cpu_delta_ready.clear()
 
     def stage_delta_host_slot_to_cpu(
         self,

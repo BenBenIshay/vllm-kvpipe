@@ -3200,7 +3200,28 @@ class GPUModelRunner(
                 max_num_scheduled_tokens=max_num_scheduled_tokens,
                 use_cascade_attn=cascade_attn_prefix_lens is not None,
                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
+                # Microbatching (DBO) turns per-layer attention metadata into a
+                # list-of-dicts in ForwardContext. KV transfer hooks expect
+                # per-layer metadata objects (slot_mapping/num_actual_tokens),
+                # so disable microbatching while a v1 KV connector is active.
+                allow_microbatching=not has_kv_transfer_group(),
+                # Renounce CUDA graphs while a v1 KV connector is active: hooks run
+                # in Python around attention and graph replay skips them, breaking
+                # correctness. Revisit acceleration only after validation passes and
+                # connector work is graph-safe or moved outside replay.
+                force_eager=has_kv_transfer_group(),
             )
+
+            if (
+                has_kv_transfer_group()
+                and self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+            ):
+                logger.info_once(
+                    "CUDA graphs disabled for this engine: a KV transfer connector "
+                    "is active (hooks must run every forward). Restore graphs later "
+                    "once correctness is proven and the path is compatible.",
+                    scope="local",
+                )
 
             logger.debug(
                 "Running batch with cudagraph_mode: %s, batch_descriptor: %s, "
@@ -4318,8 +4339,10 @@ class GPUModelRunner(
                 max_num_scheduled_tokens=max_query_len,
                 use_cascade_attn=False,
                 allow_microbatching=allow_microbatching,
+                # Same KV-connector policy as execute_model: no graph capture/replay.
                 force_eager=is_profile
-                or (cudagraph_runtime_mode == CUDAGraphMode.NONE),
+                or (cudagraph_runtime_mode == CUDAGraphMode.NONE)
+                or has_kv_transfer_group(),
                 # `force_uniform_decode` is used for cudagraph capture; because for
                 # capturing mixed prefill-decode batches, we sometimes use
                 # num_tokens == num_reqs which looks like a uniform decode batch to the
@@ -5175,6 +5198,23 @@ class GPUModelRunner(
             capture_sizes = self.compilation_config.cudagraph_capture_sizes
             self.cudagraph_batch_sizes = (
                 capture_sizes if capture_sizes is not None else []
+            )
+
+        # KV pipelining requires the attention decorator to run Python code
+        # (wait_for_layer_load / save_kv_layer) between each attention layer.
+        # Both FULL and PIECEWISE CUDA graphs bake the decorator's early-
+        # return path (no connector metadata during capture) into the
+        # replayed graph, so KV transfer hooks are silently skipped during
+        # inference.  Disable CUDA graphs entirely when pipelining is active.
+        if (
+            self.vllm_config.cache_config
+            and getattr(self.vllm_config.cache_config, "enable_kv_pipelining", False)
+            and cudagraph_mode != CUDAGraphMode.NONE
+        ):
+            cudagraph_mode = CUDAGraphMode.NONE
+            logger.info(
+                "KV pipelining active: disabled CUDA graphs "
+                "(graphs bypass per-layer KV transfer hooks)",
             )
 
         # Trigger cudagraph dispatching keys initialization after

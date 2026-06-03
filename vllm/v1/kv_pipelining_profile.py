@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import json
 import os
 
 from vllm.logger import init_logger
@@ -26,6 +27,10 @@ def profile_log_every_n() -> int:
 def profile_steady_window() -> int:
     """Rolling window size for steady stall/ITL aggregates (default 32)."""
     return max(1, int(os.environ.get("VLLM_KVPIPE_PROFILE_WINDOW", "32")))
+
+
+def profile_json_enabled() -> bool:
+    return os.environ.get("VLLM_KVPIPE_PROFILE_JSON", "0") == "1"
 
 
 @dataclass
@@ -216,6 +221,27 @@ class DecodeHookProfile:
             self.fwd.bootstrap_host_ms,
             self.fwd.rolling_prefetch_issued,
         )
+        if profile_json_enabled():
+            logger.info(
+                "KVPIPE_JSON %s",
+                json.dumps(
+                    {
+                        "tag": tag,
+                        "step": step,
+                        "k_window": k_window,
+                        "gpu_stall_sum_ms": st["sum_ms"],
+                        "wait_host_ms": self.fwd.wait_host_ms,
+                        "wait_calls": self.fwd.wait_calls,
+                        "save_host_ms": self.fwd.save_host_ms,
+                        "save_stage_ms": self.fwd.save_stage_ms,
+                        "save_prefetch_ms": self.fwd.save_prefetch_ms,
+                        "start_load_host_ms": self.fwd.start_load_host_ms,
+                        "bootstrap_host_ms": self.fwd.bootstrap_host_ms,
+                        "wait_save_host_ms": self.fwd.wait_save_host_ms,
+                        "rolling_prefetch_issued": self.fwd.rolling_prefetch_issued,
+                    }
+                ),
+            )
 
     def _log_steady_window(self, *, step: int, k_window: int) -> None:
         vals = list(self._stall_sum_window)

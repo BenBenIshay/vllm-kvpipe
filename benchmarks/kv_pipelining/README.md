@@ -33,5 +33,5 @@ benchmarks/kv_pipelining/oom_sweep.sh pipelined
 ## Notes
 
 - This script assumes **decode-only** runs (no prefill on the server).
-- Use `--enable-prefix-caching false` for correctness with pipelining.
+- Use `--no-enable-prefix-caching` for correctness with pipelining (`--enable-prefix-caching false` incorrectly enables caching in vLLM).
 - Increase `K_WINDOW` for slower interconnects (PCIe).

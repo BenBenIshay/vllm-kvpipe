@@ -1072,11 +1072,11 @@ def _get_pipelining_block_inflation(
 ) -> tuple[bool, int, bool]:
     """Return (should_inflate, k_window, decode_only) for pipelined KV cache.
 
-    When layer-wise pipelining is active, only *k_window + 1* physical GPU
-    tensors are allocated (K for the compute window + 1 spare for loading the
-    next layer).  Layers map to tensors round-robin.  The block pool is
-    inflated by ``num_layers / (k_window + 1)`` so the scheduler can admit
-    proportionally more concurrent requests.
+    When layer-wise pipelining is active, decode-only P/D uses exactly
+    *k_window* physical GPU tensors as a rolling compute window.  After layer
+    ``i`` computes and its newly generated token KV is staged back to CPU, the
+    same physical tensor is reused for layer ``i + k_window``.  Hybrid mode
+    keeps the older conservative *k_window + 1* layout.
 
     **decode_only mode** (P/D disaggregation): the node never performs local
     prefill, so per-layer GPU tensors are reduced to a minimal placeholder
@@ -1085,14 +1085,57 @@ def _get_pipelining_block_inflation(
     """
     cache_cfg = vllm_config.cache_config
     decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
+    kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
+    connector_name = (
+        getattr(kv_transfer_config, "kv_connector", None)
+        if kv_transfer_config is not None
+        else None
+    )
+    # Some engine initialization paths build the KV cache config before the
+    # decode_only_pipelining-derived cache flag is visible here.  The dummy P/D
+    # connector is decode-only by construction, so infer the intended rolling-K
+    # layout from the connector too.
+    if connector_name == "PipelinedDecodeBenchConnector":
+        decode_only = True
     enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
     k_window = int(getattr(cache_cfg, "kv_k_window", 0))
+    inflate_pool = bool(getattr(cache_cfg, "inflate_kv_pool", False))
     if not enable_pip and not decode_only:
+        # Make the decision explicit in the log so it cannot silently disable
+        # the rolling tensor layout: this is the most common cause of "feature
+        # looks off".
+        if k_window > 0 or inflate_pool:
+            logger.warning(
+                "KV pipelining: rolling tensor layout SKIPPED — neither "
+                "enable_kv_pipelining nor decode_only_pipelining is set "
+                "in cache_config (k_window=%d, inflate_kv_pool=%s).",
+                k_window,
+                inflate_pool,
+            )
         return False, 0, False
-    # Note: free_original_kv_cache is no longer required.  The K+1 tensor
-    # layout inherently uses only (k_window+1)/num_layers of the memory.
+    # Note: free_original_kv_cache is no longer required.  The rolling tensor
+    # layout inherently uses only physical_tensors/num_layers of the memory.
     if k_window <= 0 or k_window >= num_layers:
+        logger.warning(
+            "KV pipelining: rolling tensor layout SKIPPED — k_window=%d invalid "
+            "(must be 0 < K < num_layers=%d). Decisions: "
+            "decode_only=%s, enable_pip=%s, inflate_pool=%s.",
+            k_window,
+            num_layers,
+            decode_only,
+            enable_pip,
+            inflate_pool,
+        )
         return False, 0, False
+    logger.info(
+        "KV pipelining: rolling tensor layout ACTIVE (k_window=%d, num_layers=%d, "
+        "decode_only=%s, enable_pip=%s, inflate_kv_pool=%s).",
+        k_window,
+        num_layers,
+        decode_only,
+        enable_pip,
+        inflate_pool,
+    )
     return True, k_window, decode_only
 
 
@@ -1137,42 +1180,69 @@ def get_kv_cache_config_from_groups(
         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
         num_layers = len(per_layer_specs)
 
-        # --- Pipelining-aware K+1 tensor layout ----------------------------
+        # --- Pipelining-aware rolling tensor layout -------------------------
         should_inflate, k_window, decode_only = (
             _get_pipelining_block_inflation(vllm_config, num_layers)
         )
         if should_inflate:
-            # ---- K+1 tensor layout (P/D decode-only focus) ----
+            # ---- Rolling tensor layout (P/D decode-only focus) ----
             #
-            # Allocate K+1 physical GPU tensors: K for the compute window
-            # + 1 spare for loading the next layer from CPU.  Layers map
-            # to tensors round-robin: layer_i → tensor[i % (K+1)].
+            # Allocate the physical rolling-window tensors.  Decode-only P/D
+            # uses exactly K tensors: layer_i -> tensor[i % K].  Hybrid mode
+            # keeps a conservative K+1 spare because local prefill and decode
+            # may coexist.
             #
-            # Phase-1: keep num_blocks = num_blocks_base (same concurrency).
-            # GPU memory drops from num_layers to (K+1) tensors.
-            num_physical_tensors = k_window + 1
+            # Phase-1 (inflate_kv_pool=False, default):
+            #   Keep num_blocks = num_blocks_base.  GPU memory drops from
+            #   num_layers to the rolling tensor count, same logical
+            #   concurrency.
+            # Phase-2 (inflate_kv_pool=True):
+            #   Inflate num_blocks by num_layers / physical_tensors so the
+            #   tensors carry the same total GPU bytes as baseline, but
+            #   the scheduler sees a proportionally larger block pool
+            #   and admits more concurrent decodes.
+            num_physical_tensors = k_window if decode_only else k_window + 1
             per_layer_page_size = total_page_size // num_layers
-            num_blocks = num_blocks_base
+            cache_cfg_local = vllm_config.cache_config
+            inflate_pool = bool(
+                getattr(cache_cfg_local, "inflate_kv_pool", False)
+            )
+            if inflate_pool:
+                inflation_factor = num_layers / num_physical_tensors
+                num_blocks = int(num_blocks_base * inflation_factor)
+            else:
+                num_blocks = num_blocks_base
 
             gpu_mem = per_layer_page_size * num_blocks * num_physical_tensors
             baseline_mem = total_page_size * num_blocks_base
+            pool_label = (
+                f"{num_blocks} (inflated "
+                f"{num_blocks / max(num_blocks_base, 1):.2f}x)"
+                if inflate_pool
+                else f"{num_blocks} (same as baseline)"
+            )
+            savings_pct = (
+                (1.0 - gpu_mem / max(baseline_mem, 1)) * 100.0
+                if not inflate_pool
+                else 0.0
+            )
             logger.info(
-                "KV pipelining: K+1 tensor layout with %d physical "
-                "tensors (k_window=%d, num_layers=%d, decode_only=%s). "
-                "Block pool: %d (same as baseline). "
-                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
-                "savings: %.1f%%)",
+                "KV pipelining (uniform): rolling tensor layout with %d physical "
+                "tensors (k_window=%d, num_layers=%d, decode_only=%s, "
+                "inflate_kv_pool=%s). Block pool: %s. "
+                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, savings: %.1f%%).",
                 num_physical_tensors,
                 k_window,
                 num_layers,
                 decode_only,
-                num_blocks,
+                inflate_pool,
+                pool_label,
                 gpu_mem / (1 << 30),
                 baseline_mem / (1 << 30),
-                (1.0 - gpu_mem / max(baseline_mem, 1)) * 100,
+                savings_pct,
             )
 
-            # Build K+1 tensors with round-robin layer assignment.
+            # Build rolling tensors with round-robin layer assignment.
             layer_names = kv_cache_groups[0].layer_names
             kv_cache_tensors = []
             for t in range(num_physical_tensors):
@@ -1218,12 +1288,12 @@ def get_kv_cache_config_from_groups(
             vllm_config, group_size, available_memory, page_size
         )
 
-        # --- Pipelining-aware K+1 layout (general case) -------------------
+        # --- Pipelining-aware rolling layout (general case) ----------------
         should_inflate, k_window, decode_only = (
             _get_pipelining_block_inflation(vllm_config, group_size)
         )
         if should_inflate:
-            num_physical_tensors = k_window + 1
+            num_physical_tensors = k_window if decode_only else k_window + 1
             cache_cfg = vllm_config.cache_config
             inflate_pool = bool(
                 getattr(cache_cfg, "inflate_kv_pool", False)
@@ -1232,7 +1302,7 @@ def get_kv_cache_config_from_groups(
             if inflate_pool:
                 # ---- Phase-2: inflate block pool for more capacity ----
                 # Use the same total GPU memory as baseline but spread it
-                # across only K+1 tensors.  Each tensor is larger (more
+                # across only the rolling-window tensors.  Each tensor is larger (more
                 # blocks), giving the scheduler a proportionally larger
                 # block pool.  CPU pinned memory backs the full KV for
                 # all layers.
@@ -1242,7 +1312,7 @@ def get_kv_cache_config_from_groups(
                 # ---- Phase-1: same concurrency, less GPU memory ----
                 # Keep num_blocks = num_blocks_base (same concurrency as
                 # baseline).  GPU memory drops from group_size tensors to
-                # (K+1) tensors, freeing HBM for other uses.
+                # the rolling tensor count, freeing HBM for other uses.
                 num_blocks = num_blocks_base
 
             gpu_mem_per_tensor = page_size * num_blocks / (1 << 30)
@@ -1255,7 +1325,7 @@ def get_kv_cache_config_from_groups(
                 else f"{num_blocks} (same as baseline)"
             )
             logger.info(
-                "KV pipelining (general): K+1 layout with %d physical "
+                "KV pipelining (general): rolling layout with %d physical "
                 "tensors (k_window=%d, group_size=%d, decode_only=%s). "
                 "Block pool: %s. "
                 "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
@@ -1272,7 +1342,7 @@ def get_kv_cache_config_from_groups(
                 else 0.0,
             )
 
-            # Build K+1 tensors.  For a single-group model (most common),
+            # Build rolling tensors.  For a single-group model (most common),
             # layers are assigned round-robin.  For multi-group models,
             # each tensor is shared by the corresponding layers from all
             # groups (same as baseline) but we only create K+1 of them.

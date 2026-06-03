@@ -1,0 +1,327 @@
+==========================================================================================
+  Real Q&A Correctness Validation for KV Cache Pipelining
+==========================================================================================
+  Model:      Qwen/Qwen2.5-0.5B-Instruct
+  K-window:   6
+  Inflate pool: False
+  Max tokens: 256
+  Enforce eager (both servers): True
+  Prompts:    30
+  Concurrency phases: [1, 2, 4, 8] (conc=1 runs first when included)
+  Stop if Phase 1 fails: yes (skip conc>1)
+  Result dir: /home/ben/vllm/results/kv_qa_validation/phased_eager_20260321_182027
+
+
+##########################################################################################
+# TEST: Phase 1 — single-request (conc=1)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=1) ...
+  Baseline done in 32.8s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=6) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=1) ...
+  Pipelined done in 212.8s (30/30 succeeded)
+
+==========================================================================================
+  Phase 1 — single-request (conc=1)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        0/30 (0.0%)
+  High similarity (>95%): 0/30 (0.0%)
+  Average similarity:   0.0421
+  Min similarity:       0.0093
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code               no  0.0224    1843.7ms    5189.3ms       256       256
+  code_02         code               no  0.0240    1835.1ms    5289.0ms       256       256
+  code_03         code               no  0.0382    1834.8ms    5526.8ms       256       256
+  context_01      contextual         no  0.0479     521.8ms    6052.3ms        69       256
+  context_02      contextual         no  0.0508     410.3ms    6223.4ms        53       256
+  creative_01     creative           no  0.0613     169.3ms    5460.1ms        21       256
+  creative_02     creative           no  0.0384     707.7ms    5621.9ms        97       256
+  fact_01         factual            no  0.3365     162.7ms   51879.7ms         8        38
+  fact_02         factual            no  0.0241     636.7ms    4843.8ms        86       256
+  fact_03         factual            no  0.0517     389.8ms    4844.8ms        52       256
+  fact_04         factual            no  0.0403     680.2ms    4509.8ms        93       256
+  fact_05         factual            no  0.0449     581.3ms    4708.1ms        79       256
+  general_01      general            no  0.0401     579.7ms    6910.8ms        79       256
+  instruct_01     instruction        no  0.0516     511.4ms    6472.9ms        69       256
+  instruct_02     instruction        no  0.0286    1831.0ms    6496.9ms       256       256
+  instruct_03     instruction        no  0.0093    1058.7ms    6575.1ms       146       256
+  math_01         math               no  0.0331    1831.9ms    5526.3ms       256       256
+  math_02         math               no  0.0226    1836.7ms    5127.7ms       256       256
+  math_03         math               no  0.0167    1632.0ms    5062.7ms       225       256
+  multi_01        multi_step         no  0.0410     311.9ms    5625.3ms        41       256
+  multi_02        multi_step         no  0.0142    1746.4ms    5775.0ms       242       256
+  reason_01       reasoning          no  0.0326    1660.6ms    4744.0ms       231       256
+  reason_02       reasoning          no  0.0216    1066.2ms    4713.3ms       146       256
+  reason_03       reasoning          no  0.0105    1835.9ms    4783.3ms       256       256
+  reason_04       reasoning          no  0.0098    1847.3ms    4715.6ms       256       256
+  summary_01      summarization      no  0.0177     773.1ms    5482.9ms       104       256
+  summary_02      summarization      no  0.0259     269.7ms    5549.0ms        34       256
+  translate_01    translation        no  0.0516     428.7ms    6482.8ms        57       256
+  tricky_01       tricky             no  0.0207    1838.7ms    6250.1ms       256       256
+  tricky_02       tricky             no  0.0357    1820.6ms    6393.5ms       252       256
+
+  --- Detailed diffs for 30 non-exact matches ---
+
+  [code_01] (similarity=0.0224)
+  Prompt: Write a Python function that checks if a string is a palindrome. Include a docst...
+    --- baseline
+    +++ pipelined
+    @@ -1,30 +1,28 @@
+    -Certainly! Below is a Python function that checks if a given string is a palindrome:
+    +Certainlystake
+    +Cautose
+    +Dilemma
+    
+    -```python
+    -def is_palindrome(s):
+    -    """
+    -    Check if the input string s is a palindrome.
+    +The task has been successfully completed.
+    +Lectures and discussions on the topic of climate change.
+    
+    -    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    -    e.g., madam and racecar.
+    -
+    -    Parameters:
+    -    s (str): The string to check.
+    ... (39 more diff lines)
+
+  [code_02] (similarity=0.0240)
+  Prompt: Write a Python function to compute the nth Fibonacci number using recursion with...
+    --- baseline
+    +++ pipelined
+    @@ -1,32 +1,49 @@
+    -Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+    +Certainlystake
+    +Cautose
+    +Dilemma
+    
+    -```python
+    -def fibonacci(n, memo={}):
+    -    """
+    -    Compute the nth Fibonacci number using recursion with memoization.
+    -
+    -    Args:
+    -        n (int): The position in the Fibonacci sequence.
+    -        memo (dict): A dictionary to store previously computed results of the function.
+    -
+    -    Returns:
+    -        int: The nth Fibonacci number.
+    -    """
+    ... (63 more diff lines)
+
+  [code_03] (similarity=0.0382)
+  Prompt: Explain the difference between a list and a tuple in Python. Give one code examp...
+    --- baseline
+    +++ pipelined
+    @@ -1,28 +1,16 @@
+    -In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+    +In 2013, 5G+X-64T831119 | Future Bliz | Fut移動生活網
+    
+    -1. **List**:
+    -   - A list is an ordered collection of elements that can be accessed using an index.
+    -   - Lists are mutable (you can change their contents after creation).
+    -   - Lists are defined with square brackets `[]`.
+    -   - Example:
+    -     ```python
+    -     my_list = [1, 2, 3]
+    -     print(my_list)  # Output: [1, 2, 3]
+    -     ```
+    +# 細粒体的定位和定性内容：一個關於細粒体在生物大分子中的作用機制及其在生命過程和生�_template" + "template"| "template" is used to reference this page.
+    
+    -2. **Tuple**:
+    -   - A tuple is an immutable (unchangeable) collection of elements.
+    -   - Tuples are also defined with parentheses `()`.
+    ... (23 more diff lines)
+
+  [context_01] (similarity=0.0479)
+  Prompt: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1,2 @@
+    -The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and expanding upon the existing fortifications, including the most famous sections.
+    +The following is TSE3 - A. Kian Mee Tin, 5D10/9.000、1000.0 Zico, also known as "The Godard Tourmalina, " an inca-vinifera, grows to a very __b) 100\degree C).\[iPine DFLC, which has been doing so far.
+    +A. 正文：1000\)mH, and BCD83333333331111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+
+  [context_02] (similarity=0.0508)
+  Prompt: Read the passage and answer the question.
+
+Passage: Machine learning is a subset...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1,23 @@
+    -The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on this learning process.
+    +The following is A+2015. �ulanvik University of S.R-IUBIC的愿景是什么？
+    +A. 正解。
+    +A. 2019-01-01
+    +B. 2018
+    +C. 2022.
+    +D. 2019
+    +Please, please, what is the next even unical调剂词性及/573-642
+    +A. 主动语态；
+    +B. 肩、背、脚、头等下面，我们从（）开始。A. 2015年1月1日；
+    +
+    +以下说法是否正确：
+    +A. 完全正确；
+    +B. 不正确；
+    +C. 无法比个字形如“和”、“以和为强；
+    +D. 与一般情况下，“和”在不同场合用法是______。
+    +
+    ... (7 more diff lines)
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainlystake
+Cautose
+Dilemma
+
+The task has been successfully completed.
+Lectures and discussions on the topic of climate change.
+
+Please maintain a 4:350:1989)
+Dilemma in an infinite power line system.
+A、n = 2 + iπ/6) such that f(z)=z^2. Find the number
+of solutions to this dioph -matics equation....
+  -> DIFF (sim=0.022)
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainlystake
+Cautose
+Dilemma
+
+The task has been successfully completed.
+Lectures and discussions on 
+-180°
+Position of the Sunflower Eye
+ 357.02964743384305
+Xây Đ贯 Lớp 3D
+Máy 5G
+Quay RetROSIVE
+Qua DRY-ROweo
+Quay Robo-WeeD
+Rivets
+Sawed-off
+WireFrameMeshGenerator
+VectorStackBuilder
+WebSQS.NETApplica...
+  -> DIFF (sim=0.024)
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In 2013, 5G+X-64T831119 | Future Bliz | Fut移動生活網
+
+# 細粒体的定位和定性内容：一個關於細粒体在生物大分子中的作用機制及其在生命過程和生�_template" + "template"| "template" is used to reference this page.
+
+## 您還可以以下任一或兩個條件作為關鍵字：
+
+• 使用此功能時，請確保您已正確選項並完成所有必要的預覽。
+• 如果您有其他問題或需求，我們會盡己所能提供幫助。
+
+# 粉碎与磨砂抛光机有哪些优缺点？
+
+当然，我必须先向你解释一下什么是“粉碎”这个概念。当你将物体压扁后，我们通...
+  -> DIFF (sim=0.038)
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  Pipelined: The following is TSE3 - A. Kian Mee Tin, 5D10/9.000、1000.0 Zico, also known as "The Godard Tourmalina, " an inca-vinifera, grows to a very __b) 100\degree C).\[iPine DFLC, which has been doing so far.
+A. 正文：1000\)mH, and BCD8333333333111111111111111111111111111111111111111111111111111111111111111111...
+  -> DIFF (sim=0.048)
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  Pipelined: The following is A+2015. �ulanvik University of S.R-IUBIC的愿景是什么？
+A. 正解。
+A. 2019-01-01
+B. 2018
+C. 2022.
+D. 2019
+Please, please, what is the next even unical调剂词性及/573-642
+A. 主动语态；
+B. 肩、背、脚、头等下面，我们从（）开始。A. 2015年1月1日；
+
+以下说法是否正确：
+A. 完全正确；
+B. 不正确；
+C. 无法比个字形如“和”、“以和为强；
+D. 与一般情况下，“和”在不同场合用法是______。
+
+A. 全选。
+...
+  -> DIFF (sim=0.051)
+
+  Latency Summary (Phase 1 — single-request (conc=1))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)             1088.5       7094.5     +551.8%
+  Median E2E (ms)           1058.7       5526.8     +422.0%
+  P99 E2E (ms)              1847.3      51879.7    +2708.4%
+  Min E2E (ms)               162.7       4509.8    +2672.2%
+  Max E2E (ms)              1847.3      51879.7    +2708.4%
+  Total tokens                 4488         7462
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/phased_eager_20260321_182027/qa_results_conc1.json
+
+==========================================================================================
+  Phase 1 failed similarity thresholds — skipping multi-request phases (--skip-multi-request-if-phase1-fails)
+==========================================================================================
+
+==========================================================================================
+  FINAL VERDICT
+==========================================================================================
+
+  [FAIL] Phase 1 — single-request (conc=1)
+    Exact matches:      0/30
+    Average similarity: 0.0421 (BELOW THRESHOLD 0.90)
+    Min similarity:     0.0093 (BELOW THRESHOLD 0.50)
+
+  ==================================================
+  OVERALL: FAIL — KV pipelining may have correctness issues
+  ==================================================
+
+  Validation summary: /home/ben/vllm/results/kv_qa_validation/phased_eager_20260321_182027/validation_summary.json
+  Full results:       /home/ben/vllm/results/kv_qa_validation/phased_eager_20260321_182027/

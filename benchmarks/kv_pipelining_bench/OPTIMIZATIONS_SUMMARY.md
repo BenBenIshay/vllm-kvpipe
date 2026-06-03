@@ -129,6 +129,10 @@ Aligned validation: `/tmp/kv_b1_b2_aligned_v2/` (gpu_memory_utilization=0.72). K
 | `VLLM_KVPIPE_SCRATCH_PREFETCH` | `0` | Phase H 5a (regression if on) |
 | `VLLM_KVPIPE_PROFILE` | `0` | Per-forward hook profiler |
 | `VLLM_KVPIPE_SKIP_DELTA_STAGE` | `0` | Diagnostic: no D2H |
+| `VLLM_KVPIPE_FAKE_TRANSFER` | `0` | Diagnostic: same CUDA DAG as production; zero-byte memcpy; instant-ready events; compute still issues `wait_event` (orchestration thesis bench) |
+| `VLLM_KVPIPE_PROFILE_JSON` | `0` | With `VLLM_KVPIPE_PROFILE=1`, emit `KVPIPE_JSON` lines for summarizer |
+
+**Orchestration thesis (conc=1, three configs):** `benchmarks/kv_pipelining_bench/prove_conc1_thesis.sh` — R0 baseline, R1 pipelined (B1+B2), R3 fake-transfer.
 
 ---
 

@@ -11,6 +11,7 @@ import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.distributed.kv_transfer import has_kv_transfer_group
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import get_model_loader
@@ -843,6 +844,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Special case: no tokens to run.
                 return CUDAGraphMode.NONE, 0, None
 
+            # Renounce full-graph replay when a KV connector is active (same as v1
+            # GPUModelRunner: hooks must run every forward; revisit after validation).
+            if has_kv_transfer_group():
+                return CUDAGraphMode.NONE, total_num_scheduled_tokens, None
+
             cudagraph_size = self.cudagraph_manager.get_cudagraph_size(
                 scheduler_output, total_num_scheduled_tokens
             )
@@ -862,6 +868,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 scheduler_output, total_num_scheduled_tokens
             )
             if cudagraph_size_before_dp is None:
+                cudagraph_size_before_dp = -1
+            # Force eager path for all DP ranks (see dp_size==1 branch above).
+            if has_kv_transfer_group():
                 cudagraph_size_before_dp = -1
 
         assert cudagraph_size_before_dp is not None

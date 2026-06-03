@@ -181,6 +181,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._skip_delta_stage = (
             os.environ.get("VLLM_KVPIPE_SKIP_DELTA_STAGE", "0") == "1"
         )
+        self._fake_transfer = (
+            os.environ.get("VLLM_KVPIPE_FAKE_TRANSFER", "0") == "1"
+        )
 
         # --- wait_for_layer_load instrumentation ---
         # Pending CUDA event pairs (layer, step, before_event, after_event).
@@ -541,11 +544,20 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             slot_mapping, torch.Tensor
         ):
             layer_idx = self._layer_index[layer_name]
-            if (
-                self._use_step_plan
-                and self._step_plan.prepared
-                and not self._skip_delta_stage
-            ):
+            if self._use_step_plan and self._step_plan.prepared:
+                if self._skip_delta_stage:
+                    prof = self._hook_profile
+                    t_save = time.perf_counter() if prof is not None else 0.0
+                    self._prefetch_after_save_by_index(
+                        layer_idx, physical_block_ids=self._decode_phys_blocks
+                    )
+                    self._step_plan.layers_issued += 1
+                    if prof is not None:
+                        prof.fwd.save_calls += 1
+                        prof.fwd.save_host_ms += (
+                            time.perf_counter() - t_save
+                        ) * 1000.0
+                    return
                 self._issue_decode_layer_step(layer_name, kv_layer)
                 return
             prof = self._hook_profile
@@ -588,16 +600,18 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             if self._profile_save_submit:
                 self._total_save_submit_time += time.perf_counter() - t0
                 self._total_save_submit_calls += 1
-            if n_tok <= 1 and (
-                host_slot is None
-                or (
-                    num_actual_tokens is not None and num_actual_tokens != 1
+            if self._skip_delta_stage or (
+                n_tok <= 1
+                and (
+                    host_slot is None
+                    or (
+                        num_actual_tokens is not None
+                        and num_actual_tokens != 1
+                    )
                 )
+            ) or (
+                n_tok > 1 and not self._worker_state._decode_batch_active
             ):
-                self._prefetch_after_save_by_index(
-                    layer_idx, physical_block_ids=self._decode_phys_blocks
-                )
-            elif n_tok > 1 and not self._worker_state._decode_batch_active:
                 self._prefetch_after_save_by_index(
                     layer_idx, physical_block_ids=self._decode_phys_blocks
                 )

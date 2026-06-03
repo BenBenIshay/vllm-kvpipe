@@ -21,10 +21,12 @@ from vllm.v1.kv_pipelining_profile import (
 )
 from vllm.v1.kv_pipelining_step import (
     DecodeStepTransferPlan,
+    build_prefetch_target_indices,
     extract_attn_metadata_dict,
     find_step_slot_mapping,
     kv_pipelining_batched_d2h_enabled,
     kv_pipelining_step_plan_enabled,
+    kv_pipelining_wrap_prefetch_enabled,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +59,7 @@ class DirectKWindowMixin:
     _hook_profile: DecodeHookProfile | None
     _use_step_plan: bool
     _use_batched_d2h: bool
+    _use_wrap_prefetch: bool
     _step_plan: DecodeStepTransferPlan
 
     def _init_direct_k_window(
@@ -83,18 +86,25 @@ class DirectKWindowMixin:
         self._layer_index = {
             name: idx for idx, name in enumerate(self._layer_names)
         }
+        num_layers = len(self._layer_names)
+        self._use_wrap_prefetch = kv_pipelining_wrap_prefetch_enabled()
+        self._prefetch_target_idx = build_prefetch_target_indices(
+            num_layers,
+            self._k_window,
+            wrap=self._use_wrap_prefetch,
+        )
         self._prefetch_target = [
-            self._layer_names[i + self._k_window]
-            if self._k_window > 0 and i + self._k_window < len(self._layer_names)
-            else None
-            for i in range(len(self._layer_names))
+            self._layer_names[idx] if idx is not None else None
+            for idx in self._prefetch_target_idx
         ]
-        self._prefetch_target_idx = [
-            i + self._k_window
-            if self._k_window > 0 and i + self._k_window < len(self._layer_names)
-            else None
-            for i in range(len(self._layer_names))
-        ]
+        if self._use_wrap_prefetch and self._k_window > 0:
+            logger.info(
+                "DirectKWindow: wrap-around prefetch enabled "
+                "(layers %d..%d save → prefetch 0..%d); bootstrap off",
+                max(0, num_layers - self._k_window),
+                num_layers - 1,
+                self._k_window - 1,
+            )
         self._bootstrap_layer_names = (
             self._layer_names[: self._k_window] if self._k_window > 0 else []
         )
@@ -460,7 +470,13 @@ class DirectKWindowMixin:
         self._step_plan.reset()
 
     def _prefetch_bootstrap_layers(self) -> None:
-        """Prefetch first K layers for the next decode step (overlap with scheduling)."""
+        """Prefetch first K layers for the next decode step (overlap with scheduling).
+
+        Skipped when wrap-around prefetch is enabled: layers L-K..L-1 already
+        issued H2D for 0..K-1 during the same forward.
+        """
+        if self._use_wrap_prefetch:
+            return
         if (
             self._worker_state is None
             or self._forward_context is None

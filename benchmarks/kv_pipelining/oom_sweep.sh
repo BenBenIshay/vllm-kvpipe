@@ -28,7 +28,7 @@ function start_server() {
       --kv-k-window "${K_WINDOW}"
       --free-original-kv-cache
       --kv-transfer-config "{\"kv_connector\":\"LayerwisePipelinedConnector\"}"
-      --enable-prefix-caching false
+      --no-enable-prefix-caching
     )
   fi
 

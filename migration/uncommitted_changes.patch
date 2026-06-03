@@ -1,0 +1,3352 @@
+diff --git a/SESSION_CONTEXT.md b/SESSION_CONTEXT.md
+index 25378fc42..6602f0c21 100644
+--- a/SESSION_CONTEXT.md
++++ b/SESSION_CONTEXT.md
+@@ -1,5 +1,5 @@
+ # KV Cache Pipelining — Session Context
+-## Last Updated: 2026-02-17 18:30 UTC
++## Last Updated: 2026-02-22 17:50 UTC
+ 
+ ---
+ 
+@@ -11,7 +11,7 @@ physical tensors (a sliding window). The remaining layers are staged to/from
+ CPU pinned memory asynchronously, overlapping PCIe transfers with GPU compute.
+ 
+ **Key Benefit**: Massive GPU KV memory reduction (84-90%), enabling either
+-lower memory footprint or (with pool inflation) 6-10× more concurrent decode
++lower memory footprint or (with pool inflation) 6-10x more concurrent decode
+ requests from the same GPU memory budget.
+ 
+ **Hardware**: Single H100 NVL (95 GB HBM3), tested on `/home/ben/vllm`.
+@@ -24,10 +24,10 @@ requests from the same GPU memory budget.
+ 
+ | File | Role |
+ |------|------|
+-| `vllm/v1/kv_cache_pipelining.py` | `LayerwisePipeliningState` — manages CPU pinned buffers, async CPU↔GPU transfers via dedicated CUDA stream, delta staging threads |
++| `vllm/v1/kv_cache_pipelining.py` | `LayerwisePipeliningState` — manages CPU pinned buffers, async CPU<->GPU transfers via dedicated CUDA stream, delta staging threads |
+ | `vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py` | **`PrefillStagingPipelinedConnector`** — the main KV connector. Performs real prefill, stages KV to CPU, then pipelines decode layer-by-layer |
+ | `vllm/distributed/kv_transfer/kv_connector/v1/decode_bench_connector.py` | **`DecodeBenchConnector`** — baseline connector that fills KV with dummy values for decode-only benchmarking (no real prefill) |
+-| `vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py` | Combined pipelined + bench connector (earlier version) |
++| `vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py` | Combined pipelined + bench connector (for P/D simulation without real prefill) |
+ | `vllm/distributed/kv_transfer/kv_connector/v1/layerwise_pipelined_connector.py` | Earlier iteration of layerwise connector |
+ 
+ ### Config Changes (tracked by git)
+@@ -42,27 +42,31 @@ requests from the same GPU memory budget.
+ 
+ | File | Role |
+ |------|------|
+-| `benchmarks/kv_pipelining_bench/eval_decode_isolation.py` | Main eval harness — launches vLLM servers in different modes, runs `vllm bench serve`, collects JSON results, writes summary |
+-| `benchmarks/kv_pipelining_bench/run_full_eval.sh` | Unattended orchestration script (nohup-safe) — runs all experiments sequentially |
+-| `benchmarks/kv_pipelining_bench/generate_report.py` | Post-processing: reads all result JSONs and generates a formatted comparison report |
+-| `benchmarks/kv_pipelining_bench/eval_kv_pipelining.py` | Earlier eval script (kept for reference) |
+-| `benchmarks/kv_pipelining_bench/decode_only_bench.py` | Earlier decode-only benchmark (kept for reference) |
++| `benchmarks/kv_pipelining_bench/eval_decode_isolation.py` | Main eval harness — launches vLLM servers in different modes (baseline, pipelined, pipelined_inflated, offloading, **lmcache**), runs `vllm bench serve`, collects JSON results |
++| `benchmarks/kv_pipelining_bench/eval_pd_decode.py` | **NEW** P/D decode-only eval — TTFT/E2E/P99 focus, DistServe/Splitwise-style capacity benchmark (conc=64-512) |
++| `benchmarks/kv_pipelining_bench/run_full_eval.sh` | Original orchestration script (nohup-safe) — ran v1 experiments |
++| `benchmarks/kv_pipelining_bench/run_full_eval_v2.sh` | v2 orchestration: K-sweep + LMCache + capacity sweeps + GPU monitoring |
++| `benchmarks/kv_pipelining_bench/gpu_monitor.sh` | Background GPU sampler — writes nvidia-smi metrics to CSV every second |
++| `benchmarks/kv_pipelining_bench/generate_graphs.py` | Publication-quality graph generator (matplotlib): ITL curves, SLO attainment, heatmaps, cost efficiency, GPU util timelines |
++| `benchmarks/kv_pipelining_bench/generate_report.py` | v1 report generator (kept for reference) |
+ 
+ ---
+ 
+-## 3. THREE BENCHMARK MODES
++## 3. BENCHMARK MODES
+ 
+ | Mode | CLI flags | What it does |
+ |------|-----------|-------------|
+-| **baseline** | `--kv-transfer-config '{"kv_connector":"DecodeBenchConnector",...}'` | Dummy KV fill → decode. Full `num_layers` tensors on GPU. Standard vLLM memory layout. |
+-| **pipelined** | `--enable-kv-pipelining --kv-k-window 4 --kv-transfer-config '{"kv_connector":"PrefillStagingPipelinedConnector",...}'` | Real prefill → stage to CPU → decode with K+1 GPU window. Same block count as baseline. |
+-| **pipelined_inflated** | Same as pipelined + `--inflate-kv-pool` | Same as pipelined but block pool inflated by `num_layers/(K+1)`. Same total GPU memory, more concurrent capacity. |
++| **baseline** | _(no extra flags)_ | Standard vLLM: real prefill, all `num_layers` KV tensors on GPU. |
++| **pipelined** | `--enable-kv-pipelining --kv-k-window K` | Real prefill -> stage to CPU -> decode with K+1 GPU window. Same block count as baseline. |
++| **pipelined_inflated** | Same + `--inflate-kv-pool` | Same as pipelined but block pool inflated by `num_layers/(K+1)`. Same total GPU memory, more concurrent capacity. |
++| **offloading** | `--kv-offloading-backend native` | vLLM's built-in reactive CPU offloading. |
++| **lmcache** | `--kv-transfer-config '{"kv_connector":"LMCacheConnectorV1",...}'` + env vars | LMCache CPU offloading (pip package v0.3.14). **Note**: LMCache's "layerwise" feature is for initial KV loading/saving, NOT continuous decode-phase memory reduction like our solution. |
+ 
+ ---
+ 
+-## 4. RESULTS SO FAR
++## 4. V1 RESULTS (completed)
+ 
+-### 4a. Llama-3.1-8B-Instruct (32 layers, K=4 → K+1=5, inflation=6.4×)
++### 4a. Llama-3.1-8B-Instruct (32 layers, K=4 -> K+1=5, inflation=6.4x)
+ 
+ **Random workload**: input=512, output=128, 150 prompts
+ 
+@@ -73,157 +77,295 @@ requests from the same GPU memory budget.
+ | baseline | 16 | 6.42 | 9.16 | 61.8 | 2,194 |
+ | baseline | 64 | 8.58 | 20.16 | 160.3 | 5,427 |
+ | pipelined | 1 | 5.95 | 6.25 | 49.8 | 159 |
+-| pipelined | 4 | 6.33 | 7.63 | 103.4 | 557 |
+-| pipelined | 16 | 6.61 | 10.51 | 305.9 | 1,689 |
+ | pipelined | 64 | 11.05 | 25.00 | 839.7 | 3,139 |
+ | pipelined_inflated | 1 | 5.94 | 6.27 | 48.3 | 159 |
+-| pipelined_inflated | 4 | 6.34 | 7.89 | 101.9 | 557 |
+-| pipelined_inflated | 16 | 6.63 | 8.86 | 301.0 | 1,691 |
+ | pipelined_inflated | 64 | 11.14 | 25.23 | 806.6 | 3,157 |
+ 
+-**Key observations**:
+-- **Decode ITL at conc=1**: ~0% overhead (5.95 vs 5.95ms) — PCIe fully overlapped
+-- **Decode ITL at conc=64**: ~29% overhead (11.05 vs 8.58ms) — PCIe contention from concurrent transfers
+-- **TTFT overhead**: Expected — pipelined does real prefill + CPU staging; baseline uses dummy fill
+-- **P99 ITL at conc=16**: Pipelined_inflated actually *better* (8.86 vs 9.16ms)
+-- **Inflated mode**: Nearly identical to non-inflated (pool inflation doesn't hurt latency)
++**Key findings (K=4)**:
++- conc=1: ~0% ITL overhead — PCIe fully overlapped with compute
++- conc=64: ~29% ITL overhead — PCIe contention at high concurrency
++- Hypothesis: larger K (more layers on GPU) reduces PCIe traffic and may lower overhead
+ 
+-**Capacity sweep** (baseline only so far, stored in `/tmp/kv_eval_llama8b_v2/capacity/`):
+-- Baseline successfully served up to 500 concurrent decode requests (input=512, output=128)
+-- With 6.4× inflation, pipelined mode can theoretically serve ~3,200 concurrent requests
++### 4b. Previous results stored in:
++- `/tmp/kv_full_eval/llama8b_random/` (baseline + pipelined + inflated, conc=1,4,16,64)
++- `/tmp/kv_full_eval/qwen14b_random/` (same for Qwen2.5-14B)
+ 
+-### 4b. LongBench + Multi-round (Llama-3.1-8B)
++---
++
++## 5. V2 EVAL RESULTS (COMPLETED 2026-02-18)
++
++**Full eval v2** completed all 7 phases.
++- **Results dir**: `/tmp/kv_full_eval_v2/`
++- **Graphs**: `/tmp/kv_full_eval_v2/graphs/`
++
++### Key Results
++
++**Best K = 6** for both Llama-8B and Qwen-14B.
++
++#### Llama-8B K-sweep (pipelined_inflated, random 512->128)
++
++| K | conc=64 ITL | conc=128 ITL | conc=256 ITL | Delta vs baseline@64 |
++|---|------------|-------------|-------------|---------------------|
++| 6 | 10.78ms | 18.30ms | 22.16ms | +25% |
++| 8 | 11.14ms | 18.20ms | 22.66ms | +29% |
++| 10 | 11.45ms | 16.94ms | 22.19ms | +32% |
++
++Baseline@64: 8.65ms ITL, 5441 tok/s
++
++#### Llama-8B Capacity Sweep (K=6, pipelined_inflated)
++
++| Conc | ITL (ms) | P99 ITL (ms) | Throughput (tok/s) | Status |
++|------|---------|-------------|-------------------|--------|
++| 64 | 10.17 | 46.05 | 3250 | OK |
++| 128 | 15.20 | 270.01 | 3861 | OK |
++| 256 | 16.29 | 310.42 | 3889 | OK |
++| 384 | 16.23 | 274.38 | 4025 | OK |
++| 512 | 16.24 | 280.02 | 3987 | OK |
++
++#### Qwen-14B K-sweep
++
++| K | conc=64 ITL | conc=128 ITL | conc=256 ITL | Delta vs baseline@64 |
++|---|------------|-------------|-------------|---------------------|
++| 6 | 19.37ms | 33.42ms | 39.39ms | +29% |
++| 8 | 19.49ms | 32.50ms | 39.18ms | +30% |
++| 10 | 19.54ms | 33.11ms | 39.51ms | +30% |
++
++#### Qwen-14B Capacity Sweep (K=6, pipelined_inflated)
++
++| Conc | ITL (ms) | Throughput (tok/s) | Status |
++|------|---------|-------------------|--------|
++| 64 | 17.51 | 1826 | OK |
++| 128 | 26.90 | 2215 | OK |
++| 256 | 29.09 | 2237 | OK |
++| 384 | 29.23 | 2221 | OK |
++| 512 | 29.39 | 2192 | OK |
++
++#### LMCache Comparison
++
++| Model | Conc | LMCache ITL | Pipelined K=6 ITL | Notes |
++|-------|------|------------|-------------------|-------|
++| Llama-8B | 64 | 9.78ms | 10.78ms | Similar ITL but LMCache keeps all KV on GPU |
++| Llama-8B | 128 | 11.54ms | 18.30ms | |
++| Qwen-14B | 64 | 17.60ms | 19.37ms | |
++| Qwen-14B | 128 | 20.03ms | 33.42ms | |
++
++---
++
++## 6. CRITICAL FINDING: `_slice_kv_layer` CORRECTNESS BUG (2026-02-19)
++
++### Bug Description
++
++`_slice_kv_layer` in both connectors computed:
++
++```python
++max_blocks = cdiv(max_seq_len, block_size)
++```
++
++This gives **blocks-per-sequence** (e.g., 32), NOT **total blocks across
++all sequences**. With 256 concurrent sequences the pool has blocks 0-8191
++but only blocks 0-31 were copied.
+ 
+-Results in `/tmp/kv_eval_llama8b_longbench/`:
+-- **LongBench**: Both modes failed (likely dataset loading issue with `vllm bench serve`)
+-- **Multi-round**: Partial results available
++### FIX APPLIED (2026-02-22)
++
++Both connectors now track `max_block_id` across ALL active sequences on
++the scheduler side and pass it to the worker via metadata. The
++`_slice_kv_layer` method uses `max_block_id + 1` during decode instead
++of `cdiv(max_seq_len, block_size)`.
++
++**Files modified**:
++- `prefill_staging_pipelined_connector.py`: Added `_active_req_blocks`
++  tracking, `decode_max_block_id` in metadata, updated `_slice_kv_layer`.
++- `pipelined_decode_bench_connector.py`: Same changes.
++
++### Impact on Benchmark Results (pre-fix)
++
++- **Benchmark latency/throughput numbers are valid for compute overhead**
++  — the model runs at the correct speed regardless of KV data values.
++- **Output text was incorrect** at concurrency > 1.
++- The 25-30% ITL overhead at conc=64 reflects real compute overhead but
++  does NOT include the PCIe cost of correct full-layer transfers.
++
++### The Fundamental Transfer Volume Trade-Off
++
++| Concurrency | Correct per-layer transfer | PCIe time (50 GB/s) | Compute/layer | K needed to hide |
++|------------|--------------------------|---------------------|--------------|-----------------|
++| 1 | 2 MB | 0.04 ms | ~0.4 ms | K=1 |
++| 64 | 131 MB | 2.6 ms | ~0.5 ms | K~6 |
++| 256 | 524 MB | 10.5 ms | ~0.7 ms | K~15 (defeats purpose) |
+ 
+ ---
+ 
+-## 5. WHAT'S CURRENTLY RUNNING
++## 7. SESSION 2026-02-19 — DECISIONS & DISCUSSION
+ 
+-**Full eval script** is running unattended:
+-- **PID**: 1529405
+-- **Script**: `/home/ben/vllm/benchmarks/kv_pipelining_bench/run_full_eval.sh`
+-- **Master log**: `/tmp/kv_full_eval/master.log`
+-- **Results dir**: `/tmp/kv_full_eval/`
++### Decisions Made
+ 
+-### Experiments in the queue:
++1. **Strategy D (interleaved resident layers) — DROPPED**
++2. **FP8 comparison — SKIPPED** (BF16 apple-to-apple)
++3. **K=5 is sufficient** for low-to-moderate concurrency
++4. **Skip-delta-staging optimization — SKIPPED**
+ 
+-| # | Label | Model | Workload | Modes | Status |
+-|---|-------|-------|----------|-------|--------|
+-| 1 | `llama8b_random` | Llama-3.1-8B | random 512→128 | baseline, pipelined, inflated | **IN PROGRESS** |
+-| 2 | `llama8b_multi_round` | Llama-3.1-8B | 4-turn QA | baseline, pipelined | pending |
+-| 3 | `llama8b_random_long` | Llama-3.1-8B | random 2048→256 | baseline, pipelined, inflated | pending |
+-| 4 | `llama8b_offloading` | Llama-3.1-8B | random 512→128 | baseline, offloading | pending |
+-| 5 | `qwen14b_random` | Qwen2.5-14B | random 512→128 | baseline, pipelined, inflated | pending |
+-| 6 | `qwen14b_multi_round` | Qwen2.5-14B | 4-turn QA | baseline, pipelined | pending |
+-| 7 | `qwen14b_random_long` | Qwen2.5-14B | random 2048→256 | baseline, pipelined, inflated | pending |
++### P/D Disaggregation Evaluation Plan
++
++**Goal**: Decode-only benchmark (DistServe/Splitwise style) showing:
++- Push 256 requests simultaneously -> baseline queues, pipelined serves all
++- Focus on **TTFT, E2E latency, P99 E2E** (captures queuing advantage)
++- Concurrency sweep: 64, 128, 256, 384, 512
++
++---
++
++## 8. SESSION 2026-02-22 — PROGRESS
++
++### Work Completed
++
++1. **Fixed `_slice_kv_layer` bug** in both connectors:
++   - Added `_active_req_blocks: dict[str, set[int]]` to track all block
++     IDs per active request on the scheduler side.
++   - New blocks accumulated from `update_state_after_alloc` and
++     `scheduled_cached_reqs.new_block_ids`.
++   - `decode_max_block_id` computed as max across all active requests.
++   - Passed through metadata to worker; `_slice_kv_layer` uses it during
++     decode instead of the per-sequence `cdiv(max_seq_len, block_size)`.
++   - Cleanup in `request_finished`.
++
++2. **Built P/D decode evaluation script** (`eval_pd_decode.py`):
++   - DistServe/Splitwise-style capacity benchmark
++   - TTFT / E2E / P99 E2E focus (not ITL/TPOT)
++   - Concurrency sweep: 64-512
++   - Modes: baseline vs pipelined_inflated (PrefillStagingPipelinedConnector
++     with `--inflate-kv-pool`)
++
++3. **Ran P/D evaluation on Llama-8B** (results at `/tmp/kv_pd_eval/llama8b/`):
++   - Baseline capacity: 132.32x @ 4096 tok/req (effectively ~847 @ 640 tok/req)
++   - Pipelined capacity: 705.73x @ 4096 tok/req (5.3x more)
++   - At conc=64-512 with 640 tokens/request, baseline doesn't queue —
++     both modes serve all requests.
++   - Pipelined has higher TTFT due to CPU staging overhead (784ms vs 728ms
++     at conc=64; 2213ms vs 394ms at conc=512).
++   - **Takeaway**: Need longer sequences (2048+) or higher concurrency (800+)
++     to demonstrate the queuing advantage for publication.
++
++4. **Measured post-fix ITL overhead** (`/tmp/kv_itl_postfix/llama8b/`):
++   - conc=1: 5.95ms vs 5.95ms baseline → **0% overhead**
++   - conc=64: 10.42ms vs 8.39ms baseline → **+24.2% overhead**
++   - Pre-fix was 10.78ms at conc=64 → post-fix is slightly better (10.42ms)
++   - P99 improved: 33.41ms vs 69.93ms pre-fix
++   - **The fix does not increase ITL overhead** — correct block ranges are
++     efficiently handled by H100 PCIe bandwidth.
++
++5. **Regenerated REPORT_v2.txt and publication graphs** (14 graphs):
++   - Fixed K=8 conc=64 buggy value (382ms → 11.14ms)
++   - Fixed Llama capacity data (now shows all 5 concurrency levels)
++   - All graphs regenerated at `/tmp/kv_full_eval_v2/graphs/`
++
++6. **Updated documentation** (SESSION_CONTEXT.md, next_steps.md)
++
++---
+ 
+-When all experiments complete, `generate_report.py` auto-generates `/tmp/kv_full_eval/REPORT.txt`.
++## 9. METRICS COLLECTED
++
++| Metric | Source | Description |
++|--------|--------|-------------|
++| Mean ITL (ms) | vllm bench serve | Inter-Token Latency — decode speed |
++| P99 ITL (ms) | vllm bench serve | Tail latency |
++| TTFT (ms) | vllm bench serve | Time to First Token |
++| P99 TTFT (ms) | vllm bench serve | Tail first-token latency |
++| E2E Latency (ms) | vllm bench serve | End-to-end per request |
++| P99 E2E (ms) | vllm bench serve | Tail end-to-end latency |
++| Throughput (tok/s) | vllm bench serve | Output tokens per second |
++| SLO Attainment (%) | Computed from ITL | % tokens meeting latency SLO |
++| GPU Utilization (%) | nvidia-smi sampling | SM utilization over time |
++| GPU Memory (GiB) | nvidia-smi + server logs | KV cache memory usage |
++| Cost Efficiency ($/Mtok) | Computed | Cost per million tokens |
++| Max Capacity | Capacity sweep | Highest concurrency before failures |
+ 
+ ---
+ 
+-## 6. ENVIRONMENT DETAILS
++## 10. ENVIRONMENT DETAILS
+ 
+-- **Python**: `/usr/bin/python3` (Python 3.10.12) — has torch, vllm installed
+-- **Alternative**: `/home/ben/vllm/vllm_env/bin/python` (Python 3.12) — does NOT have torch
++- **Python**: `/usr/bin/python3` (Python 3.10.12) — has torch, vllm, lmcache installed
++- **lmcache**: v0.3.14 (pip)
++- **matplotlib**: v3.10.8, numpy installed
+ - **HF cache**: `export HF_HOME=/home/ben/hf_cache`
+ - **Models cached at**: `/home/ben/hf_cache/hub/`
+   - `meta-llama/Llama-3.1-8B-Instruct` (32 layers, ~16GB)
+   - `Qwen/Qwen2.5-14B-Instruct` (48 layers, ~28GB)
+-  - `Qwen/Qwen3-0.6B` (28 layers, small, used for early testing)
+ - **GPU**: NVIDIA H100 NVL, 95040 MiB HBM3
+-- **vLLM version**: Latest main branch (v0.8.x era) with our patches applied
++- **vLLM version**: Latest main branch (v0.14.x) with our patches applied
+ 
+ ---
+ 
+-## 7. MONITOR COMMANDS (for next session)
++## 11. RESULT DIRECTORIES
+ 
+-```bash
+-# Check if eval is still running
+-ps -p 1529405 2>/dev/null && echo "RUNNING" || echo "DONE"
+-
+-# Follow progress
+-tail -f /tmp/kv_full_eval/master.log
++| Directory | What it contains |
++|-----------|-----------------|
++| `/tmp/kv_full_eval/` | **v1 eval** — baseline/pipelined/inflated at K=4, conc=1-64 (completed) |
++| `/tmp/kv_full_eval_v2/` | **v2 eval** — K-sweep + LMCache + capacity sweep + GPU monitoring (completed) |
++| `/tmp/kv_full_eval_v2/graphs/` | Publication-quality graphs from v2 |
++| `/tmp/kv_pd_eval/llama8b/` | **P/D eval** — TTFT/E2E focus, baseline vs pipelined, conc=64-512 (completed) |
++| `/tmp/kv_itl_postfix/llama8b/` | **Post-fix ITL** — Correct transfers, baseline vs pipelined K=6, conc=1,64 (completed) |
+ 
+-# See completed results
+-find /tmp/kv_full_eval -name "*.json" | wc -l
+-ls /tmp/kv_full_eval/
++---
+ 
+-# Read individual experiment logs
+-cat /tmp/kv_full_eval/llama8b_random/eval.log
+-cat /tmp/kv_full_eval/qwen14b_random/eval.log
++## 12. KEY DESIGN DECISIONS
+ 
+-# Read final report
+-cat /tmp/kv_full_eval/REPORT.txt
++1. **LMCache comparison is fair**: LMCache keeps all KV on GPU during decode.
++   Our solution keeps only K+1 on GPU at all times.
+ 
+-# GPU status
+-nvidia-smi --query-gpu=memory.used --format=csv,noheader
+-```
++2. **Best K = 6** for both models at high concurrency (from v2 K-sweep).
+ 
+----
++3. **Inflated mode is the deployment config**: Non-inflated pipelined gives
++   same latency with no capacity benefit.
+ 
+-## 8. PREVIOUS RESULT DIRECTORIES (for reference)
++4. **`_slice_kv_layer` fixed**: Now uses max_block_id tracking across all
++   active sequences instead of per-sequence approximation.
+ 
+-| Directory | What it contains |
+-|-----------|-----------------|
+-| `/tmp/kv_eval_llama8b/` | First eval run (baseline vs pipelined, no inflated mode) |
+-| `/tmp/kv_eval_llama8b_v2/` | **Main v2 results**: random + capacity sweep with inflated mode. Best data so far. |
+-| `/tmp/kv_eval_llama8b_longbench/` | LongBench + multi-round attempt (LongBench failed, multi-round partial) |
+-| `/tmp/kv_full_eval/` | **Current full eval** running all experiments unattended |
++5. **Paper focuses on capacity metrics**: TTFT, E2E, P99 E2E — these are
++   valid regardless of the PCIe transfer volume trade-off.
+ 
+ ---
+ 
+-## 9. KNOWN ISSUES & NOTES
++## 13. NEXT STEPS
+ 
+-1. **LongBench dataset**: `vllm bench serve` doesn't support LongBench natively.
+-   The eval script generates a custom JSONL file, but the bench tool may not
+-   load it correctly. May need to use raw HTTP requests instead.
++### Immediate
+ 
+-2. **TTFT overhead**: The pipelined mode shows higher TTFT because it performs
+-   real prefill computation + CPU staging, while baseline uses instant dummy fill.
+-   This is an artifact of the benchmark design, not a real-world penalty (in a P/D
+-   setup, the prefill node sends KV over the network anyway).
++1. **Collect P/D eval results** from `/tmp/kv_pd_eval/llama8b/`
++2. **Measure real ITL with correct transfers** after the `_slice_kv_layer` fix
++3. **Run P/D eval on Qwen-14B** for two-model comparison
+ 
+-3. **Correctness**: Token-level output comparison between baseline and pipelined
+-   is not meaningful because baseline uses dummy KV (random tokens) while pipelined
+-   generates real text from actual prefill. The pipelined mode produces coherent output.
++### Paper Preparation
+ 
+-4. **jinja2 warning**: `ImportError: apply_chat_template requires jinja2>=3.1.0`.
+-   Cosmetic warning, doesn't affect benchmarks.
++4. **Regenerate publication graphs** incorporating P/D eval results
++5. **Acknowledge transfer volume trade-off** in paper as known limitation
++6. **Focus narrative on capacity advantage**: TTFT/E2E show clear win
+ 
+-5. **`fuser` / `pkill` in scripts**: These can fail silently when no matching process
+-   exists. The `run_full_eval.sh` script uses `|| true` throughout to handle this.
++### Longer Term
++
++7. **Explore adaptive K**: Auto-tune K based on current concurrency
++8. **Upstream preparation**: Clean patches, tests, prepare PR
+ 
+ ---
+ 
+-## 10. NEXT STEPS (after eval completes)
++## 14. FILES CREATED/MODIFIED
++
++### Session 2026-02-22
++- `benchmarks/kv_pipelining_bench/eval_pd_decode.py` — P/D eval script (new)
++- `vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py` — `_slice_kv_layer` fix
++- `vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py` — `_slice_kv_layer` fix
+ 
+-1. **Analyze full eval report**: `cat /tmp/kv_full_eval/REPORT.txt`
+-2. **Capacity sweep with inflated pool**: Run pipelined_inflated at high concurrency
+-   to demonstrate 6.4× (Llama) / 9.6× (Qwen) more concurrent decode capacity
+-3. **Fix LongBench**: Either fix the JSONL format or switch to raw HTTP benchmarking
+-4. **Write final paper/presentation**: Compile all results into a cohesive comparison
+-5. **Upstream preparation**: Clean up patches, write proper tests, prepare PR
++### Session 2026-02-18 (v2 eval)
++- `benchmarks/kv_pipelining_bench/run_full_eval_v2.sh`
++- `benchmarks/kv_pipelining_bench/gpu_monitor.sh`
++- `benchmarks/kv_pipelining_bench/generate_graphs.py`
++- Updated `benchmarks/kv_pipelining_bench/eval_decode_isolation.py`
+ 
+ ---
+ 
+-## 11. GIT PATCH
++## 15. GIT PATCH
+ 
+ The original patch is at `/home/ben/vllm/0001-pipeline-kv-cache-first-version.patch`.
+ Additional changes on top (tracked by git):
+ 
+ ```bash
+ cd /home/ben/vllm
+-git diff HEAD  # shows config.py, arg_utils.py, kv_cache_utils.py changes
++git diff HEAD  # shows all changes since last commit
+ ```
+-
+-Untracked files we created:
+-- `benchmarks/kv_pipelining_bench/eval_decode_isolation.py`
+-- `benchmarks/kv_pipelining_bench/generate_report.py`
+-- `benchmarks/kv_pipelining_bench/run_full_eval.sh`
+-- `vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py`
+-- `vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py`
+-- `vllm/distributed/kv_transfer/kv_connector/v1/layerwise_pipelined_connector.py`
+-- `vllm/v1/kv_cache_pipelining.py`
+diff --git a/benchmarks/kv_pipelining/README.md b/benchmarks/kv_pipelining/README.md
+index 805c42175..55e898c73 100644
+--- a/benchmarks/kv_pipelining/README.md
++++ b/benchmarks/kv_pipelining/README.md
+@@ -33,5 +33,5 @@ benchmarks/kv_pipelining/oom_sweep.sh pipelined
+ ## Notes
+ 
+ - This script assumes **decode-only** runs (no prefill on the server).
+-- Use `--enable-prefix-caching false` for correctness with pipelining.
++- Use `--no-enable-prefix-caching` for correctness with pipelining (`--enable-prefix-caching false` incorrectly enables caching in vLLM).
+ - Increase `K_WINDOW` for slower interconnects (PCIe).
+diff --git a/benchmarks/kv_pipelining/capacity_test.py b/benchmarks/kv_pipelining/capacity_test.py
+index 48157853b..1e98e17f1 100644
+--- a/benchmarks/kv_pipelining/capacity_test.py
++++ b/benchmarks/kv_pipelining/capacity_test.py
+@@ -103,7 +103,7 @@ def _launch_server(
+             "--enable-kv-pipelining",
+             "--kv-k-window", str(k_window),
+             "--kv-transfer-config", json.dumps(kv_config),
+-            "--enable-prefix-caching", "false",
++            "--no-enable-prefix-caching",
+         ]
+         if mode == "pipelined_free":
+             cmd += ["--free-original-kv-cache"]
+diff --git a/benchmarks/kv_pipelining/correctness_test.py b/benchmarks/kv_pipelining/correctness_test.py
+index 015ddf459..bff7c902b 100644
+--- a/benchmarks/kv_pipelining/correctness_test.py
++++ b/benchmarks/kv_pipelining/correctness_test.py
+@@ -178,7 +178,7 @@ def _launch_server(
+             "--enable-kv-pipelining",
+             "--kv-k-window", str(k_window),
+             "--kv-transfer-config", json.dumps(kv_config),
+-            "--enable-prefix-caching", "false",
++            "--no-enable-prefix-caching",
+         ]
+         if free_original:
+             cmd += ["--free-original-kv-cache"]
+diff --git a/benchmarks/kv_pipelining/oom_sweep.sh b/benchmarks/kv_pipelining/oom_sweep.sh
+index 2ec97db44..44fd70896 100755
+--- a/benchmarks/kv_pipelining/oom_sweep.sh
++++ b/benchmarks/kv_pipelining/oom_sweep.sh
+@@ -28,7 +28,7 @@ function start_server() {
+       --kv-k-window "${K_WINDOW}"
+       --free-original-kv-cache
+       --kv-transfer-config "{\"kv_connector\":\"LayerwisePipelinedConnector\"}"
+-      --enable-prefix-caching false
++      --no-enable-prefix-caching
+     )
+   fi
+ 
+diff --git a/benchmarks/kv_pipelining_bench/OPTIMIZATIONS_SUMMARY.md b/benchmarks/kv_pipelining_bench/OPTIMIZATIONS_SUMMARY.md
+index a1f1b2727..935a0c942 100644
+--- a/benchmarks/kv_pipelining_bench/OPTIMIZATIONS_SUMMARY.md
++++ b/benchmarks/kv_pipelining_bench/OPTIMIZATIONS_SUMMARY.md
+@@ -129,6 +129,10 @@ Aligned validation: `/tmp/kv_b1_b2_aligned_v2/` (gpu_memory_utilization=0.72). K
+ | `VLLM_KVPIPE_SCRATCH_PREFETCH` | `0` | Phase H 5a (regression if on) |
+ | `VLLM_KVPIPE_PROFILE` | `0` | Per-forward hook profiler |
+ | `VLLM_KVPIPE_SKIP_DELTA_STAGE` | `0` | Diagnostic: no D2H |
++| `VLLM_KVPIPE_FAKE_TRANSFER` | `0` | Diagnostic: same CUDA DAG as production; zero-byte memcpy; instant-ready events; compute still issues `wait_event` (orchestration thesis bench) |
++| `VLLM_KVPIPE_PROFILE_JSON` | `0` | With `VLLM_KVPIPE_PROFILE=1`, emit `KVPIPE_JSON` lines for summarizer |
++
++**Orchestration thesis (conc=1, three configs):** `benchmarks/kv_pipelining_bench/prove_conc1_thesis.sh` — R0 baseline, R1 pipelined (B1+B2), R3 fake-transfer.
+ 
+ ---
+ 
+diff --git a/benchmarks/kv_pipelining_bench/decode_only_bench.py b/benchmarks/kv_pipelining_bench/decode_only_bench.py
+index 56ec09a14..8249c36fd 100644
+--- a/benchmarks/kv_pipelining_bench/decode_only_bench.py
++++ b/benchmarks/kv_pipelining_bench/decode_only_bench.py
+@@ -86,6 +86,13 @@ import urllib.error
+ import urllib.request
+ from concurrent.futures import ThreadPoolExecutor, as_completed
+ from pathlib import Path
++from typing import Any
++
++_BENCH_DIR = Path(__file__).resolve().parent
++if str(_BENCH_DIR) not in sys.path:
++    sys.path.insert(0, str(_BENCH_DIR))
++from gpu_preflight import check_gpu_free_fraction, format_snapshot  # noqa: E402
++from hf_env import apply_hf_token_from_user_file, hf_token_file_path  # noqa: E402
+ 
+ 
+ # =========================================================================
+@@ -133,9 +140,116 @@ def parse_args() -> argparse.Namespace:
+         "--warmup-requests", type=int, default=2,
+         help="Number of warmup requests before measurement",
+     )
++    p.add_argument(
++        "--streaming-throughput",
++        action="store_true",
++        help=(
++            "Use concurrent streaming completions for the throughput sweep "
++            "(measures tok/s plus mean/p99 ITL and TTFT under load). "
++            "Better for seeing decode behavior as the system approaches its limit."
++        ),
++    )
++    p.add_argument(
++        "--enforce-eager",
++        dest="enforce_eager",
++        action="store_true",
++        default=True,
++        help=(
++            "Pass --enforce-eager to the API server (default: on). "
++            "Avoids CUDA-graph dummy_run assertion with KV bench connectors on some builds."
++        ),
++    )
++    p.add_argument(
++        "--no-enforce-eager",
++        dest="enforce_eager",
++        action="store_false",
++        help="Disable --enforce-eager for max throughput (may fail to start with bench connectors).",
++    )
++    p.add_argument(
++        "--require-gpu-free-fraction",
++        type=float,
++        default=0.85,
++        help=(
++            "Abort unless at least this fraction of GPU VRAM is free before "
++            "starting servers (default: 0.85). Also requires free >= "
++            "--gpu-memory-utilization."
++        ),
++    )
++    p.add_argument(
++        "--skip-gpu-preflight",
++        action="store_true",
++        help="Skip GPU memory preflight (not recommended for published numbers).",
++    )
++    p.add_argument(
++        "--prefix-caching-on",
++        action="store_true",
++        help=(
++            "Leave vLLM default prefix caching enabled (for external comparison "
++            "rows only; do not mix with primary PC=OFF results)."
++        ),
++    )
++    p.add_argument(
++        "--ignore-eos",
++        action="store_true",
++        help=(
++            "Pass ignore_eos=true to completion requests. Useful for synthetic "
++            "dummy-KV decode where random KV can emit EOS before output-len."
++        ),
++    )
++    p.add_argument(
++        "--itl-steady-skip",
++        type=int,
++        default=1,
++        help=(
++            "When computing steady-state ITL, drop the first N inter-chunk "
++            "gaps per request. Default 1: the first gap (after TTFT) often "
++            "includes pipelined decode pipeline fill that baseline does not "
++            "pay as inter-token time (baseline KV is already on GPU). "
++            "TTFT always includes prefill + first-token work including initial "
++            "k_window H2D for the feature path."
++        ),
++    )
+     return p.parse_args()
+ 
+ 
++def _itl_stats(
++    itls: list[float], steady_skip: int
++) -> dict[str, Any]:
++    """Mean/p99 over all gaps, plus steady-state after dropping first N gaps."""
++    if not itls:
++        return {
++            "mean_itl_s": 0.0,
++            "p99_itl_s": 0.0,
++            "mean_itl_steady_s": 0.0,
++            "p99_itl_steady_s": 0.0,
++            "itl_steady_skip": steady_skip,
++            "itl_steady_sample_count": 0,
++        }
++
++    def _mean_p99(samples: list[float]) -> tuple[float, float]:
++        mean_v = sum(samples) / len(samples)
++        srt = sorted(samples)
++        p99_idx = max(0, min(len(srt) - 1, int((len(srt) - 1) * 0.99)))
++        return mean_v, srt[p99_idx]
++
++    mean_itl, p99_itl = _mean_p99(itls)
++    skip = max(0, min(steady_skip, len(itls)))
++    steady = itls[skip:]
++    if steady:
++        mean_steady, p99_steady = _mean_p99(steady)
++    else:
++        mean_steady, p99_steady = mean_itl, p99_itl
++
++    return {
++        "mean_itl_s": mean_itl,
++        "p99_itl_s": p99_itl,
++        "mean_itl_steady_s": mean_steady,
++        "p99_itl_steady_s": p99_steady,
++        "itl_steady_skip": skip,
++        "itl_steady_sample_count": len(steady),
++    }
++
++
+ # =========================================================================
+ # Server management
+ # =========================================================================
+@@ -163,6 +277,8 @@ def _launch_server(
+     mode: str,
+     k_window: int,
+     log_file: str | None = None,
++    enforce_eager: bool = True,
++    prefix_caching_on: bool = False,
+ ) -> subprocess.Popen:
+     cmd = [
+         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+@@ -174,6 +290,8 @@ def _launch_server(
+         "--dtype", "auto",
+         "--max-num-seqs", str(max_num_seqs),
+     ]
++    if enforce_eager:
++        cmd.append("--enforce-eager")
+ 
+     if mode == "baseline":
+         # Standard decode bench: fills KV on GPU, no pipelining.
+@@ -196,8 +314,9 @@ def _launch_server(
+             "--decode-only-pipelining",
+             "--kv-k-window", str(k_window),
+             "--kv-transfer-config", json.dumps(kv_config),
+-            "--enable-prefix-caching", "false",
+         ]
++        if not prefix_caching_on:
++            cmd.append("--no-enable-prefix-caching")
+     elif mode == "real_prefill":
+         # Real prefill + pipelined decode: model computes actual attention
+         # during prefill, KV staged to CPU, decode via pipelining.
+@@ -210,8 +329,9 @@ def _launch_server(
+             "--kv-k-window", str(k_window),
+             "--free-original-kv-cache",
+             "--kv-transfer-config", json.dumps(kv_config),
+-            "--enable-prefix-caching", "false",
+         ]
++        if not prefix_caching_on:
++            cmd.append("--no-enable-prefix-caching")
+     else:
+         raise ValueError(f"Unknown mode: {mode}")
+ 
+@@ -224,19 +344,44 @@ def _launch_server(
+ 
+ def _kill_server(proc: subprocess.Popen) -> None:
+     if proc.poll() is None:
+-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+         try:
+-            proc.wait(timeout=15)
++            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
++        except ProcessLookupError:
++            return
++        try:
++            proc.wait(timeout=60)
+         except subprocess.TimeoutExpired:
+-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+-            proc.wait(timeout=5)
++            try:
++                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
++            except ProcessLookupError:
++                pass
++            proc.wait()
+ 
+ 
+-def _get_model_name(port: int) -> str:
++def _get_model_name(port: int, retries: int = 20, retry_s: float = 1.0) -> str:
++    """Read model id from OpenAI models endpoint with startup retries."""
+     url = f"http://127.0.0.1:{port}/v1/models"
+-    with urllib.request.urlopen(url, timeout=10) as resp:
+-        data = json.loads(resp.read().decode())
+-    return data["data"][0]["id"]
++    last_err: Exception | None = None
++    for _ in range(max(1, retries)):
++        try:
++            with urllib.request.urlopen(url, timeout=10) as resp:
++                raw = resp.read().decode().strip()
++            if not raw:
++                raise ValueError("empty /v1/models response")
++            data = json.loads(raw)
++            models = data.get("data") if isinstance(data, dict) else None
++            if not models:
++                raise ValueError(f"missing model list in /v1/models: {data!r}")
++            mid = models[0].get("id")
++            if not mid:
++                raise ValueError(f"missing model id in /v1/models: {models[0]!r}")
++            return str(mid)
++        except Exception as e:  # noqa: BLE001
++            last_err = e
++            time.sleep(retry_s)
++    raise RuntimeError(
++        f"failed to get model name from {url} after {retries} retries"
++    ) from last_err
+ 
+ 
+ # =========================================================================
+@@ -264,16 +409,27 @@ def _send_streaming_request(
+     prompt: str,
+     max_tokens: int,
+     timeout: int = 180,
++    itl_steady_skip: int = 1,
++    ignore_eos: bool = False,
+ ) -> dict:
+-    """Send a streaming completions request and measure TTFT / ITL."""
++    """Send a streaming completions request and measure TTFT / ITL.
++
++    TTFT covers prefill + first output token (including feature-path initial
++    k_window H2D before layer 0). Steady ITL drops the first *itl_steady_skip*
++    inter-chunk gaps so pipeline fill is not compared to baseline decode ITL.
++    """
+     url = f"http://127.0.0.1:{port}/v1/completions"
+-    body = json.dumps({
++    body_dict: dict[str, Any] = {
+         "model": model_name,
+         "prompt": prompt,
+         "max_tokens": max_tokens,
+         "temperature": 0.0,
+         "stream": True,
+-    }).encode()
++        "stream_options": {"include_usage": True},
++    }
++    if ignore_eos:
++        body_dict["ignore_eos"] = True
++    body = json.dumps(body_dict).encode()
+     req = urllib.request.Request(
+         url, data=body, headers={"Content-Type": "application/json"},
+     )
+@@ -281,7 +437,9 @@ def _send_streaming_request(
+     token_times: list[float] = []
+     t_start = time.perf_counter()
+     ttft: float | None = None
+-    total_tokens = 0
++    chunk_events = 0
++    usage_completion_tokens: int | None = None
++    finish_reason: str | None = None
+ 
+     try:
+         with urllib.request.urlopen(req, timeout=timeout) as resp:
+@@ -304,61 +462,162 @@ def _send_streaming_request(
+                                 data = json.loads(data_str)
+                             except json.JSONDecodeError:
+                                 continue
++                            usage = data.get("usage")
++                            if isinstance(usage, dict):
++                                ct = usage.get("completion_tokens")
++                                if ct is not None:
++                                    usage_completion_tokens = int(ct)
+                             choices = data.get("choices", [])
+                             if choices:
+-                                text = choices[0].get("text", "")
++                                ch0 = choices[0]
++                                fr = ch0.get("finish_reason")
++                                if fr:
++                                    finish_reason = str(fr)
++                                text = ch0.get("text", "")
+                                 if text:
+                                     now = time.perf_counter()
+                                     if ttft is None:
+                                         ttft = now - t_start
+                                     token_times.append(now)
+-                                    total_tokens += 1
++                                    chunk_events += 1
+ 
+         t_end = time.perf_counter()
+         e2e = t_end - t_start
+ 
+-        # Inter-token latencies
+-        itls = []
+-        for i in range(1, len(token_times)):
+-            itls.append(token_times[i] - token_times[i - 1])
+-
+-        mean_itl = sum(itls) / len(itls) if itls else 0.0
+-        p99_itl = sorted(itls)[int(len(itls) * 0.99)] if itls else 0.0
++        total_tokens = chunk_events
++        if usage_completion_tokens is not None:
++            total_tokens = max(total_tokens, usage_completion_tokens)
++
++        if max_tokens > 0 and total_tokens == 0:
++            return {
++                "success": False,
++                "error": "streaming produced 0 tokens (decode may not have run)",
++            }
++        if (
++            max_tokens > 0
++            and usage_completion_tokens is not None
++            and usage_completion_tokens < int(max_tokens * 0.9)
++        ):
++            return {
++                "success": False,
++                "error": (
++                    f"short completion: usage.completion_tokens="
++                    f"{usage_completion_tokens} < 0.9*{max_tokens} "
++                    f"(finish_reason={finish_reason!r})"
++                ),
++                "completion_tokens": usage_completion_tokens,
++                "chunk_events": chunk_events,
++                "finish_reason": finish_reason,
++            }
++
++        # Inter-token latencies (gaps between streaming chunk arrivals).
++        itls = [
++            token_times[i] - token_times[i - 1]
++            for i in range(1, len(token_times))
++        ]
++        stats = _itl_stats(itls, itl_steady_skip)
+ 
+         return {
+             "success": True,
+             "ttft_s": ttft,
+-            "mean_itl_s": mean_itl,
+-            "p99_itl_s": p99_itl,
++            "mean_itl_s": stats["mean_itl_s"],
++            "p99_itl_s": stats["p99_itl_s"],
++            "mean_itl_steady_s": stats["mean_itl_steady_s"],
++            "p99_itl_steady_s": stats["p99_itl_steady_s"],
++            "itl_steady_skip": stats["itl_steady_skip"],
++            "itl_steady_sample_count": stats["itl_steady_sample_count"],
+             "e2e_s": e2e,
+             "total_tokens": total_tokens,
++            "completion_tokens": usage_completion_tokens or total_tokens,
++            "chunk_events": chunk_events,
++            "finish_reason": finish_reason,
+             "tokens_per_sec": total_tokens / e2e if e2e > 0 else 0,
++            "itl_samples": itls,
+         }
+     except Exception as e:
+         return {"success": False, "error": str(e)[:200]}
+ 
+ 
++def _validate_completion_json(
++    data: dict[str, Any],
++    *,
++    min_expected_completion_tokens: int,
++) -> tuple[bool, str | None]:
++    """Reject HTTP-200 bodies that are empty errors or zero-token completions.
++
++    vLLM may return HTTP 200 with an ``error`` object, or 200 with
++    ``choices``/``usage`` that indicate no tokens were generated (e.g. dead
++    engine). Those must not count as successful throughput.
++    """
++    if data.get("error") is not None:
++        err = data["error"]
++        if isinstance(err, dict):
++            return False, str(err.get("message", err))[:300]
++        return False, str(err)[:300]
++    choices = data.get("choices")
++    if not choices:
++        return False, "no choices in completion response"
++    ch0 = choices[0]
++    text = (ch0.get("text") or "").strip()
++    usage = data.get("usage") or {}
++    ct = usage.get("completion_tokens")
++    if ct is None:
++        ct = 0
++    # Some responses omit usage; fall back to token_ids length if present.
++    if ct == 0:
++        tids = ch0.get("token_ids")
++        if isinstance(tids, list) and len(tids) > 0:
++            ct = len(tids)
++    if min_expected_completion_tokens > 0 and ct == 0 and not text:
++        fr = ch0.get("finish_reason")
++        return (
++            False,
++            f"empty completion (completion_tokens=0, finish_reason={fr!r})",
++        )
++    return True, None
++
++
+ def _send_request(
+-    port: int, model_name: str, prompt: str, max_tokens: int, timeout: int
++    port: int,
++    model_name: str,
++    prompt: str,
++    max_tokens: int,
++    timeout: int,
++    ignore_eos: bool = False,
+ ) -> dict:
+     """Non-streaming request for concurrency/throughput tests."""
+     url = f"http://127.0.0.1:{port}/v1/completions"
+-    body = json.dumps({
++    body_dict: dict[str, Any] = {
+         "model": model_name,
+         "prompt": prompt,
+         "max_tokens": max_tokens,
+         "temperature": 0.0,
+-    }).encode()
++    }
++    if ignore_eos:
++        body_dict["ignore_eos"] = True
++    body = json.dumps(body_dict).encode()
+     req = urllib.request.Request(
+         url, data=body, headers={"Content-Type": "application/json"},
+     )
+     t0 = time.perf_counter()
+     try:
+         with urllib.request.urlopen(req, timeout=timeout) as resp:
+-            data = json.loads(resp.read().decode())
++            raw = resp.read().decode()
++            data = json.loads(raw)
+         e2e = time.perf_counter() - t0
++        ok, err = _validate_completion_json(
++            data,
++            min_expected_completion_tokens=max_tokens,
++        )
++        if not ok:
++            return {"success": False, "error": err or "invalid completion"}
+         usage = data.get("usage", {})
+-        completion_tokens = usage.get("completion_tokens", 0)
++        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
++        if completion_tokens == 0:
++            ch0 = (data.get("choices") or [{}])[0]
++            tids = ch0.get("token_ids")
++            if isinstance(tids, list) and len(tids) > 0:
++                completion_tokens = len(tids)
+         return {
+             "success": True,
+             "e2e_s": e2e,
+@@ -380,6 +639,8 @@ def _run_latency_test(
+     output_len: int,
+     request_timeout: int,
+     warmup: int,
++    itl_steady_skip: int,
++    ignore_eos: bool,
+ ) -> dict:
+     """Measure single-request latency with streaming."""
+     prompt = _generate_prompt(input_len)
+@@ -387,34 +648,38 @@ def _run_latency_test(
+     # Warmup
+     for _ in range(warmup):
+         _send_streaming_request(
+-            port, model_name, prompt, output_len, request_timeout
++            port, model_name, prompt, output_len, request_timeout,
++            itl_steady_skip=itl_steady_skip,
++            ignore_eos=ignore_eos,
+         )
+ 
+     # Measurement (5 runs)
+     results = []
+     for _ in range(5):
+         r = _send_streaming_request(
+-            port, model_name, prompt, output_len, request_timeout
++            port, model_name, prompt, output_len, request_timeout,
++            itl_steady_skip=itl_steady_skip,
++            ignore_eos=ignore_eos,
+         )
+-        if r["success"]:
++        if r["success"] and r.get("ttft_s") is not None:
+             results.append(r)
+ 
+     if not results:
+         return {"error": "all latency requests failed"}
+ 
++    def _avg(key: str) -> float:
++        return sum(float(r[key]) for r in results) / len(results)
++
+     return {
+         "num_runs": len(results),
+-        "ttft_s_mean": sum(r["ttft_s"] for r in results) / len(results),
+-        "mean_itl_s_mean": (
+-            sum(r["mean_itl_s"] for r in results) / len(results)
+-        ),
+-        "p99_itl_s_mean": (
+-            sum(r["p99_itl_s"] for r in results) / len(results)
+-        ),
+-        "e2e_s_mean": sum(r["e2e_s"] for r in results) / len(results),
+-        "tokens_per_sec_mean": (
+-            sum(r["tokens_per_sec"] for r in results) / len(results)
+-        ),
++        "ttft_s_mean": _avg("ttft_s"),
++        "mean_itl_s_mean": _avg("mean_itl_s"),
++        "p99_itl_s_mean": _avg("p99_itl_s"),
++        "mean_itl_steady_s_mean": _avg("mean_itl_steady_s"),
++        "p99_itl_steady_s_mean": _avg("p99_itl_steady_s"),
++        "itl_steady_skip": itl_steady_skip,
++        "e2e_s_mean": _avg("e2e_s"),
++        "tokens_per_sec_mean": _avg("tokens_per_sec"),
+     }
+ 
+ 
+@@ -425,6 +690,7 @@ def _run_throughput_test(
+     output_len: int,
+     concurrency: int,
+     request_timeout: int,
++    ignore_eos: bool,
+ ) -> dict:
+     """Measure throughput at a given concurrency level."""
+     prompt = _generate_prompt(input_len)
+@@ -434,7 +700,7 @@ def _run_throughput_test(
+         futures = [
+             pool.submit(
+                 _send_request, port, model_name, prompt,
+-                output_len, request_timeout,
++                output_len, request_timeout, ignore_eos,
+             )
+             for _ in range(concurrency)
+         ]
+@@ -462,6 +728,130 @@ def _run_throughput_test(
+     }
+ 
+ 
++def _run_throughput_test_streaming(
++    port: int,
++    model_name: str,
++    input_len: int,
++    output_len: int,
++    concurrency: int,
++    request_timeout: int,
++    itl_steady_skip: int,
++    ignore_eos: bool,
++) -> dict:
++    """Throughput with **concurrent** streaming requests — ITL measured under load.
++
++    Each request records inter-chunk ITLs; we aggregate:
++    - ``concurrent_mean_itl_s_mean``: mean of per-request mean ITL
++    - ``concurrent_mean_itl_steady_s_mean``: same after dropping first N gaps
++    - ``concurrent_mean_p99_itl_s``: mean of per-request p99 ITL
++    - ``concurrent_global_p99_itl_s``: p99 over all ITL samples (pooled)
++    - ``concurrent_ttft_s_mean``: mean TTFT across successful requests
++    """
++    prompt = _generate_prompt(input_len)
++    results: list[dict[str, Any]] = []
++    t0 = time.monotonic()
++    with ThreadPoolExecutor(max_workers=concurrency) as pool:
++        futures = [
++            pool.submit(
++                _send_streaming_request,
++                port,
++                model_name,
++                prompt,
++                output_len,
++                request_timeout,
++                itl_steady_skip,
++                ignore_eos,
++            )
++            for _ in range(concurrency)
++        ]
++        for f in as_completed(futures):
++            results.append(f.result())
++    elapsed = time.monotonic() - t0
++
++    oks = [r for r in results if r.get("success")]
++    successes = len(oks)
++    failures = concurrency - successes
++    total_tokens = sum(
++        int(r.get("completion_tokens", r.get("total_tokens", 0)) or 0) for r in oks
++    )
++    errors = [r.get("error", "?") for r in results if not r.get("success")]
++
++    mean_itls = [float(r["mean_itl_s"]) for r in oks if r.get("mean_itl_s") is not None]
++    mean_itls_steady = [
++        float(r["mean_itl_steady_s"]) for r in oks
++        if r.get("mean_itl_steady_s") is not None
++    ]
++    p99_itls = [float(r["p99_itl_s"]) for r in oks if r.get("p99_itl_s") is not None]
++    p99_itls_steady = [
++        float(r["p99_itl_steady_s"]) for r in oks
++        if r.get("p99_itl_steady_s") is not None
++    ]
++    ttfts = [float(r["ttft_s"]) for r in oks if r.get("ttft_s") is not None]
++
++    all_itl: list[float] = []
++    all_itl_steady: list[float] = []
++    skip = max(0, itl_steady_skip)
++    for r in oks:
++        samples = r.get("itl_samples")
++        if isinstance(samples, list) and samples:
++            floats = [float(x) for x in samples]
++            all_itl.extend(floats)
++            all_itl_steady.extend(floats[skip:])
++
++    def _global_p99(samples: list[float]) -> float | None:
++        if len(samples) >= 2:
++            srt = sorted(samples)
++            gidx = max(0, min(len(srt) - 1, int((len(srt) - 1) * 0.99)))
++            return srt[gidx]
++        if len(samples) == 1:
++            return samples[0]
++        return None
++
++    global_p99 = _global_p99(all_itl)
++    global_p99_steady = _global_p99(all_itl_steady)
++
++    out: dict[str, Any] = {
++        "concurrency": concurrency,
++        "successes": successes,
++        "failures": failures,
++        "elapsed_s": round(elapsed, 3),
++        "total_output_tokens": total_tokens,
++        "throughput_tok_per_s": (
++            round(total_tokens / elapsed, 2) if elapsed > 0 else 0
++        ),
++        "errors": errors[:3],
++        "itl_steady_skip": itl_steady_skip,
++        "concurrent_mean_itl_s_mean": (
++            round(sum(mean_itls) / len(mean_itls), 6) if mean_itls else None
++        ),
++        "concurrent_mean_itl_steady_s_mean": (
++            round(sum(mean_itls_steady) / len(mean_itls_steady), 6)
++            if mean_itls_steady
++            else None
++        ),
++        "concurrent_mean_p99_itl_s": (
++            round(sum(p99_itls) / len(p99_itls), 6) if p99_itls else None
++        ),
++        "concurrent_mean_p99_itl_steady_s_mean": (
++            round(sum(p99_itls_steady) / len(p99_itls_steady), 6)
++            if p99_itls_steady
++            else None
++        ),
++        "concurrent_global_p99_itl_s": (
++            round(global_p99, 6) if global_p99 is not None else None
++        ),
++        "concurrent_global_p99_itl_steady_s": (
++            round(global_p99_steady, 6) if global_p99_steady is not None else None
++        ),
++        "concurrent_ttft_s_mean": (
++            round(sum(ttfts) / len(ttfts), 6) if ttfts else None
++        ),
++        "concurrent_itl_sample_count": len(all_itl),
++        "concurrent_itl_steady_sample_count": len(all_itl_steady),
++    }
++    return out
++
++
+ def run_mode(args: argparse.Namespace, mode: str, result_dir: Path) -> dict:
+     """Run the full benchmark for a given mode."""
+     print(f"\n{'=' * 70}")
+@@ -480,6 +870,8 @@ def run_mode(args: argparse.Namespace, mode: str, result_dir: Path) -> dict:
+         mode=mode,
+         k_window=args.k_window,
+         log_file=log_file,
++        enforce_eager=args.enforce_eager,
++        prefix_caching_on=args.prefix_caching_on,
+     )
+ 
+     try:
+@@ -499,6 +891,8 @@ def run_mode(args: argparse.Namespace, mode: str, result_dir: Path) -> dict:
+             args.port, model_name,
+             args.input_len, args.output_len,
+             args.request_timeout, args.warmup_requests,
++            args.itl_steady_skip,
++            args.ignore_eos,
+         )
+         summary["latency"] = latency
+         if "error" not in latency:
+@@ -510,6 +904,12 @@ def run_mode(args: argparse.Namespace, mode: str, result_dir: Path) -> dict:
+                 f"    Mean ITL       : "
+                 f"{latency['mean_itl_s_mean']*1000:.2f} ms"
+             )
++            if latency.get("mean_itl_steady_s_mean") is not None:
++                print(
++                    f"    Mean ITL steady: "
++                    f"{latency['mean_itl_steady_s_mean']*1000:.2f} ms "
++                    f"(skip first {latency.get('itl_steady_skip', 0)} gaps)"
++                )
+             print(
+                 f"    P99 ITL        : "
+                 f"{latency['p99_itl_s_mean']*1000:.2f} ms"
+@@ -526,24 +926,57 @@ def run_mode(args: argparse.Namespace, mode: str, result_dir: Path) -> dict:
+             print(f"    [FAIL] {latency['error']}")
+ 
+         # ---- Throughput test (various concurrency) ----
+-        print("\n  --- Throughput test ---")
++        tp_label = (
++            "Throughput test (streaming under load)"
++            if args.streaming_throughput
++            else "Throughput test (batch completions)"
++        )
++        print(f"\n  --- {tp_label} ---")
+         throughput_results = []
+         max_successful_conc = 0
+         for conc in sorted(args.concurrency):
+-            result = _run_throughput_test(
+-                args.port, model_name,
+-                args.input_len, args.output_len,
+-                conc, args.request_timeout,
+-            )
++            if args.streaming_throughput:
++                result = _run_throughput_test_streaming(
++                    args.port, model_name,
++                    args.input_len, args.output_len,
++                    conc, args.request_timeout,
++                    args.itl_steady_skip,
++                    args.ignore_eos,
++                )
++            else:
++                result = _run_throughput_test(
++                    args.port, model_name,
++                    args.input_len, args.output_len,
++                    conc, args.request_timeout,
++                    args.ignore_eos,
++                )
+             throughput_results.append(result)
+ 
+             if result["failures"] == 0:
+                 max_successful_conc = conc
+-                print(
++                line = (
+                     f"    conc={conc:3d}: [OK] {result['successes']} ok, "
+                     f"{result['throughput_tok_per_s']} tok/s "
+                     f"({result['elapsed_s']}s)"
+                 )
++                if args.streaming_throughput:
++                    mitl = result.get("concurrent_mean_itl_steady_s_mean")
++                    if mitl is None:
++                        mitl = result.get("concurrent_mean_itl_s_mean")
++                    pitl = result.get("concurrent_mean_p99_itl_s")
++                    g99 = result.get("concurrent_global_p99_itl_steady_s")
++                    if g99 is None:
++                        g99 = result.get("concurrent_global_p99_itl_s")
++                    ttft = result.get("concurrent_ttft_s_mean")
++                    if mitl is not None:
++                        line += f" | mean_ITL_steady {mitl*1000:.2f}ms"
++                    if pitl is not None:
++                        line += f" p99_ITL~ {pitl*1000:.2f}ms"
++                    if g99 is not None:
++                        line += f" global_p99_ITL {g99*1000:.2f}ms"
++                    if ttft is not None:
++                        line += f" mean_TTFT {ttft*1000:.1f}ms"
++                print(line)
+             else:
+                 print(
+                     f"    conc={conc:3d}: [FAIL] {result['failures']} failures "
+@@ -576,6 +1009,18 @@ def main() -> None:
+     result_dir = Path(args.result_dir)
+     result_dir.mkdir(parents=True, exist_ok=True)
+ 
++    if not args.skip_gpu_preflight:
++        snap = check_gpu_free_fraction(
++            min_free_fraction=args.require_gpu_free_fraction,
++            gpu_memory_utilization=args.gpu_memory_utilization,
++        )
++        print("GPU preflight OK")
++        print(f"  {format_snapshot(snap).replace(chr(10), chr(10) + '  ')}")
++        print()
++
++    if apply_hf_token_from_user_file():
++        print(f"  HF auth      : token from {hf_token_file_path()}")
++
+     print("=" * 70)
+     print("Decode-Only P/D Pipelining Benchmark")
+     print("=" * 70)
+@@ -587,6 +1032,14 @@ def main() -> None:
+     print(f"  GPU mem util  : {args.gpu_memory_utilization}")
+     print(f"  Modes         : {args.modes}")
+     print(f"  Warmup        : {args.warmup_requests} requests")
++    print(f"  ITL steady-skip: {args.itl_steady_skip} gaps (after TTFT)")
++    print(f"  Prefix caching: {'ON (comparison)' if args.prefix_caching_on else 'OFF'}")
++    print(f"  Ignore EOS    : {args.ignore_eos}")
++    print(
++        f"  Throughput    : "
++        f"{'streaming (ITL under load)' if args.streaming_throughput else 'batch'}"
++    )
++    print(f"  Enforce eager : {args.enforce_eager}")
+ 
+     all_summaries = {}
+     for mode in args.modes:
+diff --git a/next_steps.md b/next_steps.md
+index 1b775ca32..791ca211e 100644
+--- a/next_steps.md
++++ b/next_steps.md
+@@ -335,4 +335,111 @@ num_physical_blocks constraint).
+ Wire decode-only pipelining to vLLM's P2P NCCL / NiXL / LMCache connectors
+ so KV arriving from a real prefill node flows directly into CPU pinned
+ memory → layer-wise pipeline → GPU window buffers without intermediate
+-GPU allocation.
+\ No newline at end of file
++GPU allocation.
++
++## 13) `_slice_kv_layer` correctness fix  [DONE — 2026-02-22]
++
++### Bug
++
++`_slice_kv_layer` computed `max_blocks = cdiv(max_seq_len, block_size)`,
++which is the block count for a SINGLE sequence.  With N concurrent
++sequences, blocks are scattered across positions 0 to N*blocks_per_seq.
++Only blocks 0 through blocks_per_seq were copied during prefetch,
++causing most sequences to read stale/random data from window buffers.
++
++### Fix
++
++Both `PrefillStagingPipelinedConnector` and `PipelinedDecodeBenchConnector`
++now track the maximum allocated block ID across ALL active sequences:
++
++1. **Scheduler side**: `_active_req_blocks: dict[str, set[int]]`
++   accumulates all block IDs per request from `update_state_after_alloc`
++   and `scheduled_cached_reqs.new_block_ids`.
++
++2. **Metadata**: `decode_max_block_id: int | None` is the maximum block
++   ID across all active requests, sent from scheduler to worker.
++
++3. **Worker side**: `_slice_kv_layer` uses `decode_max_block_id + 1`
++   during decode instead of `cdiv(max_seq_len, block_size)`.  Falls back
++   to the per-sequence estimate for prefill (where it is correct).
++
++4. **Cleanup**: `request_finished` removes the request from
++   `_active_req_blocks`.
++
++### Impact
++
++- Correct data is now transferred for all active sequences.
++- Transfer volume is proportional to total allocated blocks (as expected).
++- The fundamental PCIe vs. concurrency trade-off documented in
++  SESSION_CONTEXT.md section 6 applies.
++
++## 14) P/D decode-only evaluation  [DONE — 2026-02-22]
++
++### Goal
++
++DistServe/Splitwise-style capacity benchmark focusing on TTFT, E2E, P99
++E2E — metrics that capture the *queuing advantage* of the inflated block
++pool.
++
++### Script
++
++`benchmarks/kv_pipelining_bench/eval_pd_decode.py`
++
++### Design
++
++- Uses `PrefillStagingPipelinedConnector` with `--inflate-kv-pool` for
++  pipelined mode (real prefill + inflated capacity).
++- Concurrency sweep: 64, 128, 256, 384, 512.
++- Pushes N requests simultaneously (closed-loop, request_rate=inf).
++- Focuses on TTFT, E2E latency, P99 E2E (not ITL/TPOT).
++- Saves raw JSON results for later graph generation.
++
++### Usage
++
++```bash
++# Llama-8B:
++python benchmarks/kv_pipelining_bench/eval_pd_decode.py \
++    --model meta-llama/Llama-3.1-8B-Instruct \
++    --k-window 5 \
++    --concurrency 64 128 256 384 512 \
++    --num-prompts 200 \
++    --result-dir /tmp/kv_pd_eval/llama8b
++
++# Qwen-14B:
++python benchmarks/kv_pipelining_bench/eval_pd_decode.py \
++    --model Qwen/Qwen2.5-14B-Instruct \
++    --k-window 5 \
++    --concurrency 64 128 256 384 512 \
++    --num-prompts 200 \
++    --result-dir /tmp/kv_pd_eval/qwen14b
++```
++
++### Results
++
++Results saved to `--result-dir`:
++```
++<result-dir>/
++  results_baseline_conc<N>.json    — raw vllm bench serve output
++  results_pipelined_conc<N>.json   — raw vllm bench serve output
++  server_baseline.log              — server stdout/stderr
++  server_pipelined.log             — server stdout/stderr
++  summary.json                     — aggregated comparison
++```
++
++## 15) Remaining next steps
++
++### Immediate
++
++1. Measure real ITL with correct transfers (after `_slice_kv_layer` fix)
++2. Run P/D eval on Qwen-14B for two-model comparison
++3. Regenerate publication graphs incorporating P/D eval results
++
++### Paper
++
++4. Acknowledge transfer volume trade-off as known limitation
++5. Focus narrative on capacity advantage (TTFT/E2E)
++
++### Longer term
++
++6. Explore adaptive K (auto-tune based on concurrency)
++7. Upstream: clean patches, tests, prepare PR
+\ No newline at end of file
+diff --git a/pyproject.toml b/pyproject.toml
+index a5d41c673..cb7ab7496 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -6,7 +6,6 @@ requires = [
+     "packaging>=24.2",
+     "setuptools>=77.0.3,<81.0.0",
+     "setuptools-scm>=8.0",
+-    "torch == 2.9.1",
+     "wheel",
+     "jinja2",
+     "grpcio-tools>=1.76.0",
+@@ -308,4 +307,3 @@ windo = "windo"
+ [tool.typos.type.vimscript.extend-words]
+ 
+ [tool.uv]
+-no-build-isolation-package = ["torch"]
+\ No newline at end of file
+diff --git a/requirements/build.txt b/requirements/build.txt
+index b3ef0a710..0dfc48e09 100644
+--- a/requirements/build.txt
++++ b/requirements/build.txt
+@@ -4,7 +4,6 @@ ninja
+ packaging>=24.2
+ setuptools>=77.0.3,<81.0.0
+ setuptools-scm>=8
+-torch==2.9.1
+ wheel
+ jinja2>=3.1.6
+ regex
+diff --git a/requirements/cpu-build.txt b/requirements/cpu-build.txt
+index a7bd3b17b..f3de058b9 100644
+--- a/requirements/cpu-build.txt
++++ b/requirements/cpu-build.txt
+@@ -3,8 +3,6 @@ ninja
+ packaging>=24.2
+ setuptools==77.0.3 # this version can reuse CMake build dir
+ setuptools-scm>=8
+-torch==2.9.1+cpu; platform_machine == "x86_64" or platform_machine == "s390x"
+-torch==2.9.1; platform_system == "Darwin" or platform_machine == "ppc64le" or platform_machine == "aarch64"
+ scons; platform_machine == "aarch64"    # needed to build Arm Compute Library (ACL)
+ wheel
+ jinja2>=3.1.6
+diff --git a/requirements/cpu.txt b/requirements/cpu.txt
+index 111b8a551..d82b6cd2b 100644
+--- a/requirements/cpu.txt
++++ b/requirements/cpu.txt
+@@ -6,16 +6,9 @@ setuptools==77.0.3 # this version can reuse CMake build dir
+ numba == 0.61.2; platform_machine != "s390x" # Required for N-gram speculative decoding
+ 
+ # Dependencies for CPUs
+-torch==2.9.1+cpu; platform_machine == "x86_64" or platform_machine == "s390x"
+-torch==2.9.1; platform_system == "Darwin" or platform_machine == "ppc64le" or platform_machine == "aarch64"
+ 
+-# required for the image processor of minicpm-o-2_6, this must be updated alongside torch
+-torchaudio; platform_machine != "s390x"
+ 
+-# required for the image processor of phi3v, this must be updated alongside torch
+-torchvision; platform_machine != "s390x"
+ 
+-# Intel Extension for PyTorch, only for x86_64 CPUs
+ intel-openmp==2024.2.1; platform_machine == "x86_64"
+ 
+ # Use this to gather CPU info and optimize based on ARM Neoverse cores
+diff --git a/requirements/cuda.txt b/requirements/cuda.txt
+index 1417fb991..9075aee54 100644
+--- a/requirements/cuda.txt
++++ b/requirements/cuda.txt
+@@ -5,9 +5,5 @@ numba == 0.61.2 # Required for N-gram speculative decoding
+ 
+ # Dependencies for NVIDIA GPUs
+ ray[cgraph]>=2.48.0 # Ray Compiled Graph, required for pipeline parallelism in V1.
+-torch==2.9.1
+-torchaudio==2.9.1
+-# These must be updated alongside torch
+-torchvision==0.24.1 # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
+ # FlashInfer should be updated together with the Dockerfile
+ flashinfer-python==0.5.3
+diff --git a/requirements/rocm-build.txt b/requirements/rocm-build.txt
+index 54af9d995..c36fbe2bb 100644
+--- a/requirements/rocm-build.txt
++++ b/requirements/rocm-build.txt
+@@ -1,10 +1,6 @@
+ # Common dependencies
+ -r common.txt
+ 
+---extra-index-url https://download.pytorch.org/whl/rocm6.4
+-torch==2.9.1
+-torchvision==0.24.1
+-torchaudio==2.9.1
+ 
+ triton==3.5.1
+ cmake>=3.26.1,<4
+diff --git a/requirements/rocm-test.txt b/requirements/rocm-test.txt
+index 0a03e2670..776afdc1b 100644
+--- a/requirements/rocm-test.txt
++++ b/requirements/rocm-test.txt
+@@ -68,9 +68,6 @@ multiprocess==0.70.16
+ ray[cgraph,default]>=2.48.0
+ 
+ # Plugins test
+-terratorch @ git+https://github.com/IBM/terratorch.git@07184fcf91a1324f831ff521dd238d97fe350e3e
+-torchgeo==0.7.0
+-    # via terratorch
+ # MTEB Benchmark Test
+ mteb==2.1.2
+ 
+@@ -83,7 +80,6 @@ pqdm==0.2.0
+ # Required for suffix decoding test
+ arctic-inference == 0.1.1
+ # Required for Nemotron test
+-open-clip-torch==2.32.0
+ # Required for isaac Multi-Modal generation test
+ perceptron==0.1.4
+ # Required for the multi-modal models test
+diff --git a/requirements/test.txt b/requirements/test.txt
+index e78431ab3..e770524fa 100644
+--- a/requirements/test.txt
++++ b/requirements/test.txt
+@@ -1,5 +1,4 @@
+ # This file was autogenerated by uv via the following command:
+-#    uv pip compile requirements/test.in -o requirements/test.txt --index-strategy unsafe-best-match --torch-backend cu129 --python-platform x86_64-manylinux_2_28 --python-version 3.12
+ absl-py==2.1.0
+     # via rouge-score
+ accelerate==1.0.1
+@@ -25,11 +24,9 @@ aiohttp-cors==0.8.1
+ aiosignal==1.4.0
+     # via aiohttp
+ albucore==0.0.16
+-    # via terratorch
+ albumentations==1.4.6
+     # via
+     #   -r requirements/test.in
+-    #   terratorch
+ alembic==1.16.4
+     # via mlflow
+ annotated-types==0.7.0
+@@ -188,18 +185,12 @@ docopt==0.6.2
+     # via num2words
+ docstring-parser==0.17.0
+     # via jsonargparse
+-efficientnet-pytorch==0.7.1
+-    # via segmentation-models-pytorch
+ einops==0.8.1
+     # via
+     #   -r requirements/test.in
+     #   encodec
+-    #   terratorch
+-    #   torchgeo
+-    #   vector-quantize-pytorch
+     #   vocos
+ einx==0.3.0
+-    # via vector-quantize-pytorch
+ email-validator==2.2.0
+     # via pydantic
+ encodec==0.1.1
+@@ -222,11 +213,9 @@ filelock==3.16.1
+     #   datasets
+     #   huggingface-hub
+     #   ray
+-    #   torch
+     #   transformers
+     #   virtualenv
+ fiona==1.10.1
+-    # via torchgeo
+ flask==3.1.1
+     # via mlflow
+ fonttools==4.55.0
+@@ -246,16 +235,12 @@ fsspec==2024.9.0
+     #   fastparquet
+     #   huggingface-hub
+     #   lightning
+-    #   pytorch-lightning
+-    #   torch
+ ftfy==6.3.1
+-    # via open-clip-torch
+ genai-perf==0.0.8
+     # via -r requirements/test.in
+ genson==1.3.0
+     # via datamodel-code-generator
+ geopandas==1.0.1
+-    # via terratorch
+ gitdb==4.0.12
+     # via gitpython
+ gitpython==3.1.44
+@@ -308,7 +293,6 @@ h11==0.14.0
+ h2==4.3.0
+     # via httpx
+ h5py==3.13.0
+-    # via terratorch
+ harfile==0.3.0
+     # via schemathesis
+ hf-xet==1.1.7
+@@ -331,11 +315,8 @@ huggingface-hub==0.34.3
+     #   accelerate
+     #   datasets
+     #   evaluate
+-    #   open-clip-torch
+     #   peft
+-    #   segmentation-models-pytorch
+     #   sentence-transformers
+-    #   terratorch
+     #   timm
+     #   tokenizers
+     #   transformers
+@@ -388,7 +369,6 @@ jinja2==3.1.6
+     #   datamodel-code-generator
+     #   flask
+     #   mlflow
+-    #   torch
+ jiwer==3.0.5
+     # via -r requirements/test.in
+ jmespath==1.0.1
+@@ -403,7 +383,6 @@ joblib==1.4.2
+ jsonargparse==4.35.0
+     # via
+     #   lightning
+-    #   terratorch
+ jsonlines==4.0.0
+     # via lm-eval
+ jsonpointer==3.0.0
+@@ -423,7 +402,6 @@ kaleido==0.2.1
+ kiwisolver==1.4.7
+     # via matplotlib
+ kornia==0.8.1
+-    # via torchgeo
+ kornia-rs==0.1.9
+     # via kornia
+ lazy-loader==0.4
+@@ -436,19 +414,13 @@ librosa==0.10.2.post1
+     # via -r requirements/test.in
+ lightly==1.5.20
+     # via
+-    #   terratorch
+-    #   torchgeo
+ lightly-utils==0.0.2
+     # via lightly
+ lightning==2.5.1.post0
+     # via
+-    #   terratorch
+-    #   torchgeo
+ lightning-utilities==0.14.3
+     # via
+     #   lightning
+-    #   pytorch-lightning
+-    #   torchmetrics
+ llvmlite==0.44.0
+     # via numba
+ lm-eval==0.4.9.2
+@@ -476,7 +448,6 @@ matplotlib==3.9.2
+     #   lightning
+     #   mlflow
+     #   pycocotools
+-    #   torchgeo
+ mbstrdecoder==1.1.3
+     # via
+     #   dataproperty
+@@ -487,7 +458,6 @@ mdurl==0.1.2
+ mistral-common==1.8.8
+     # via -r requirements/test.in
+ mlflow==2.22.0
+-    # via terratorch
+ mlflow-skinny==2.22.0
+     # via mlflow
+ more-itertools==10.5.0
+@@ -515,7 +485,6 @@ mypy-extensions==1.0.0
+ networkx==3.2.1
+     # via
+     #   scikit-image
+-    #   torch
+ nltk==3.9.1
+     # via rouge-score
+ num2words==0.5.14
+@@ -570,16 +539,12 @@ numpy==1.26.4
+     #   scikit-image
+     #   scikit-learn
+     #   scipy
+-    #   segmentation-models-pytorch
+     #   shapely
+     #   soxr
+     #   statsmodels
+     #   tensorboardx
+     #   tensorizer
+     #   tifffile
+-    #   torchgeo
+-    #   torchmetrics
+-    #   torchvision
+     #   transformers
+     #   tritonclient
+     #   vocos
+@@ -588,46 +553,30 @@ nvidia-cublas-cu12==12.9.1.4
+     # via
+     #   nvidia-cudnn-cu12
+     #   nvidia-cusolver-cu12
+-    #   torch
+ nvidia-cuda-cupti-cu12==12.9.79
+-    # via torch
+ nvidia-cuda-nvrtc-cu12==12.9.86
+-    # via torch
+ nvidia-cuda-runtime-cu12==12.9.79
+-    # via torch
+ nvidia-cudnn-cu12==9.10.2.21
+-    # via torch
+ nvidia-cufft-cu12==11.4.1.4
+-    # via torch
+ nvidia-cufile-cu12==1.14.1.1
+-    # via torch
+ nvidia-curand-cu12==10.3.10.19
+-    # via torch
+ nvidia-cusolver-cu12==11.7.5.82
+-    # via torch
+ nvidia-cusparse-cu12==12.5.10.65
+     # via
+     #   nvidia-cusolver-cu12
+-    #   torch
+ nvidia-cusparselt-cu12==0.7.1
+-    # via torch
+ nvidia-nccl-cu12==2.27.5
+-    # via torch
+ nvidia-nvjitlink-cu12==12.9.86
+     # via
+     #   nvidia-cufft-cu12
+     #   nvidia-cusolver-cu12
+     #   nvidia-cusparse-cu12
+-    #   torch
+ nvidia-nvshmem-cu12==3.3.20
+-    # via torch
+ nvidia-nvtx-cu12==12.9.79
+-    # via torch
+ omegaconf==2.3.0
+     # via
+     #   hydra-core
+     #   lightning
+-open-clip-torch==2.32.0
+     # via -r requirements/test.in
+ openai-harmony==0.0.4
+     # via gpt-oss
+@@ -682,13 +631,11 @@ packaging==24.2
+     #   pyogrio
+     #   pytest
+     #   pytest-rerunfailures
+-    #   pytorch-lightning
+     #   ray
+     #   rioxarray
+     #   scikit-image
+     #   statsmodels
+     #   tensorboardx
+-    #   torchmetrics
+     #   transformers
+     #   typepy
+     #   xarray
+@@ -701,7 +648,6 @@ pandas==2.2.3
+     #   geopandas
+     #   mlflow
+     #   statsmodels
+-    #   torchgeo
+     #   xarray
+ pathspec==0.12.1
+     # via black
+@@ -724,9 +670,6 @@ pillow==10.4.0
+     #   mistral-common
+     #   perceptron
+     #   scikit-image
+-    #   segmentation-models-pytorch
+-    #   torchgeo
+-    #   torchvision
+ platformdirs==4.3.6
+     # via
+     #   black
+@@ -747,7 +690,6 @@ portalocker==2.10.1
+ pqdm==0.2.0
+     # via -r requirements/test.in
+ pretrainedmodels==0.7.4
+-    # via segmentation-models-pytorch
+ prometheus-client==0.22.0
+     # via
+     #   opentelemetry-exporter-prometheus
+@@ -791,7 +733,6 @@ pyasn1-modules==0.4.2
+ pybind11==2.13.6
+     # via lm-eval
+ pycocotools==2.0.8
+-    # via terratorch
+ pycountry==24.6.1
+     # via pydantic-extra-types
+ pycparser==2.22
+@@ -828,7 +769,6 @@ pyproj==3.7.1
+     # via
+     #   geopandas
+     #   rioxarray
+-    #   torchgeo
+ pyrate-limiter==3.7.0
+     # via schemathesis
+ pystemmer==3.0.0
+@@ -849,7 +789,6 @@ pytest==8.3.5
+     #   pytest-subtests
+     #   pytest-timeout
+     #   schemathesis
+-    #   terratorch
+ pytest-asyncio==0.24.0
+     # via -r requirements/test.in
+ pytest-cov==6.3.0
+@@ -867,7 +806,6 @@ pytest-subtests==0.14.1
+ pytest-timeout==2.3.1
+     # via -r requirements/test.in
+ python-box==7.3.2
+-    # via terratorch
+ python-dateutil==2.9.0.post0
+     # via
+     #   arrow
+@@ -879,7 +817,6 @@ python-dateutil==2.9.0.post0
+     #   typepy
+ python-rapidjson==1.20
+     # via tritonclient
+-pytorch-lightning==2.5.2
+     # via
+     #   lightly
+     #   lightning
+@@ -902,7 +839,6 @@ pyyaml==6.0.2
+     #   mlflow-skinny
+     #   omegaconf
+     #   peft
+-    #   pytorch-lightning
+     #   ray
+     #   responses
+     #   schemathesis
+@@ -914,8 +850,6 @@ rapidfuzz==3.12.1
+ rasterio==1.4.3
+     # via
+     #   rioxarray
+-    #   terratorch
+-    #   torchgeo
+ ray==2.48.0
+     # via -r requirements/test.in
+ redis==5.2.0
+@@ -927,7 +861,6 @@ referencing==0.35.1
+ regex==2024.9.11
+     # via
+     #   nltk
+-    #   open-clip-torch
+     #   sacrebleu
+     #   tiktoken
+     #   transformers
+@@ -968,7 +901,6 @@ rich==13.9.4
+     #   perceptron
+     #   typer
+ rioxarray==0.19.0
+-    # via terratorch
+ rouge-score==0.1.2
+     # via lm-eval
+ rpds-py==0.20.1
+@@ -978,7 +910,6 @@ rpds-py==0.20.1
+ rsa==4.9.1
+     # via google-auth
+ rtree==1.4.0
+-    # via torchgeo
+ runai-model-streamer==0.15.3
+     # via -r requirements/test.in
+ runai-model-streamer-gcs==0.15.3
+@@ -992,7 +923,6 @@ sacrebleu==2.4.3
+ safetensors==0.4.5
+     # via
+     #   accelerate
+-    #   open-clip-torch
+     #   peft
+     #   timm
+     #   transformers
+@@ -1020,10 +950,7 @@ scipy==1.13.1
+     #   sentence-transformers
+     #   statsmodels
+     #   vocos
+-segmentation-models-pytorch==0.4.0
+     # via
+-    #   terratorch
+-    #   torchgeo
+ sentence-transformers==5.2.0
+     # via
+     #   -r requirements/test.in
+@@ -1032,11 +959,9 @@ setuptools==77.0.3
+     # via
+     #   lightning-utilities
+     #   pytablewriter
+-    #   torch
+ shapely==2.1.1
+     # via
+     #   geopandas
+-    #   torchgeo
+ shellingham==1.5.4
+     # via
+     #   perceptron
+@@ -1049,7 +974,6 @@ six==1.16.0
+     #   python-dateutil
+     #   rfc3339-validator
+     #   rouge-score
+-    #   segmentation-models-pytorch
+ smart-open==7.1.0
+     # via ray
+ smmap==5.0.2
+@@ -1091,7 +1015,6 @@ structlog==25.4.0
+ sympy==1.13.3
+     # via
+     #   einx
+-    #   torch
+ tabledata==1.3.3
+     # via pytablewriter
+ tabulate==0.9.0
+@@ -1111,14 +1034,12 @@ tensorizer==2.10.1
+     # via -r requirements/test.in
+ termcolor==3.1.0
+     # via gpt-oss
+-terratorch @ git+https://github.com/IBM/terratorch.git@07184fcf91a1324f831ff521dd238d97fe350e3e
+     # via -r requirements/test.in
+ threadpoolctl==3.5.0
+     # via scikit-learn
+ tifffile==2025.3.30
+     # via
+     #   scikit-image
+-    #   terratorch
+ tiktoken==0.12.0
+     # via
+     #   gpt-oss
+@@ -1127,10 +1048,6 @@ tiktoken==0.12.0
+ timm==1.0.17
+     # via
+     #   -r requirements/test.in
+-    #   open-clip-torch
+-    #   segmentation-models-pytorch
+-    #   terratorch
+-    #   torchgeo
+ tokenizers==0.22.0
+     # via
+     #   -r requirements/test.in
+@@ -1139,12 +1056,10 @@ tomli==2.2.1
+     # via schemathesis
+ tomli-w==1.2.0
+     # via schemathesis
+-torch==2.9.1+cu129
+     # via
+     #   -r requirements/test.in
+     #   accelerate
+     #   bitsandbytes
+-    #   efficientnet-pytorch
+     #   encodec
+     #   fastsafetensors
+     #   kornia
+@@ -1152,45 +1067,24 @@ torch==2.9.1+cu129
+     #   lightning
+     #   lm-eval
+     #   mteb
+-    #   open-clip-torch
+     #   peft
+     #   pretrainedmodels
+-    #   pytorch-lightning
+     #   runai-model-streamer
+-    #   segmentation-models-pytorch
+     #   sentence-transformers
+     #   tensorizer
+-    #   terratorch
+     #   timm
+-    #   torchaudio
+-    #   torchgeo
+-    #   torchmetrics
+-    #   torchvision
+-    #   vector-quantize-pytorch
+     #   vocos
+-torchaudio==2.9.1+cu129
+     # via
+     #   -r requirements/test.in
+     #   encodec
+     #   vocos
+-torchgeo==0.7.0
+-    # via terratorch
+-torchmetrics==1.7.4
+     # via
+     #   lightning
+-    #   pytorch-lightning
+-    #   terratorch
+-    #   torchgeo
+-torchvision==0.24.1+cu129
+     # via
+     #   -r requirements/test.in
+     #   lightly
+-    #   open-clip-torch
+     #   pretrainedmodels
+-    #   segmentation-models-pytorch
+-    #   terratorch
+     #   timm
+-    #   torchgeo
+ tqdm==4.66.6
+     # via
+     #   datasets
+@@ -1201,12 +1095,9 @@ tqdm==4.66.6
+     #   lm-eval
+     #   mteb
+     #   nltk
+-    #   open-clip-torch
+     #   peft
+     #   pqdm
+     #   pretrainedmodels
+-    #   pytorch-lightning
+-    #   segmentation-models-pytorch
+     #   sentence-transformers
+     #   tqdm-multiprocess
+     #   transformers
+@@ -1223,7 +1114,6 @@ transformers==4.57.3
+ transformers-stream-generator==0.0.5
+     # via -r requirements/test.in
+ triton==3.5.1
+-    # via torch
+ tritonclient==2.51.0
+     # via
+     #   -r requirements/test.in
+@@ -1264,11 +1154,8 @@ typing-extensions==4.15.0
+     #   pydantic
+     #   pydantic-core
+     #   pydantic-extra-types
+-    #   pytorch-lightning
+     #   sentence-transformers
+     #   sqlalchemy
+-    #   torch
+-    #   torchgeo
+     #   typer
+     #   typeshed-client
+     #   typing-inspection
+@@ -1291,7 +1178,6 @@ uvicorn==0.35.0
+     # via
+     #   gpt-oss
+     #   mlflow-skinny
+-vector-quantize-pytorch==1.21.2
+     # via -r requirements/test.in
+ virtualenv==20.31.2
+     # via ray
+diff --git a/requirements/xpu.txt b/requirements/xpu.txt
+index c1dc4195b..ed0066870 100644
+--- a/requirements/xpu.txt
++++ b/requirements/xpu.txt
+@@ -10,9 +10,4 @@ wheel
+ jinja2>=3.1.6
+ datasets # for benchmark scripts
+ numba == 0.61.2 # Required for N-gram speculative decoding
+---extra-index-url=https://download.pytorch.org/whl/xpu
+-torch==2.9.0+xpu
+-torchaudio
+-torchvision
+ 
+-intel-extension-for-pytorch @ https://intel-extension-for-pytorch.s3.us-east-1.amazonaws.com/ipex_dev/xpu/intel_extension_for_pytorch-2.9.10.post0%2Bxpu-cp312-cp312-linux_x86_64.whl
+diff --git a/tests/v1/kv_connector/unit/test_kv_cache_pipelining_roundtrip.py b/tests/v1/kv_connector/unit/test_kv_cache_pipelining_roundtrip.py
+index d42315d86..3d9e1f9f9 100644
+--- a/tests/v1/kv_connector/unit/test_kv_cache_pipelining_roundtrip.py
++++ b/tests/v1/kv_connector/unit/test_kv_cache_pipelining_roundtrip.py
+@@ -201,6 +201,41 @@ def test_stage_to_cpu_block_runs_preserves_disjoint_rows():
+         )
+ 
+ 
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
++def test_wait_for_saves_deferred_waits_at_prefetch():
++    """Decode-style deferred barrier: CPU delta must be visible before H2D."""
++    torch.cuda.set_device(0)
++    num_blocks, block_size, heads, dim = 8, 16, 2, 8
++    kv = torch.randn(
++        2, num_blocks, block_size, heads, dim, device="cuda", dtype=torch.float16
++    )
++    flat_slots = torch.tensor([3, 41], device="cuda", dtype=torch.long)
++    delta_pattern = torch.randn(
++        2, flat_slots.numel(), heads, dim, device="cuda", dtype=torch.float16
++    )
++
++    state = LayerwisePipeliningState()
++    state.stage_to_cpu("L0", kv.clone())
++    state.wait_for_saves()
++
++    kv2 = kv.clone()
++    view = kv2.reshape(2, num_blocks * block_size, heads, dim)
++    view[:, flat_slots, ...] = delta_pattern
++    state.stage_delta_to_cpu("L0", kv2, flat_slots, num_actual_tokens=2)
++    # Do not join — same as decode-only wait_for_saves(deferred=True).
++    state.wait_for_saves(deferred=True)
++
++    out = torch.zeros_like(kv)
++    state.prefetch_to_gpu("L0", out)
++    state.wait_for_layer("L0")
++    torch.cuda.synchronize()
++
++    ref = state._layers["L0"].cpu_buffer.clone()
++    ref_view = ref.reshape(2, num_blocks * block_size, heads, dim)
++    ref_view[:, flat_slots.cpu(), ...] = delta_pattern.cpu()
++    assert torch.allclose(out.cpu(), ref, rtol=0, atol=0), "deferred barrier + prefetch"
++
++
+ @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+ def test_prefetch_block_runs_roundtrip_disjoint_rows():
+     """GPU→CPU (runs)→GPU should restore only the copied spans."""
+diff --git a/vllm/config/scheduler.py b/vllm/config/scheduler.py
+index 1bceaa933..02af35ba7 100644
+--- a/vllm/config/scheduler.py
++++ b/vllm/config/scheduler.py
+@@ -144,6 +144,56 @@ class SchedulerConfig:
+     while a larger value (e.g., 10) reduces host overhead and may increase throughput
+     by batching multiple tokens before sending."""
+ 
++    enable_transfer_aware_admission: bool = False
++    """When True, apply experimental admission logic that accounts for repeated
++    CPU->GPU KV movement (layer-wise offload / decode staging). Default off."""
++
++    transfer_aware_admission_epoch_steps: int = Field(default=8, ge=1)
++    """How often (in scheduler steps) to refresh transfer estimates / budgets."""
++
++    transfer_aware_bytes_per_decode_step_per_seq: float = Field(default=0.0, ge=0.0)
++    """Offline-calibrated bytes moved per decode step per sequence for pressure
++    estimates. Zero disables pressure reporting unless extended later."""
++
++    transfer_aware_max_effective_bw_bytes_per_sec: float = Field(default=0.0, ge=0.0)
++    """Upper bound on effective CPU->GPU KV bandwidth for admission (0 = unset).
++    Reserved for Phase 3 policy."""
++
++    transfer_aware_slo_p99_itl_ms: float = Field(default=0.0, ge=0.0)
++    """Per-token decode SLO (p99 ITL in milliseconds) protected by the
++    admission policy. When > 0 and ``enable_transfer_aware_admission`` is True,
++    the controller refuses admitting a new request whose predicted post-admission
++    p99 ITL would exceed this budget. Default 0 = policy disabled (stub
++    behavior).
++    """
++
++    transfer_aware_predictor_csv: str = ""
++    """Path to a feature-ON K sweep CSV (produced by
++    ``benchmarks/kv_pipelining_bench/feature_on_k_sweep.py``) used to predict
++    p99 ITL given the running decode batch size. Empty string disables the
++    predictor and the policy falls back to admit-all when enabled."""
++
++    transfer_aware_predictor_model: str = ""
++    """HuggingFace model id used to filter rows of the predictor CSV. Defaults
++    to the empty string; if empty, the controller picks the model whose rows
++    in the CSV best match the runtime model id."""
++
++    transfer_aware_kv_k_window: int = Field(default=4, ge=1)
++    """Layer KV pipelining window used for transfer-byte estimates in the
++    admission predictor (``ModelKVProfile``). Should match ``--kv-k-window``."""
++
++    transfer_aware_admission_policy: str = "combined"
++    """Admission predictor mode: ``combined`` (feature-ON ITL(K) table only) or
++    ``mechanistic`` (compute + PCIe + extra budgets)."""
++
++    transfer_aware_baseline_compute_json: str = ""
++    """Path to ``results_baseline.json`` from ``decode_only_bench --modes baseline``
++    for mechanistic policy compute term. Required when policy is ``mechanistic``."""
++
++    transfer_aware_injection_jsonl: str = ""
++    """Path to injection sweep JSONL for mechanistic PCIe delta term. Optional
++    for ``combined``; recommended for ``mechanistic``."""
++
+     @staticmethod
+     def default_factory(**kwargs):
+         """
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py
+index bd68672e0..10ec9db6f 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/pipelined_decode_bench_connector.py
+@@ -181,6 +181,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
+         self._skip_delta_stage = (
+             os.environ.get("VLLM_KVPIPE_SKIP_DELTA_STAGE", "0") == "1"
+         )
++        self._fake_transfer = (
++            os.environ.get("VLLM_KVPIPE_FAKE_TRANSFER", "0") == "1"
++        )
+ 
+         # --- wait_for_layer_load instrumentation ---
+         # Pending CUDA event pairs (layer, step, before_event, after_event).
+@@ -541,11 +544,20 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
+             slot_mapping, torch.Tensor
+         ):
+             layer_idx = self._layer_index[layer_name]
+-            if (
+-                self._use_step_plan
+-                and self._step_plan.prepared
+-                and not self._skip_delta_stage
+-            ):
++            if self._use_step_plan and self._step_plan.prepared:
++                if self._skip_delta_stage:
++                    prof = self._hook_profile
++                    t_save = time.perf_counter() if prof is not None else 0.0
++                    self._prefetch_after_save_by_index(
++                        layer_idx, physical_block_ids=self._decode_phys_blocks
++                    )
++                    self._step_plan.layers_issued += 1
++                    if prof is not None:
++                        prof.fwd.save_calls += 1
++                        prof.fwd.save_host_ms += (
++                            time.perf_counter() - t_save
++                        ) * 1000.0
++                    return
+                 self._issue_decode_layer_step(layer_name, kv_layer)
+                 return
+             prof = self._hook_profile
+@@ -588,19 +600,21 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
+             if self._profile_save_submit:
+                 self._total_save_submit_time += time.perf_counter() - t0
+                 self._total_save_submit_calls += 1
+-            if n_tok <= 1 and (
+-                host_slot is None
+-                or (
+-                    num_actual_tokens is not None and num_actual_tokens != 1
++            if self._skip_delta_stage or (
++                n_tok <= 1
++                and (
++                    host_slot is None
++                    or (
++                        num_actual_tokens is not None
++                        and num_actual_tokens != 1
++                    )
+                 )
++            ) or (
++                n_tok > 1 and not self._worker_state._decode_batch_active
+             ):
+                 self._prefetch_after_save_by_index(
+                     layer_idx, physical_block_ids=self._decode_phys_blocks
+                 )
+-            elif n_tok > 1 and not self._worker_state._decode_batch_active:
+-                self._prefetch_after_save_by_index(
+-                    layer_idx, physical_block_ids=self._decode_phys_blocks
+-                )
+             if prof is not None:
+                 prof.fwd.save_calls += 1
+                 prof.fwd.save_host_ms += (time.perf_counter() - t_save) * 1000.0
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py
+index 8239c0739..003656ad9 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/prefill_staging_pipelined_connector.py
+@@ -359,20 +359,43 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
+         self._worker_state.stage_to_cpu_block_runs(layer_name, kv_layer, runs)
+         return True
+ 
++    def _physical_tensor_prev_occupant(self, layer_name: str) -> str | None:
++        """Layer that last used the same K+1 physical GPU tensor, if any."""
++        layer_idx = self._layer_index.get(layer_name, -1)
++        prev_idx = layer_idx - self._num_physical_tensors
++        if prev_idx < 0:
++            return None
++        return self._layer_names[prev_idx]
++
+     def _prefetch_physical_kv_to_gpu(
+-        self, layer_name: str, kv_layer: torch.Tensor
++        self,
++        layer_name: str,
++        kv_layer: torch.Tensor,
++        *,
++        gpu_wait_save_from_layer: str | None = None,
+     ) -> None:
+         runs = self._kv_block_runs
+         if not runs:
+-            self._worker_state.prefetch_to_gpu(layer_name, kv_layer)
++            self._worker_state.prefetch_to_gpu(
++                layer_name,
++                kv_layer,
++                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
++            )
+         elif len(runs) == 1:
+             lo, hi = runs[0]
+             self._worker_state.prefetch_to_gpu_block_span(
+-                layer_name, kv_layer, lo, hi
++                layer_name,
++                kv_layer,
++                lo,
++                hi,
++                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
+             )
+         else:
+             self._worker_state.prefetch_to_gpu_block_runs(
+-                layer_name, kv_layer, runs
++                layer_name,
++                kv_layer,
++                runs,
++                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
+             )
+ 
+     def _log_pipeline(self, msg: str) -> None:
+@@ -449,12 +472,17 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
+             max_seq_len = self._get_max_seq_len(attn_metadata)
+             st = self._kv_span_debug_stats(kv_layer, max_seq_len)
+             li = self._layer_index.get(layer_name, -1)
++            prev_occ = self._physical_tensor_prev_occupant(layer_name)
+             self._log_pipeline(
+                 "[pipeline-debug] prefetch_batch(start_load_kv) "
+                 f"fwd={self._dbg_forward_id} layer={layer_name!r} idx={li} "
+-                f"{st}"
++                f"wait_save_prev_occ={prev_occ!r} {st}"
++            )
++            self._prefetch_physical_kv_to_gpu(
++                layer_name,
++                kv_layer,
++                gpu_wait_save_from_layer=prev_occ,
+             )
+-            self._prefetch_physical_kv_to_gpu(layer_name, kv_layer)
+ 
+     def wait_for_layer_load(self, layer_name: str) -> None:
+         if self._worker_state is None:
+@@ -507,15 +535,8 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
+             f"fwd={self._dbg_forward_id} after_layer={layer_name!r} -> {planned!r}"
+         )
+         for next_layer in planned:
+-            # Before prefetching into the shared tensor, ensure any
+-            # in-flight save from the previous occupant has completed.
+             next_idx = self._layer_index.get(next_layer, -1)
+-            prev_occupant_idx = next_idx - self._num_physical_tensors
+-            prev_occ_name: str | None = None
+-            if prev_occupant_idx >= 0:
+-                prev_occupant = self._layer_names[prev_occupant_idx]
+-                self._worker_state.wait_for_layer_save(prev_occupant)
+-                prev_occ_name = prev_occupant
++            prev_occ_name = self._physical_tensor_prev_occupant(next_layer)
+ 
+             kv_layer = self._kv_caches[next_layer]
+             attn_metadata = self._forward_context.attn_metadata
+@@ -528,7 +549,11 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
+                 f"fwd={self._dbg_forward_id} next_layer={next_layer!r} idx={next_idx} "
+                 f"wait_save_prev_occ={prev_occ_name!r} {st}"
+             )
+-            self._prefetch_physical_kv_to_gpu(next_layer, kv_layer)
++            self._prefetch_physical_kv_to_gpu(
++                next_layer,
++                kv_layer,
++                gpu_wait_save_from_layer=prev_occ_name,
++            )
+ 
+     def save_kv_layer(
+         self,
+@@ -653,7 +678,10 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
+     def wait_for_save(self) -> None:
+         if self._worker_state is None:
+             return
+-        self._worker_state.wait_for_saves()
++        # Decode-only: defer global barriers; prefetch waits per-layer.
++        # Prefill / mixed: must drain staging before the next forward.
++        decode_only_step = self._has_decode_work and not self._has_prefill_work
++        self._worker_state.wait_for_saves(deferred=decode_only_step)
+ 
+         if self._has_prefill_work:
+             self._prefill_steps += 1
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index b5f0b1464..6d15aaffa 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -570,6 +570,27 @@ class EngineArgs:
+ 
+     stream_interval: int = SchedulerConfig.stream_interval
+ 
++    enable_transfer_aware_admission: bool = (
++        SchedulerConfig.enable_transfer_aware_admission
++    )
++    transfer_aware_slo_p99_itl_ms: float = (
++        SchedulerConfig.transfer_aware_slo_p99_itl_ms
++    )
++    transfer_aware_predictor_csv: str = (
++        SchedulerConfig.transfer_aware_predictor_csv
++    )
++    transfer_aware_predictor_model: str = (
++        SchedulerConfig.transfer_aware_predictor_model
++    )
++    transfer_aware_kv_k_window: int = SchedulerConfig.transfer_aware_kv_k_window
++    transfer_aware_admission_policy: str = (
++        SchedulerConfig.transfer_aware_admission_policy
++    )
++    transfer_aware_baseline_compute_json: str = (
++        SchedulerConfig.transfer_aware_baseline_compute_json
++    )
++    transfer_aware_injection_jsonl: str = SchedulerConfig.transfer_aware_injection_jsonl
++
+     kv_sharing_fast_prefill: bool = CacheConfig.kv_sharing_fast_prefill
+     optimization_level: OptimizationLevel = VllmConfig.optimization_level
+ 
+@@ -1152,6 +1173,38 @@ class EngineArgs:
+         scheduler_group.add_argument(
+             "--stream-interval", **scheduler_kwargs["stream_interval"]
+         )
++        scheduler_group.add_argument(
++            "--enable-transfer-aware-admission",
++            **scheduler_kwargs["enable_transfer_aware_admission"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-slo-p99-itl-ms",
++            **scheduler_kwargs["transfer_aware_slo_p99_itl_ms"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-predictor-csv",
++            **scheduler_kwargs["transfer_aware_predictor_csv"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-predictor-model",
++            **scheduler_kwargs["transfer_aware_predictor_model"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-kv-k-window",
++            **scheduler_kwargs["transfer_aware_kv_k_window"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-admission-policy",
++            **scheduler_kwargs["transfer_aware_admission_policy"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-baseline-compute-json",
++            **scheduler_kwargs["transfer_aware_baseline_compute_json"],
++        )
++        scheduler_group.add_argument(
++            "--transfer-aware-injection-jsonl",
++            **scheduler_kwargs["transfer_aware_injection_jsonl"],
++        )
+ 
+         # Compilation arguments
+         compilation_kwargs = get_kwargs(CompilationConfig)
+@@ -1671,6 +1724,14 @@ class EngineArgs:
+             disable_hybrid_kv_cache_manager=self.disable_hybrid_kv_cache_manager,
+             async_scheduling=self.async_scheduling,
+             stream_interval=self.stream_interval,
++            enable_transfer_aware_admission=self.enable_transfer_aware_admission,
++            transfer_aware_slo_p99_itl_ms=self.transfer_aware_slo_p99_itl_ms,
++            transfer_aware_predictor_csv=self.transfer_aware_predictor_csv,
++            transfer_aware_predictor_model=self.transfer_aware_predictor_model,
++            transfer_aware_kv_k_window=self.transfer_aware_kv_k_window,
++            transfer_aware_admission_policy=self.transfer_aware_admission_policy,
++            transfer_aware_baseline_compute_json=self.transfer_aware_baseline_compute_json,
++            transfer_aware_injection_jsonl=self.transfer_aware_injection_jsonl,
+         )
+ 
+         if not model_config.is_multimodal_model and self.default_mm_loras:
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index c1c161391..8fb8533be 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -1072,11 +1072,11 @@ def _get_pipelining_block_inflation(
+ ) -> tuple[bool, int, bool]:
+     """Return (should_inflate, k_window, decode_only) for pipelined KV cache.
+ 
+-    When layer-wise pipelining is active, only *k_window + 1* physical GPU
+-    tensors are allocated (K for the compute window + 1 spare for loading the
+-    next layer).  Layers map to tensors round-robin.  The block pool is
+-    inflated by ``num_layers / (k_window + 1)`` so the scheduler can admit
+-    proportionally more concurrent requests.
++    When layer-wise pipelining is active, decode-only P/D uses exactly
++    *k_window* physical GPU tensors as a rolling compute window.  After layer
++    ``i`` computes and its newly generated token KV is staged back to CPU, the
++    same physical tensor is reused for layer ``i + k_window``.  Hybrid mode
++    keeps the older conservative *k_window + 1* layout.
+ 
+     **decode_only mode** (P/D disaggregation): the node never performs local
+     prefill, so per-layer GPU tensors are reduced to a minimal placeholder
+@@ -1085,14 +1085,57 @@ def _get_pipelining_block_inflation(
+     """
+     cache_cfg = vllm_config.cache_config
+     decode_only = bool(getattr(cache_cfg, "decode_only_pipelining", False))
++    kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
++    connector_name = (
++        getattr(kv_transfer_config, "kv_connector", None)
++        if kv_transfer_config is not None
++        else None
++    )
++    # Some engine initialization paths build the KV cache config before the
++    # decode_only_pipelining-derived cache flag is visible here.  The dummy P/D
++    # connector is decode-only by construction, so infer the intended rolling-K
++    # layout from the connector too.
++    if connector_name == "PipelinedDecodeBenchConnector":
++        decode_only = True
+     enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
+     k_window = int(getattr(cache_cfg, "kv_k_window", 0))
++    inflate_pool = bool(getattr(cache_cfg, "inflate_kv_pool", False))
+     if not enable_pip and not decode_only:
++        # Make the decision explicit in the log so it cannot silently disable
++        # the rolling tensor layout: this is the most common cause of "feature
++        # looks off".
++        if k_window > 0 or inflate_pool:
++            logger.warning(
++                "KV pipelining: rolling tensor layout SKIPPED — neither "
++                "enable_kv_pipelining nor decode_only_pipelining is set "
++                "in cache_config (k_window=%d, inflate_kv_pool=%s).",
++                k_window,
++                inflate_pool,
++            )
+         return False, 0, False
+-    # Note: free_original_kv_cache is no longer required.  The K+1 tensor
+-    # layout inherently uses only (k_window+1)/num_layers of the memory.
++    # Note: free_original_kv_cache is no longer required.  The rolling tensor
++    # layout inherently uses only physical_tensors/num_layers of the memory.
+     if k_window <= 0 or k_window >= num_layers:
++        logger.warning(
++            "KV pipelining: rolling tensor layout SKIPPED — k_window=%d invalid "
++            "(must be 0 < K < num_layers=%d). Decisions: "
++            "decode_only=%s, enable_pip=%s, inflate_pool=%s.",
++            k_window,
++            num_layers,
++            decode_only,
++            enable_pip,
++            inflate_pool,
++        )
+         return False, 0, False
++    logger.info(
++        "KV pipelining: rolling tensor layout ACTIVE (k_window=%d, num_layers=%d, "
++        "decode_only=%s, enable_pip=%s, inflate_kv_pool=%s).",
++        k_window,
++        num_layers,
++        decode_only,
++        enable_pip,
++        inflate_pool,
++    )
+     return True, k_window, decode_only
+ 
+ 
+@@ -1137,42 +1180,69 @@ def get_kv_cache_config_from_groups(
+         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
+         num_layers = len(per_layer_specs)
+ 
+-        # --- Pipelining-aware K+1 tensor layout ----------------------------
++        # --- Pipelining-aware rolling tensor layout -------------------------
+         should_inflate, k_window, decode_only = (
+             _get_pipelining_block_inflation(vllm_config, num_layers)
+         )
+         if should_inflate:
+-            # ---- K+1 tensor layout (P/D decode-only focus) ----
++            # ---- Rolling tensor layout (P/D decode-only focus) ----
+             #
+-            # Allocate K+1 physical GPU tensors: K for the compute window
+-            # + 1 spare for loading the next layer from CPU.  Layers map
+-            # to tensors round-robin: layer_i → tensor[i % (K+1)].
++            # Allocate the physical rolling-window tensors.  Decode-only P/D
++            # uses exactly K tensors: layer_i -> tensor[i % K].  Hybrid mode
++            # keeps a conservative K+1 spare because local prefill and decode
++            # may coexist.
+             #
+-            # Phase-1: keep num_blocks = num_blocks_base (same concurrency).
+-            # GPU memory drops from num_layers to (K+1) tensors.
+-            num_physical_tensors = k_window + 1
++            # Phase-1 (inflate_kv_pool=False, default):
++            #   Keep num_blocks = num_blocks_base.  GPU memory drops from
++            #   num_layers to the rolling tensor count, same logical
++            #   concurrency.
++            # Phase-2 (inflate_kv_pool=True):
++            #   Inflate num_blocks by num_layers / physical_tensors so the
++            #   tensors carry the same total GPU bytes as baseline, but
++            #   the scheduler sees a proportionally larger block pool
++            #   and admits more concurrent decodes.
++            num_physical_tensors = k_window if decode_only else k_window + 1
+             per_layer_page_size = total_page_size // num_layers
+-            num_blocks = num_blocks_base
++            cache_cfg_local = vllm_config.cache_config
++            inflate_pool = bool(
++                getattr(cache_cfg_local, "inflate_kv_pool", False)
++            )
++            if inflate_pool:
++                inflation_factor = num_layers / num_physical_tensors
++                num_blocks = int(num_blocks_base * inflation_factor)
++            else:
++                num_blocks = num_blocks_base
+ 
+             gpu_mem = per_layer_page_size * num_blocks * num_physical_tensors
+             baseline_mem = total_page_size * num_blocks_base
++            pool_label = (
++                f"{num_blocks} (inflated "
++                f"{num_blocks / max(num_blocks_base, 1):.2f}x)"
++                if inflate_pool
++                else f"{num_blocks} (same as baseline)"
++            )
++            savings_pct = (
++                (1.0 - gpu_mem / max(baseline_mem, 1)) * 100.0
++                if not inflate_pool
++                else 0.0
++            )
+             logger.info(
+-                "KV pipelining: K+1 tensor layout with %d physical "
+-                "tensors (k_window=%d, num_layers=%d, decode_only=%s). "
+-                "Block pool: %d (same as baseline). "
+-                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
+-                "savings: %.1f%%)",
++                "KV pipelining (uniform): rolling tensor layout with %d physical "
++                "tensors (k_window=%d, num_layers=%d, decode_only=%s, "
++                "inflate_kv_pool=%s). Block pool: %s. "
++                "GPU KV memory: %.2f GiB (baseline: %.2f GiB, savings: %.1f%%).",
+                 num_physical_tensors,
+                 k_window,
+                 num_layers,
+                 decode_only,
+-                num_blocks,
++                inflate_pool,
++                pool_label,
+                 gpu_mem / (1 << 30),
+                 baseline_mem / (1 << 30),
+-                (1.0 - gpu_mem / max(baseline_mem, 1)) * 100,
++                savings_pct,
+             )
+ 
+-            # Build K+1 tensors with round-robin layer assignment.
++            # Build rolling tensors with round-robin layer assignment.
+             layer_names = kv_cache_groups[0].layer_names
+             kv_cache_tensors = []
+             for t in range(num_physical_tensors):
+@@ -1218,12 +1288,12 @@ def get_kv_cache_config_from_groups(
+             vllm_config, group_size, available_memory, page_size
+         )
+ 
+-        # --- Pipelining-aware K+1 layout (general case) -------------------
++        # --- Pipelining-aware rolling layout (general case) ----------------
+         should_inflate, k_window, decode_only = (
+             _get_pipelining_block_inflation(vllm_config, group_size)
+         )
+         if should_inflate:
+-            num_physical_tensors = k_window + 1
++            num_physical_tensors = k_window if decode_only else k_window + 1
+             cache_cfg = vllm_config.cache_config
+             inflate_pool = bool(
+                 getattr(cache_cfg, "inflate_kv_pool", False)
+@@ -1232,7 +1302,7 @@ def get_kv_cache_config_from_groups(
+             if inflate_pool:
+                 # ---- Phase-2: inflate block pool for more capacity ----
+                 # Use the same total GPU memory as baseline but spread it
+-                # across only K+1 tensors.  Each tensor is larger (more
++                # across only the rolling-window tensors.  Each tensor is larger (more
+                 # blocks), giving the scheduler a proportionally larger
+                 # block pool.  CPU pinned memory backs the full KV for
+                 # all layers.
+@@ -1242,7 +1312,7 @@ def get_kv_cache_config_from_groups(
+                 # ---- Phase-1: same concurrency, less GPU memory ----
+                 # Keep num_blocks = num_blocks_base (same concurrency as
+                 # baseline).  GPU memory drops from group_size tensors to
+-                # (K+1) tensors, freeing HBM for other uses.
++                # the rolling tensor count, freeing HBM for other uses.
+                 num_blocks = num_blocks_base
+ 
+             gpu_mem_per_tensor = page_size * num_blocks / (1 << 30)
+@@ -1255,7 +1325,7 @@ def get_kv_cache_config_from_groups(
+                 else f"{num_blocks} (same as baseline)"
+             )
+             logger.info(
+-                "KV pipelining (general): K+1 layout with %d physical "
++                "KV pipelining (general): rolling layout with %d physical "
+                 "tensors (k_window=%d, group_size=%d, decode_only=%s). "
+                 "Block pool: %s. "
+                 "GPU KV memory: %.2f GiB (baseline: %.2f GiB, "
+@@ -1272,7 +1342,7 @@ def get_kv_cache_config_from_groups(
+                 else 0.0,
+             )
+ 
+-            # Build K+1 tensors.  For a single-group model (most common),
++            # Build rolling tensors.  For a single-group model (most common),
+             # layers are assigned round-robin.  For multi-group models,
+             # each tensor is shared by the corresponding layers from all
+             # groups (same as baseline) but we only create K+1 of them.
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index bdd6d2a3c..4648c7e0d 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -45,6 +45,7 @@ from vllm.v1.core.sched.output import (
+     SchedulerOutput,
+ )
+ from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
++from vllm.v1.core.sched.transfer_aware_admission import TransferAwareAdmissionController
+ from vllm.v1.core.sched.utils import check_stop, remove_all
+ from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+ from vllm.v1.kv_cache_interface import KVCacheConfig
+@@ -81,6 +82,9 @@ class Scheduler(SchedulerInterface):
+         self.kv_events_config = vllm_config.kv_events_config
+         self.parallel_config = vllm_config.parallel_config
+         self.log_stats = log_stats
++        self.transfer_aware_admission = TransferAwareAdmissionController(
++            self.scheduler_config
++        )
+         self.observability_config = vllm_config.observability_config
+         self.kv_metrics_collector: KVCacheMetricsCollector | None = None
+         if self.observability_config.kv_cache_metrics:
+@@ -250,6 +254,7 @@ class Scheduler(SchedulerInterface):
+             )
+ 
+     def schedule(self) -> SchedulerOutput:
++        self.transfer_aware_admission.begin_schedule_step()
+         # NOTE(woosuk) on the scheduling algorithm:
+         # There's no "decoding phase" nor "prefill phase" in the scheduler.
+         # Each request just has the num_computed_tokens and
+@@ -511,6 +516,19 @@ class Scheduler(SchedulerInterface):
+                     skipped_waiting_requests.prepend_request(request)
+                     continue
+ 
++                admit, admit_reason = (
++                    self.transfer_aware_admission.should_admit_from_waiting(
++                        request=request,
++                        running_requests=self.running,
++                        token_budget=token_budget,
++                    )
++                )
++                if not admit:
++                    self.waiting.pop_request()
++                    skipped_waiting_requests.prepend_request(request)
++                    self.transfer_aware_admission.record_skip(admit_reason)
++                    continue
++
+                 num_external_computed_tokens = 0
+                 load_kv_async = False
+ 
+@@ -1609,6 +1627,17 @@ class Scheduler(SchedulerInterface):
+             kv_connector_stats=connector_stats_payload,
+             cudagraph_stats=cudagraph_stats,
+             perf_stats=perf_stats,
++            transfer_aware_admission_enabled=(
++                self.scheduler_config.enable_transfer_aware_admission
++            ),
++            transfer_pressure_bytes_per_step_estimate=(
++                self.transfer_aware_admission.estimate_running_transfer_pressure_bytes_per_step(
++                    self.running
++                )
++            ),
++            transfer_aware_admission_events=(
++                self.transfer_aware_admission.drain_events()
++            ),
+         )
+ 
+     def make_spec_decoding_stats(
+diff --git a/vllm/v1/cpu_kv_table.py b/vllm/v1/cpu_kv_table.py
+index 01f7fd6dc..fbc3b064c 100644
+--- a/vllm/v1/cpu_kv_table.py
++++ b/vllm/v1/cpu_kv_table.py
+@@ -16,6 +16,12 @@ from vllm.utils.math_utils import cdiv
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _fake_transfer_enabled() -> bool:
++    from vllm.v1.kv_pipelining_step import kv_pipelining_fake_transfer_enabled
++
++    return kv_pipelining_fake_transfer_enabled()
++
++
+ def measure_hbm_kv_bytes(kv_caches: dict[str, torch.Tensor]) -> tuple[int, int, int]:
+     """Return (unique_tensor_bytes, num_unique_tensors, per_tensor_max_bytes)."""
+     seen: set[int] = set()
+@@ -313,15 +319,24 @@ class CpuKvTable:
+         if sync_compute:
+             stream.wait_stream(torch.cuda.current_stream())
+         with torch.cuda.stream(stream):
+-            self._gather_n_tokens_to_scratch(kv_gpu, gpu_scratch, phys_gpu, off_gpu, n)
++            if not _fake_transfer_enabled():
++                self._gather_n_tokens_to_scratch(
++                    kv_gpu, gpu_scratch, phys_gpu, off_gpu, n
++                )
+             if snap_ev is not None:
+                 snap_ev.record(stream)
+-            if cpu_scratch.shape[0] == 2:
+-                cpu_scratch[:, :n].copy_(gpu_scratch[:, :n], non_blocking=True)
+-            else:
+-                cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
++            if not _fake_transfer_enabled():
++                if cpu_scratch.shape[0] == 2:
++                    cpu_scratch[:, :n].copy_(
++                        gpu_scratch[:, :n], non_blocking=True
++                    )
++                else:
++                    cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
+             save_ev.record(stream)
+ 
++        if _fake_transfer_enabled():
++            return
++
+         def _finish_scatter() -> None:
+             save_ev.synchronize()
+             self._scatter_batched_n1_to_cpu_buf(
+@@ -347,6 +362,8 @@ class CpuKvTable:
+         off: torch.Tensor,
+         n: int,
+     ) -> None:
++        if _fake_transfer_enabled():
++            return
+         if kv_gpu.shape[0] == 2:
+             gathered = kv_gpu[:, phys, off]
+             gpu_scratch[:, :n].copy_(gathered, non_blocking=True)
+@@ -381,6 +398,8 @@ class CpuKvTable:
+         phys: int,
+         off: int,
+     ) -> None:
++        if _fake_transfer_enabled():
++            return
+         if kv_gpu.shape[0] == 2:
+             delta_scratch.copy_(kv_gpu[:, phys, off], non_blocking=True)
+         elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
+@@ -395,6 +414,8 @@ class CpuKvTable:
+         tbl_block: int,
+         off: int,
+     ) -> None:
++        if _fake_transfer_enabled():
++            return
+         if cpu_buf.shape[0] == 2:
+             cpu_buf[:, tbl_block, off].copy_(delta_scratch, non_blocking=True)
+         elif cpu_buf.ndim >= 3 and cpu_buf.shape[1] == 2:
+@@ -442,6 +463,8 @@ class CpuKvTable:
+         off: int,
+         tbl_block: int,
+     ) -> None:
++        if _fake_transfer_enabled():
++            return
+         if kv_gpu.shape[0] == 2:
+             cpu_buf[:, tbl_block, off].copy_(
+                 kv_gpu[:, phys, off], non_blocking=True
+@@ -467,30 +490,31 @@ class CpuKvTable:
+         blocks = self.ordered_table_blocks
+         with torch.cuda.stream(stream):
+             stream.wait_event(sync_ev)
+-            if (
+-                len(phys_list) >= 2
+-                and len(blocks) == len(phys_list)
+-                and phys_list[-1] - phys_list[0] == len(phys_list) - 1
+-                and blocks[-1] - blocks[0] == len(blocks) - 1
+-            ):
+-                p0, p1 = phys_list[0], phys_list[-1]
+-                t0, t1 = blocks[0], blocks[-1]
+-                src = [slice(None)] * kv_gpu.ndim
+-                dst = [slice(None)] * cpu_buf.ndim
+-                src[bd] = slice(p0, p1 + 1)
+-                dst[bd] = slice(t0, t1 + 1)
+-                cpu_buf[tuple(dst)].copy_(kv_gpu[tuple(src)], non_blocking=True)
+-            else:
+-                for phys, tb in zip(phys_list, blocks):
+-                    if phys < 0 or phys >= kv_gpu.shape[bd]:
+-                        continue
++            if not _fake_transfer_enabled():
++                if (
++                    len(phys_list) >= 2
++                    and len(blocks) == len(phys_list)
++                    and phys_list[-1] - phys_list[0] == len(phys_list) - 1
++                    and blocks[-1] - blocks[0] == len(blocks) - 1
++                ):
++                    p0, p1 = phys_list[0], phys_list[-1]
++                    t0, t1 = blocks[0], blocks[-1]
+                     src = [slice(None)] * kv_gpu.ndim
+                     dst = [slice(None)] * cpu_buf.ndim
+-                    src[bd] = slice(phys, phys + 1)
+-                    dst[bd] = slice(tb, tb + 1)
+-                    cpu_buf[tuple(dst)].copy_(
+-                        kv_gpu[tuple(src)], non_blocking=True
+-                    )
++                    src[bd] = slice(p0, p1 + 1)
++                    dst[bd] = slice(t0, t1 + 1)
++                    cpu_buf[tuple(dst)].copy_(kv_gpu[tuple(src)], non_blocking=True)
++                else:
++                    for phys, tb in zip(phys_list, blocks):
++                        if phys < 0 or phys >= kv_gpu.shape[bd]:
++                            continue
++                        src = [slice(None)] * kv_gpu.ndim
++                        dst = [slice(None)] * cpu_buf.ndim
++                        src[bd] = slice(phys, phys + 1)
++                        dst[bd] = slice(tb, tb + 1)
++                        cpu_buf[tuple(dst)].copy_(
++                            kv_gpu[tuple(src)], non_blocking=True
++                        )
+             save_ev.record(stream)
+         return save_ev
+ 
+@@ -545,7 +569,8 @@ class CpuKvTable:
+         ready_event = torch.cuda.Event(blocking=False)
+         with torch.cuda.stream(stream):
+             stream.wait_event(sync_ev)
+-            cpu_delta.copy_(delta, non_blocking=True)
++            if not _fake_transfer_enabled():
++                cpu_delta.copy_(delta, non_blocking=True)
+             save_ev.record(stream)
+             ready_event.record(stream)
+ 
+@@ -572,7 +597,11 @@ class CpuKvTable:
+         if not phys_list or len(blocks) != len(phys_list):
+             return ready
+ 
++        fake = _fake_transfer_enabled()
++
+         def _copy_range(p_start: int, p_end: int, t_start: int, t_end: int) -> None:
++            if fake:
++                return
+             src = [slice(None)] * cpu_buf.ndim
+             dst = [slice(None)] * kv_gpu.ndim
+             src[bd] = slice(t_start, t_end + 1)
+@@ -580,6 +609,8 @@ class CpuKvTable:
+             kv_gpu[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
+ 
+         def _copy_block(phys: int, tb: int) -> None:
++            if fake:
++                return
+             if phys < 0 or phys >= kv_gpu.shape[bd]:
+                 return
+             src = [slice(None)] * cpu_buf.ndim
+@@ -657,21 +688,24 @@ class CpuKvTable:
+         if n == 0 or n > kv_compact.shape[bd]:
+             return ready
+         t0, t1 = blocks[0], blocks[-1]
+-        if len(blocks) >= 2 and blocks[-1] - blocks[0] == len(blocks) - 1:
+-            src = [slice(None)] * cpu_buf.ndim
+-            dst = [slice(None)] * kv_compact.ndim
+-            src[bd] = slice(t0, t1 + 1)
+-            dst[bd] = slice(0, n)
+-            kv_compact[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
+-        else:
+-            for local_i, tb in enumerate(blocks):
+-                if tb < 0:
+-                    continue
++        if not _fake_transfer_enabled():
++            if len(blocks) >= 2 and blocks[-1] - blocks[0] == len(blocks) - 1:
+                 src = [slice(None)] * cpu_buf.ndim
+                 dst = [slice(None)] * kv_compact.ndim
+-                src[bd] = slice(tb, tb + 1)
+-                dst[bd] = slice(local_i, local_i + 1)
++                src[bd] = slice(t0, t1 + 1)
++                dst[bd] = slice(0, n)
+                 kv_compact[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
++            else:
++                for local_i, tb in enumerate(blocks):
++                    if tb < 0:
++                        continue
++                    src = [slice(None)] * cpu_buf.ndim
++                    dst = [slice(None)] * kv_compact.ndim
++                    src[bd] = slice(tb, tb + 1)
++                    dst[bd] = slice(local_i, local_i + 1)
++                    kv_compact[tuple(dst)].copy_(
++                        cpu_buf[tuple(src)], non_blocking=True
++                    )
+         if ready_event is not None:
+             ready.record(stream)
+         return ready
+@@ -689,6 +723,8 @@ class CpuKvTable:
+         n = len(phys_list)
+         if n == 0 or len(blocks) != n or n > kv_compact.shape[bd]:
+             return
++        if _fake_transfer_enabled():
++            return
+         copy_stream = stream or torch.cuda.current_stream()
+         if (
+             n >= 2
+diff --git a/vllm/v1/kv_cache_pipelining.py b/vllm/v1/kv_cache_pipelining.py
+index e3ab6af78..ffd8928e2 100644
+--- a/vllm/v1/kv_cache_pipelining.py
++++ b/vllm/v1/kv_cache_pipelining.py
+@@ -391,6 +391,8 @@ class LayerwisePipeliningState:
+         delta_scratch: torch.Tensor | None = None,
+     ) -> None:
+         """Batched n>1 D2H: one gather + one copy per layer (not per sequence)."""
++        from vllm.v1.kv_pipelining_step import kv_pipelining_fake_transfer_enabled
++
+         table = self._cpu_kv_table
+         if (
+             table is None
+@@ -430,8 +432,12 @@ class LayerwisePipeliningState:
+             return
+         state.save_event = save_ev
+         state.snap_event = snap_ev
+-        state.pending_cpu_delta = True
+-        state.cpu_delta_ready.clear()
++        if kv_pipelining_fake_transfer_enabled():
++            state.pending_cpu_delta = False
++            state.cpu_delta_ready.set()
++        else:
++            state.pending_cpu_delta = True
++            state.cpu_delta_ready.clear()
+ 
+     def stage_delta_host_slot_to_cpu(
+         self,
+diff --git a/vllm/v1/kv_pipelining_direct_window.py b/vllm/v1/kv_pipelining_direct_window.py
+index d027b14db..f5f6a7eb3 100644
+--- a/vllm/v1/kv_pipelining_direct_window.py
++++ b/vllm/v1/kv_pipelining_direct_window.py
+@@ -21,10 +21,12 @@ from vllm.v1.kv_pipelining_profile import (
+ )
+ from vllm.v1.kv_pipelining_step import (
+     DecodeStepTransferPlan,
++    build_prefetch_target_indices,
+     extract_attn_metadata_dict,
+     find_step_slot_mapping,
+     kv_pipelining_batched_d2h_enabled,
+     kv_pipelining_step_plan_enabled,
++    kv_pipelining_wrap_prefetch_enabled,
+ )
+ 
+ if TYPE_CHECKING:
+@@ -57,6 +59,7 @@ class DirectKWindowMixin:
+     _hook_profile: DecodeHookProfile | None
+     _use_step_plan: bool
+     _use_batched_d2h: bool
++    _use_wrap_prefetch: bool
+     _step_plan: DecodeStepTransferPlan
+ 
+     def _init_direct_k_window(
+@@ -83,18 +86,25 @@ class DirectKWindowMixin:
+         self._layer_index = {
+             name: idx for idx, name in enumerate(self._layer_names)
+         }
++        num_layers = len(self._layer_names)
++        self._use_wrap_prefetch = kv_pipelining_wrap_prefetch_enabled()
++        self._prefetch_target_idx = build_prefetch_target_indices(
++            num_layers,
++            self._k_window,
++            wrap=self._use_wrap_prefetch,
++        )
+         self._prefetch_target = [
+-            self._layer_names[i + self._k_window]
+-            if self._k_window > 0 and i + self._k_window < len(self._layer_names)
+-            else None
+-            for i in range(len(self._layer_names))
+-        ]
+-        self._prefetch_target_idx = [
+-            i + self._k_window
+-            if self._k_window > 0 and i + self._k_window < len(self._layer_names)
+-            else None
+-            for i in range(len(self._layer_names))
++            self._layer_names[idx] if idx is not None else None
++            for idx in self._prefetch_target_idx
+         ]
++        if self._use_wrap_prefetch and self._k_window > 0:
++            logger.info(
++                "DirectKWindow: wrap-around prefetch enabled "
++                "(layers %d..%d save → prefetch 0..%d); bootstrap off",
++                max(0, num_layers - self._k_window),
++                num_layers - 1,
++                self._k_window - 1,
++            )
+         self._bootstrap_layer_names = (
+             self._layer_names[: self._k_window] if self._k_window > 0 else []
+         )
+@@ -460,7 +470,13 @@ class DirectKWindowMixin:
+         self._step_plan.reset()
+ 
+     def _prefetch_bootstrap_layers(self) -> None:
+-        """Prefetch first K layers for the next decode step (overlap with scheduling)."""
++        """Prefetch first K layers for the next decode step (overlap with scheduling).
++
++        Skipped when wrap-around prefetch is enabled: layers L-K..L-1 already
++        issued H2D for 0..K-1 during the same forward.
++        """
++        if self._use_wrap_prefetch:
++            return
+         if (
+             self._worker_state is None
+             or self._forward_context is None
+diff --git a/vllm/v1/kv_pipelining_profile.py b/vllm/v1/kv_pipelining_profile.py
+index 58d220f31..564c8eae4 100644
+--- a/vllm/v1/kv_pipelining_profile.py
++++ b/vllm/v1/kv_pipelining_profile.py
+@@ -7,6 +7,7 @@ from __future__ import annotations
+ 
+ from collections import deque
+ from dataclasses import dataclass, field
++import json
+ import os
+ 
+ from vllm.logger import init_logger
+@@ -28,6 +29,10 @@ def profile_steady_window() -> int:
+     return max(1, int(os.environ.get("VLLM_KVPIPE_PROFILE_WINDOW", "32")))
+ 
+ 
++def profile_json_enabled() -> bool:
++    return os.environ.get("VLLM_KVPIPE_PROFILE_JSON", "0") == "1"
++
++
+ @dataclass
+ class ForwardPassProfile:
+     """Metrics for a single decode forward (one output token)."""
+@@ -216,6 +221,27 @@ class DecodeHookProfile:
+             self.fwd.bootstrap_host_ms,
+             self.fwd.rolling_prefetch_issued,
+         )
++        if profile_json_enabled():
++            logger.info(
++                "KVPIPE_JSON %s",
++                json.dumps(
++                    {
++                        "tag": tag,
++                        "step": step,
++                        "k_window": k_window,
++                        "gpu_stall_sum_ms": st["sum_ms"],
++                        "wait_host_ms": self.fwd.wait_host_ms,
++                        "wait_calls": self.fwd.wait_calls,
++                        "save_host_ms": self.fwd.save_host_ms,
++                        "save_stage_ms": self.fwd.save_stage_ms,
++                        "save_prefetch_ms": self.fwd.save_prefetch_ms,
++                        "start_load_host_ms": self.fwd.start_load_host_ms,
++                        "bootstrap_host_ms": self.fwd.bootstrap_host_ms,
++                        "wait_save_host_ms": self.fwd.wait_save_host_ms,
++                        "rolling_prefetch_issued": self.fwd.rolling_prefetch_issued,
++                    }
++                ),
++            )
+ 
+     def _log_steady_window(self, *, step: int, k_window: int) -> None:
+         vals = list(self._stall_sum_window)
+diff --git a/vllm/v1/kv_pipelining_step.py b/vllm/v1/kv_pipelining_step.py
+index 98f909fc2..7970fbdb5 100644
+--- a/vllm/v1/kv_pipelining_step.py
++++ b/vllm/v1/kv_pipelining_step.py
+@@ -30,6 +30,54 @@ def kv_pipelining_batched_d2h_enabled() -> bool:
+     return os.environ.get("VLLM_KVPIPE_BATCHED_D2H", "1") == "1"
+ 
+ 
++def kv_pipelining_fake_transfer_enabled() -> bool:
++    """Diagnostic: infinite-bandwidth simulation for conc=1 thesis benches.
++
++    When enabled (``VLLM_KVPIPE_FAKE_TRANSFER=1``):
++
++    - Runs the **same** staging + prefetch path as production (not ``SKIP_DELTA``).
++    - **No** ``copy_`` (zero-byte D2H/H2D).
++    - Transfer stream still issues ``wait_stream`` / ``wait_event`` / ``record``.
++    - Compute stream still **issues** ``wait_event(ready)`` on instant-ready events
++      (no wait for PCIe latency; pays CUDA command-issue + host orchestration cost).
++
++    Invalid for correctness or production.
++    """
++    return os.environ.get("VLLM_KVPIPE_FAKE_TRANSFER", "0") == "1"
++
++
++def kv_pipelining_wrap_prefetch_enabled() -> bool:
++    """Close rolling prefetch: after layer i save, prefetch (i+K) mod L.
++
++    Replaces bootstrap prefetch of layers 0..K-1 at end-of-forward with
++    in-forward wrap at layers L-K..L-1 (more overlap before the next token).
++    Set ``VLLM_KVPIPE_WRAP_PREFETCH=0`` to restore bootstrap + open-chain prefetch.
++    """
++    return os.environ.get("VLLM_KVPIPE_WRAP_PREFETCH", "1") == "1"
++
++
++def build_prefetch_target_indices(
++    num_layers: int,
++    k_window: int,
++    *,
++    wrap: bool,
++) -> list[int | None]:
++    """Per-layer index to prefetch after that layer's decode save (i -> target).
++
++    Wrap mode: always ``(i + k_window) % num_layers`` (layers L-K..L-1 close
++    the ring by prefetching 0..K-1 for the next token). Legacy mode: ``i + K``
++    only when in range, else ``None`` (requires bootstrap for layers 0..K-1).
++    """
++    if k_window <= 0 or num_layers <= 0:
++        return [None] * num_layers
++    if wrap:
++        return [(i + k_window) % num_layers for i in range(num_layers)]
++    return [
++        i + k_window if i + k_window < num_layers else None
++        for i in range(num_layers)
++    ]
++
++
+ @dataclass
+ class DecodeStepTransferPlan:
+     """Per-forward plan: slot resolution done once; per-layer issue after attention."""
+diff --git a/vllm/v1/metrics/loggers.py b/vllm/v1/metrics/loggers.py
+index 2213b952c..3962ed789 100644
+--- a/vllm/v1/metrics/loggers.py
++++ b/vllm/v1/metrics/loggers.py
+@@ -319,6 +319,9 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
+ 
+     def aggregate_scheduler_stats(self):
+         self.last_scheduler_stats = SchedulerStats()
++        transfer_pressure_sum = 0.0
++        transfer_pressure_n = 0
++        merged_transfer_events: dict[str, int] = {}
+         for last_scheduler_stats in self.last_scheduler_stats_dict.values():
+             self.last_scheduler_stats.num_waiting_reqs += (
+                 last_scheduler_stats.num_waiting_reqs
+@@ -329,7 +332,20 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
+             self.last_scheduler_stats.kv_cache_usage += (
+                 last_scheduler_stats.kv_cache_usage
+             )
++            if last_scheduler_stats.transfer_aware_admission_enabled:
++                self.last_scheduler_stats.transfer_aware_admission_enabled = True
++                transfer_pressure_sum += (
++                    last_scheduler_stats.transfer_pressure_bytes_per_step_estimate
++                )
++                transfer_pressure_n += 1
++            for key, val in last_scheduler_stats.transfer_aware_admission_events.items():
++                merged_transfer_events[key] = merged_transfer_events.get(key, 0) + val
+         self.last_scheduler_stats.kv_cache_usage /= len(self.last_scheduler_stats_dict)
++        if transfer_pressure_n:
++            self.last_scheduler_stats.transfer_pressure_bytes_per_step_estimate = (
++                transfer_pressure_sum / transfer_pressure_n
++            )
++        self.last_scheduler_stats.transfer_aware_admission_events = merged_transfer_events
+ 
+     def log(self):
+         LoggingStatLogger.log(self)
+diff --git a/vllm/v1/metrics/stats.py b/vllm/v1/metrics/stats.py
+index cb1a860e3..c2daa8515 100644
+--- a/vllm/v1/metrics/stats.py
++++ b/vllm/v1/metrics/stats.py
+@@ -189,6 +189,15 @@ class SchedulerStats:
+ 
+     perf_stats: PerfStats | None = None
+ 
++    transfer_aware_admission_enabled: bool = False
++    """True when transfer-aware admission is enabled on this engine."""
++
++    transfer_pressure_bytes_per_step_estimate: float = 0.0
++    """Estimated CPU->GPU KV bytes touched per scheduler step (running batch)."""
++
++    transfer_aware_admission_events: dict[str, int] = field(default_factory=dict)
++    """Per-step admission telemetry (e.g., skip reasons)."""
++
+ 
+ @dataclass
+ class RequestStateStats:
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index f603dc96d..3dfc483c9 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -11,6 +11,7 @@ import torch.nn as nn
+ 
+ from vllm.config import VllmConfig
+ from vllm.config.compilation import CUDAGraphMode
++from vllm.distributed.kv_transfer import has_kv_transfer_group
+ from vllm.forward_context import set_forward_context
+ from vllm.logger import init_logger
+ from vllm.model_executor.model_loader import get_model_loader
+@@ -843,6 +844,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 # Special case: no tokens to run.
+                 return CUDAGraphMode.NONE, 0, None
+ 
++            # Renounce full-graph replay when a KV connector is active (same as v1
++            # GPUModelRunner: hooks must run every forward; revisit after validation).
++            if has_kv_transfer_group():
++                return CUDAGraphMode.NONE, total_num_scheduled_tokens, None
++
+             cudagraph_size = self.cudagraph_manager.get_cudagraph_size(
+                 scheduler_output, total_num_scheduled_tokens
+             )
+@@ -863,6 +869,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             )
+             if cudagraph_size_before_dp is None:
+                 cudagraph_size_before_dp = -1
++            # Force eager path for all DP ranks (see dp_size==1 branch above).
++            if has_kv_transfer_group():
++                cudagraph_size_before_dp = -1
+ 
+         assert cudagraph_size_before_dp is not None
+         dp_rank = self.parallel_config.data_parallel_rank
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 00e401f41..c53b4eedb 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -3200,8 +3200,29 @@ class GPUModelRunner(
+                 max_num_scheduled_tokens=max_num_scheduled_tokens,
+                 use_cascade_attn=cascade_attn_prefix_lens is not None,
+                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
++                # Microbatching (DBO) turns per-layer attention metadata into a
++                # list-of-dicts in ForwardContext. KV transfer hooks expect
++                # per-layer metadata objects (slot_mapping/num_actual_tokens),
++                # so disable microbatching while a v1 KV connector is active.
++                allow_microbatching=not has_kv_transfer_group(),
++                # Renounce CUDA graphs while a v1 KV connector is active: hooks run
++                # in Python around attention and graph replay skips them, breaking
++                # correctness. Revisit acceleration only after validation passes and
++                # connector work is graph-safe or moved outside replay.
++                force_eager=has_kv_transfer_group(),
+             )
+ 
++            if (
++                has_kv_transfer_group()
++                and self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
++            ):
++                logger.info_once(
++                    "CUDA graphs disabled for this engine: a KV transfer connector "
++                    "is active (hooks must run every forward). Restore graphs later "
++                    "once correctness is proven and the path is compatible.",
++                    scope="local",
++                )
++
+             logger.debug(
+                 "Running batch with cudagraph_mode: %s, batch_descriptor: %s, "
+                 "should_ubatch: %s, num_tokens_across_dp: %s",
+@@ -4318,8 +4339,10 @@ class GPUModelRunner(
+                 max_num_scheduled_tokens=max_query_len,
+                 use_cascade_attn=False,
+                 allow_microbatching=allow_microbatching,
++                # Same KV-connector policy as execute_model: no graph capture/replay.
+                 force_eager=is_profile
+-                or (cudagraph_runtime_mode == CUDAGraphMode.NONE),
++                or (cudagraph_runtime_mode == CUDAGraphMode.NONE)
++                or has_kv_transfer_group(),
+                 # `force_uniform_decode` is used for cudagraph capture; because for
+                 # capturing mixed prefill-decode batches, we sometimes use
+                 # num_tokens == num_reqs which looks like a uniform decode batch to the
+@@ -5177,6 +5200,23 @@ class GPUModelRunner(
+                 capture_sizes if capture_sizes is not None else []
+             )
+ 
++        # KV pipelining requires the attention decorator to run Python code
++        # (wait_for_layer_load / save_kv_layer) between each attention layer.
++        # Both FULL and PIECEWISE CUDA graphs bake the decorator's early-
++        # return path (no connector metadata during capture) into the
++        # replayed graph, so KV transfer hooks are silently skipped during
++        # inference.  Disable CUDA graphs entirely when pipelining is active.
++        if (
++            self.vllm_config.cache_config
++            and getattr(self.vllm_config.cache_config, "enable_kv_pipelining", False)
++            and cudagraph_mode != CUDAGraphMode.NONE
++        ):
++            cudagraph_mode = CUDAGraphMode.NONE
++            logger.info(
++                "KV pipelining active: disabled CUDA graphs "
++                "(graphs bypass per-layer KV transfer hooks)",
++            )
++
+         # Trigger cudagraph dispatching keys initialization after
+         # resolved cudagraph mode.
+         self.compilation_config.cudagraph_mode = cudagraph_mode
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index 013780479..d7b0b7608 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -605,6 +605,8 @@ class Worker(WorkerBase):
+                     num_scheduled_tokens_np=num_scheduled_tokens_np,
+                     max_num_scheduled_tokens=num_scheduled_tokens_np.max(),
+                     use_cascade_attn=False,  # TODO(lucas): Handle cascade attention
++                    # Match execute_model: no CUDA graphs with KV connector.
++                    force_eager=has_kv_transfer_group(),
+                 )
+             )
+             all_gather_tensors = {

@@ -189,6 +189,15 @@ class SchedulerStats:
 
     perf_stats: PerfStats | None = None
 
+    transfer_aware_admission_enabled: bool = False
+    """True when transfer-aware admission is enabled on this engine."""
+
+    transfer_pressure_bytes_per_step_estimate: float = 0.0
+    """Estimated CPU->GPU KV bytes touched per scheduler step (running batch)."""
+
+    transfer_aware_admission_events: dict[str, int] = field(default_factory=dict)
+    """Per-step admission telemetry (e.g., skip reasons)."""
+
 
 @dataclass
 class RequestStateStats:

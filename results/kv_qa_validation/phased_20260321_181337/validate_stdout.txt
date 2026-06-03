@@ -1,0 +1,310 @@
+==========================================================================================
+  Real Q&A Correctness Validation for KV Cache Pipelining
+==========================================================================================
+  Model:      Qwen/Qwen2.5-0.5B-Instruct
+  K-window:   6
+  Inflate pool: False
+  Max tokens: 256
+  Prompts:    30
+  Concurrency phases: [1, 2, 4, 8] (conc=1 runs first when included)
+  Stop if Phase 1 fails: yes (skip conc>1)
+  Result dir: /home/ben/vllm/results/kv_qa_validation/phased_20260321_181337
+
+
+##########################################################################################
+# TEST: Phase 1 — single-request (conc=1)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=1) ...
+  Baseline done in 6.2s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=6) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=1) ...
+  Pipelined done in 214.9s (30/30 succeeded)
+
+==========================================================================================
+  Phase 1 — single-request (conc=1)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        0/30 (0.0%)
+  High similarity (>95%): 0/30 (0.0%)
+  Average similarity:   0.0423
+  Min similarity:       0.0089
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code               no  0.0317     335.4ms    5237.2ms       256       256
+  code_02         code               no  0.0283     335.9ms    5134.7ms       256       256
+  code_03         code               no  0.0228     340.9ms    5310.5ms       256       256
+  context_01      contextual         no  0.0372     113.9ms    6259.1ms        67       256
+  context_02      contextual         no  0.0317      98.6ms    6522.6ms        69       256
+  creative_01     creative           no  0.0460      34.7ms    5647.8ms        20       256
+  creative_02     creative           no  0.0351     130.0ms    5772.4ms        97       256
+  fact_01         factual            no  0.3774      73.7ms   51259.9ms         8         9
+  fact_02         factual            no  0.0333     127.2ms    4563.5ms        87       256
+  fact_03         factual            no  0.0132     114.8ms    4818.0ms        84       256
+  fact_04         factual            no  0.0165     131.0ms    4602.2ms        97       256
+  fact_05         factual            no  0.0613     169.1ms    4367.8ms       127       256
+  general_01      general            no  0.0639     101.0ms    6750.3ms        71       256
+  instruct_01     instruction        no  0.0289      95.9ms    6609.9ms        69       256
+  instruct_02     instruction        no  0.0089     335.7ms    6722.4ms       256       256
+  instruct_03     instruction        no  0.0344      56.7ms    6890.0ms        37       256
+  math_01         math               no  0.0231     290.8ms    5225.9ms       221       256
+  math_02         math               no  0.0261     338.8ms    5449.6ms       256       256
+  math_03         math               no  0.0454     300.1ms    5214.5ms       227       256
+  multi_01        multi_step         no  0.0331      61.8ms    6005.2ms        41       256
+  multi_02        multi_step         no  0.0199     335.8ms    5938.2ms       256       256
+  reason_01       reasoning          no  0.0253     337.8ms    4615.9ms       256       256
+  reason_02       reasoning          no  0.0286     194.3ms    4615.6ms       146       256
+  reason_03       reasoning          no  0.0155     337.7ms    5388.1ms       256       256
+  reason_04       reasoning          no  0.0173     337.8ms    5237.2ms       256       256
+  summary_01      summarization      no  0.0348     150.5ms    5450.8ms        93       256
+  summary_02      summarization      no  0.0309      53.7ms    5597.8ms        35       256
+  translate_01    translation        no  0.0425      83.7ms    6634.5ms        59       256
+  tricky_01       tricky             no  0.0215     337.3ms    6435.2ms       256       256
+  tricky_02       tricky             no  0.0332     331.9ms    6590.4ms       252       256
+
+  --- Detailed diffs for 30 non-exact matches ---
+
+  [code_01] (similarity=0.0317)
+  Prompt: Write a Python function that checks if a string is a palindrome. Include a docst...
+    --- baseline
+    +++ pipelined
+    @@ -1,31 +1,10 @@
+    -Certainly! Below is a Python function that checks if a given string is a palindrome:
+    +Certainlystake
+    +Cautose
+    +Dilemma
+    
+    -```python
+    -def is_palindrome(s):
+    -    """
+    -    Check if the input string s is a palindrome.
+    +The task has been successfully completed.
+    +Lectures and discussions on the stock market.
+    
+    -    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    -    e.g., madam and racecar.
+    -
+    -    Parameters:
+    -    s (str): The string to check.
+    ... (21 more diff lines)
+
+  [code_02] (similarity=0.0283)
+  Prompt: Write a Python function to compute the nth Fibonacci number using recursion with...
+    --- baseline
+    +++ pipelined
+    @@ -1,32 +1 @@
+    -Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+    -
+    -```python
+    -def fibonacci(n, memo={}):
+    -    """
+    -    Compute the nth Fibonacci number using recursion with memoization.
+    -
+    -    Args:
+    -        n (int): The position in the Fibonacci sequence.
+    -        memo (dict): A dictionary to store previously computed results of the function.
+    -
+    -    Returns:
+    -        int: The nth Fibonacci number.
+    -    """
+    -    if n <= 1:
+    -        return n
+    -    # Check if result is already computed
+    ... (16 more diff lines)
+
+  [code_03] (similarity=0.0228)
+  Prompt: Explain the difference between a list and a tuple in Python. Give one code examp...
+    --- baseline
+    +++ pipelined
+    @@ -1,29 +1,23 @@
+    -In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+    +In 2013, 5G+X-64T电池能量管理系统，通过无线通信技术实现对无人机的电量管理。这种以电为原生能源的一种新型飞行器动力装置，具有高可靠性和长航程的特点。
+    +A. 正确
+    +B. 错误
+    +答案:
+    
+    -1. **List**:
+    -   - A list is an ordered collection of elements that can be accessed using an index.
+    -   - Lists are mutable (you can change their contents after creation).
+    -   - Lists are defined with square brackets `[]`.
+    -   - Example:
+    -     ```python
+    -     my_list = [1, 2, 3]
+    -     print(my_list)  # Output: [1, 2, 3]
+    -     ```
+    + A. 正确
+    
+    ... (31 more diff lines)
+
+  [context_01] (similarity=0.0372)
+  Prompt: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1 @@
+    -The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the most significant portions of the Great Wall during its rule.
+    +The following is A+好手不迷带电的动力，是那么样的吗？\n因为这个故事里没有“之于人”的人称代入而上，所以当"人"和"物"在内部分析法的应用．\") 的条件；（)：192000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 ​​@
+
+  [context_02] (similarity=0.0317)
+  Prompt: Read the passage and answer the question.
+
+Passage: Machine learning is a subset...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1,26 @@
+    -The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to analyze data and identify patterns, which allows them to make more accurate predictions and decisions based on their own experiences rather than pre-programmed rules or algorithms.
+    +The following is A+2015. �ulan-743-BV2019\nA 2D/3D 打字，以"2018.03.06"
+    +B2019:
+    +$$\nolatex
+    +
+    +Please install the HTAP packagearic['name' 's name' will be used.
+    +C#编程-数据结构与算法-深度优先或广度优先图的表示。
+    +A program was successfullyHadoop上云，
+    +```
+    +@360dputstcns
+    +``` 根源代码和文档：
+    +/*
+    + * @2019.01.01
+    + *
+    + * 2019.01.01    2019.01.01
+    + *
+    + * 2019.01.01 - 2019.01.01
+    ... (10 more diff lines)
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainlystake
+Cautose
+Dilemma
+
+The task has been successfully completed.
+Lectures and discussions on the stock market.
+
+Dilemma
+
+Dilemma 14095780263498701401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401401/140140140...
+  -> DIFF (sim=0.032)
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainlystake 2018-10-03\nA.475699/10.6778: 10.675454321/10.675454321/10.6754545454545454545454545 /10.675454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545
+  -> DIFF (sim=0.028)
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In 2013, 5G+X-64T电池能量管理系统，通过无线通信技术实现对无人机的电量管理。这种以电为原生能源的一种新型飞行器动力装置，具有高可靠性和长航程的特点。
+A. 正确
+B. 错误
+答案:
+
+ A. 正确
+
+以下关于图示内容说法错误的是（）。
+
+Human a) 图中“之于”和“不”的逻辑关系是____。
+A. 覊然前后分词法向量空间数据结构
+B. 比特串是一种特殊的字符编码
+C. 线性代数与组合数学有着广泛而深刻的应用
+D. 领英是一个英文语言学习社区
+E. 基类、非成员函数、基本字串、循环结构等都是面向对象程序设计语言。
+F. 以下哪个选项正确？
+A. 正确
+B. 错误
+C. 正确...
+  -> DIFF (sim=0.023)
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the mo...
+  Pipelined: The following is A+好手不迷带电的动力，是那么样的吗？\n因为这个故事里没有“之于人”的人称代入而上，所以当"人"和"物"在内部分析法的应用．\") 的条件；（)：192000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 ​​@
+  -> DIFF (sim=0.037)
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to analyze data and identify patterns, which allows them to m...
+  Pipelined: The following is A+2015. �ulan-743-BV2019\nA 2D/3D 打字，以"2018.03.06"
+B2019:
+$$\nolatex
+
+Please install the HTAP packagearic['name' 's name' will be used.
+C#编程-数据结构与算法-深度优先或广度优先图的表示。
+A program was successfullyHadoop上云，
+```
+@360dputstcns
+``` 根源代码和文档：
+/*
+ * @2019.01.01
+ *
+ * 2019.01.01    2019.01.01
+ *
+...
+  -> DIFF (sim=0.032)
+
+  Latency Summary (Phase 1 — single-request (conc=1))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)              202.9       7162.2    +3430.2%
+  Median E2E (ms)            169.1       5597.8    +3210.3%
+  P99 E2E (ms)               340.9      51259.9   +14935.0%
+  Min E2E (ms)                34.7       4367.8   +12478.6%
+  Max E2E (ms)               340.9      51259.9   +14935.0%
+  Total tokens                 4467         7433
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/phased_20260321_181337/qa_results_conc1.json
+
+==========================================================================================
+  Phase 1 failed similarity thresholds — skipping multi-request phases (--skip-multi-request-if-phase1-fails)
+==========================================================================================
+
+==========================================================================================
+  FINAL VERDICT
+==========================================================================================
+
+  [FAIL] Phase 1 — single-request (conc=1)
+    Exact matches:      0/30
+    Average similarity: 0.0423 (BELOW THRESHOLD 0.90)
+    Min similarity:     0.0089 (BELOW THRESHOLD 0.50)
+
+  ==================================================
+  OVERALL: FAIL — KV pipelining may have correctness issues
+  ==================================================
+
+  Validation summary: /home/ben/vllm/results/kv_qa_validation/phased_20260321_181337/validation_summary.json
+  Full results:       /home/ben/vllm/results/kv_qa_validation/phased_20260321_181337/

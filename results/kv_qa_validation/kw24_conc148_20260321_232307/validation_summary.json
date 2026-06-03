@@ -1,0 +1,45 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "k_window": 24,
+  "max_tokens": 256,
+  "num_prompts": 30,
+  "concurrency_levels": [
+    1,
+    4,
+    8
+  ],
+  "skip_multi_request_if_phase1_fails": false,
+  "overall_pass": false,
+  "summaries": {
+    "Phase 1 \u2014 single-request (conc=1)": {
+      "label": "Phase 1 \u2014 single-request (conc=1)",
+      "total_prompts": 30,
+      "exact_matches": 30,
+      "exact_match_rate": "30/30 (100.0%)",
+      "high_similarity_count": 30,
+      "high_similarity_rate": "30/30 (100.0%)",
+      "avg_similarity": 1.0,
+      "min_similarity": 1.0
+    },
+    "Phase 2 \u2014 multi-request (conc=4)": {
+      "label": "Phase 2 \u2014 multi-request (conc=4)",
+      "total_prompts": 30,
+      "exact_matches": 25,
+      "exact_match_rate": "25/30 (83.3%)",
+      "high_similarity_count": 26,
+      "high_similarity_rate": "26/30 (86.7%)",
+      "avg_similarity": 0.9466,
+      "min_similarity": 0.4866
+    },
+    "Phase 2 \u2014 multi-request (conc=8)": {
+      "label": "Phase 2 \u2014 multi-request (conc=8)",
+      "total_prompts": 30,
+      "exact_matches": 19,
+      "exact_match_rate": "19/30 (63.3%)",
+      "high_similarity_count": 23,
+      "high_similarity_rate": "23/30 (76.7%)",
+      "avg_similarity": 0.9089,
+      "min_similarity": 0.2321
+    }
+  }
+}

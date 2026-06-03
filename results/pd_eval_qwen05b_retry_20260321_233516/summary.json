@@ -1,0 +1,153 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "max_model_len": 4096,
+    "k_window": 6,
+    "gpu_memory_utilization": 0.7,
+    "enforce_eager": true,
+    "modes": [
+      "baseline",
+      "pipelined"
+    ],
+    "concurrency": [
+      16,
+      32
+    ],
+    "num_prompts": 24,
+    "request_rate": "inf",
+    "random_input_len": 256,
+    "random_output_len": 128
+  },
+  "results": {
+    "baseline": {
+      "mode": "baseline",
+      "server_info": {
+        "kv_cache_memory_gib": 63.79,
+        "kv_cache_tokens": 5573952,
+        "max_concurrency_reported": 1360.83,
+        "tokens_per_request": 4096
+      },
+      "concurrency_results": {
+        "16": {
+          "date": "20260321-233551",
+          "endpoint_type": "openai",
+          "backend": "openai",
+          "label": null,
+          "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "tokenizer_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "num_prompts": 24,
+          "request_rate": "inf",
+          "burstiness": 1.0,
+          "max_concurrency": 16,
+          "duration": 1.9473726549913408,
+          "completed": 24,
+          "failed": 0,
+          "total_input_tokens": 6144,
+          "total_output_tokens": 3072,
+          "request_throughput": 12.324297529024674,
+          "request_goodput": null,
+          "output_throughput": 1577.5100837151583,
+          "total_token_throughput": 4732.530251145475,
+          "max_output_tokens_per_s": 2020.0,
+          "max_concurrent_requests": 23,
+          "mean_ttft_ms": 68.58951820807609,
+          "median_ttft_ms": 74.1599024986499,
+          "std_ttft_ms": 8.574272892649555,
+          "p99_ttft_ms": 78.07273783080745,
+          "mean_tpot_ms": 7.191684086280913,
+          "median_tpot_ms": 7.293116645617081,
+          "std_tpot_ms": 0.16298674572879576,
+          "p99_tpot_ms": 7.380242542653367,
+          "mean_itl_ms": 7.191685950133946,
+          "median_itl_ms": 7.1381470042979345,
+          "std_itl_ms": 1.1049849351891974,
+          "p99_itl_ms": 9.137277702102438
+        },
+        "32": {
+          "date": "20260321-233601",
+          "endpoint_type": "openai",
+          "backend": "openai",
+          "label": null,
+          "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "tokenizer_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "num_prompts": 24,
+          "request_rate": "inf",
+          "burstiness": 1.0,
+          "max_concurrency": 32,
+          "duration": 1.0337923110055272,
+          "completed": 24,
+          "failed": 0,
+          "total_input_tokens": 6144,
+          "total_output_tokens": 3072,
+          "request_throughput": 23.215494780238974,
+          "request_goodput": null,
+          "output_throughput": 2971.5833318705886,
+          "total_token_throughput": 8914.749995611766,
+          "max_output_tokens_per_s": 2977.0,
+          "max_concurrent_requests": 24,
+          "mean_ttft_ms": 91.43452983274376,
+          "median_ttft_ms": 91.83174899953883,
+          "std_ttft_ms": 2.986159688250505,
+          "p99_ttft_ms": 96.1476266606769,
+          "mean_tpot_ms": 7.368377012471563,
+          "median_tpot_ms": 7.36709699212522,
+          "std_tpot_ms": 0.012989668683659583,
+          "p99_tpot_ms": 7.413780703359443,
+          "mean_itl_ms": 7.368378465543319,
+          "median_itl_ms": 7.303359001525678,
+          "std_itl_ms": 1.1708211211143815,
+          "p99_itl_ms": 13.297655240166934
+        }
+      }
+    },
+    "pipelined": {
+      "mode": "pipelined",
+      "server_info": {
+        "kv_cache_memory_gib": 63.79,
+        "kv_cache_tokens": 19110688,
+        "max_concurrency_reported": 4665.7,
+        "tokens_per_request": 4096
+      },
+      "concurrency_results": {
+        "16": {
+          "error": "failed"
+        },
+        "32": {
+          "date": "20260321-234222",
+          "endpoint_type": "openai",
+          "backend": "openai",
+          "label": null,
+          "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "tokenizer_id": "Qwen/Qwen2.5-0.5B-Instruct",
+          "num_prompts": 24,
+          "request_rate": "inf",
+          "burstiness": 1.0,
+          "max_concurrency": 32,
+          "duration": 0.0561850430094637,
+          "completed": 0,
+          "failed": 24,
+          "total_input_tokens": 0,
+          "total_output_tokens": 0,
+          "request_throughput": 0.0,
+          "request_goodput": null,
+          "output_throughput": 0.0,
+          "total_token_throughput": 0.0,
+          "max_output_tokens_per_s": 0.0,
+          "max_concurrent_requests": 0,
+          "mean_ttft_ms": 0.0,
+          "median_ttft_ms": 0.0,
+          "std_ttft_ms": 0.0,
+          "p99_ttft_ms": 0.0,
+          "mean_tpot_ms": 0.0,
+          "median_tpot_ms": 0.0,
+          "std_tpot_ms": 0.0,
+          "p99_tpot_ms": 0.0,
+          "mean_itl_ms": 0.0,
+          "median_itl_ms": 0.0,
+          "std_itl_ms": 0.0,
+          "p99_itl_ms": 0.0
+        }
+      }
+    }
+  }
+}

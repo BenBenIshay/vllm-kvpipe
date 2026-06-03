@@ -178,7 +178,7 @@ def _launch_server(
             "--enable-kv-pipelining",
             "--kv-k-window", str(k_window),
             "--kv-transfer-config", json.dumps(kv_config),
-            "--enable-prefix-caching", "false",
+            "--no-enable-prefix-caching",
         ]
         if free_original:
             cmd += ["--free-original-kv-cache"]

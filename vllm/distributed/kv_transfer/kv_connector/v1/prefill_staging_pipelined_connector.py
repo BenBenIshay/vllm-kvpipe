@@ -359,20 +359,43 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
         self._worker_state.stage_to_cpu_block_runs(layer_name, kv_layer, runs)
         return True
 
+    def _physical_tensor_prev_occupant(self, layer_name: str) -> str | None:
+        """Layer that last used the same K+1 physical GPU tensor, if any."""
+        layer_idx = self._layer_index.get(layer_name, -1)
+        prev_idx = layer_idx - self._num_physical_tensors
+        if prev_idx < 0:
+            return None
+        return self._layer_names[prev_idx]
+
     def _prefetch_physical_kv_to_gpu(
-        self, layer_name: str, kv_layer: torch.Tensor
+        self,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        *,
+        gpu_wait_save_from_layer: str | None = None,
     ) -> None:
         runs = self._kv_block_runs
         if not runs:
-            self._worker_state.prefetch_to_gpu(layer_name, kv_layer)
+            self._worker_state.prefetch_to_gpu(
+                layer_name,
+                kv_layer,
+                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
+            )
         elif len(runs) == 1:
             lo, hi = runs[0]
             self._worker_state.prefetch_to_gpu_block_span(
-                layer_name, kv_layer, lo, hi
+                layer_name,
+                kv_layer,
+                lo,
+                hi,
+                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
             )
         else:
             self._worker_state.prefetch_to_gpu_block_runs(
-                layer_name, kv_layer, runs
+                layer_name,
+                kv_layer,
+                runs,
+                gpu_wait_save_from_layer=gpu_wait_save_from_layer,
             )
 
     def _log_pipeline(self, msg: str) -> None:
@@ -449,12 +472,17 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             max_seq_len = self._get_max_seq_len(attn_metadata)
             st = self._kv_span_debug_stats(kv_layer, max_seq_len)
             li = self._layer_index.get(layer_name, -1)
+            prev_occ = self._physical_tensor_prev_occupant(layer_name)
             self._log_pipeline(
                 "[pipeline-debug] prefetch_batch(start_load_kv) "
                 f"fwd={self._dbg_forward_id} layer={layer_name!r} idx={li} "
-                f"{st}"
+                f"wait_save_prev_occ={prev_occ!r} {st}"
             )
-            self._prefetch_physical_kv_to_gpu(layer_name, kv_layer)
+            self._prefetch_physical_kv_to_gpu(
+                layer_name,
+                kv_layer,
+                gpu_wait_save_from_layer=prev_occ,
+            )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if self._worker_state is None:
@@ -507,15 +535,8 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
             f"fwd={self._dbg_forward_id} after_layer={layer_name!r} -> {planned!r}"
         )
         for next_layer in planned:
-            # Before prefetching into the shared tensor, ensure any
-            # in-flight save from the previous occupant has completed.
             next_idx = self._layer_index.get(next_layer, -1)
-            prev_occupant_idx = next_idx - self._num_physical_tensors
-            prev_occ_name: str | None = None
-            if prev_occupant_idx >= 0:
-                prev_occupant = self._layer_names[prev_occupant_idx]
-                self._worker_state.wait_for_layer_save(prev_occupant)
-                prev_occ_name = prev_occupant
+            prev_occ_name = self._physical_tensor_prev_occupant(next_layer)
 
             kv_layer = self._kv_caches[next_layer]
             attn_metadata = self._forward_context.attn_metadata
@@ -528,7 +549,11 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
                 f"fwd={self._dbg_forward_id} next_layer={next_layer!r} idx={next_idx} "
                 f"wait_save_prev_occ={prev_occ_name!r} {st}"
             )
-            self._prefetch_physical_kv_to_gpu(next_layer, kv_layer)
+            self._prefetch_physical_kv_to_gpu(
+                next_layer,
+                kv_layer,
+                gpu_wait_save_from_layer=prev_occ_name,
+            )
 
     def save_kv_layer(
         self,
@@ -653,7 +678,10 @@ class PrefillStagingPipelinedConnector(KVConnectorBase_V1):
     def wait_for_save(self) -> None:
         if self._worker_state is None:
             return
-        self._worker_state.wait_for_saves()
+        # Decode-only: defer global barriers; prefetch waits per-layer.
+        # Prefill / mixed: must drain staging before the next forward.
+        decode_only_step = self._has_decode_work and not self._has_prefill_work
+        self._worker_state.wait_for_saves(deferred=decode_only_step)
 
         if self._has_prefill_work:
             self._prefill_steps += 1

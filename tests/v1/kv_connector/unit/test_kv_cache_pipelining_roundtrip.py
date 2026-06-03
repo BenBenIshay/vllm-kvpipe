@@ -202,6 +202,41 @@ def test_stage_to_cpu_block_runs_preserves_disjoint_rows():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_wait_for_saves_deferred_waits_at_prefetch():
+    """Decode-style deferred barrier: CPU delta must be visible before H2D."""
+    torch.cuda.set_device(0)
+    num_blocks, block_size, heads, dim = 8, 16, 2, 8
+    kv = torch.randn(
+        2, num_blocks, block_size, heads, dim, device="cuda", dtype=torch.float16
+    )
+    flat_slots = torch.tensor([3, 41], device="cuda", dtype=torch.long)
+    delta_pattern = torch.randn(
+        2, flat_slots.numel(), heads, dim, device="cuda", dtype=torch.float16
+    )
+
+    state = LayerwisePipeliningState()
+    state.stage_to_cpu("L0", kv.clone())
+    state.wait_for_saves()
+
+    kv2 = kv.clone()
+    view = kv2.reshape(2, num_blocks * block_size, heads, dim)
+    view[:, flat_slots, ...] = delta_pattern
+    state.stage_delta_to_cpu("L0", kv2, flat_slots, num_actual_tokens=2)
+    # Do not join — same as decode-only wait_for_saves(deferred=True).
+    state.wait_for_saves(deferred=True)
+
+    out = torch.zeros_like(kv)
+    state.prefetch_to_gpu("L0", out)
+    state.wait_for_layer("L0")
+    torch.cuda.synchronize()
+
+    ref = state._layers["L0"].cpu_buffer.clone()
+    ref_view = ref.reshape(2, num_blocks * block_size, heads, dim)
+    ref_view[:, flat_slots.cpu(), ...] = delta_pattern.cpu()
+    assert torch.allclose(out.cpu(), ref, rtol=0, atol=0), "deferred barrier + prefetch"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_prefetch_block_runs_roundtrip_disjoint_rows():
     """GPU→CPU (runs)→GPU should restore only the copied spans."""
     torch.cuda.set_device(0)

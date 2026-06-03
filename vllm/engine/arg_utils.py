@@ -570,6 +570,27 @@ class EngineArgs:
 
     stream_interval: int = SchedulerConfig.stream_interval
 
+    enable_transfer_aware_admission: bool = (
+        SchedulerConfig.enable_transfer_aware_admission
+    )
+    transfer_aware_slo_p99_itl_ms: float = (
+        SchedulerConfig.transfer_aware_slo_p99_itl_ms
+    )
+    transfer_aware_predictor_csv: str = (
+        SchedulerConfig.transfer_aware_predictor_csv
+    )
+    transfer_aware_predictor_model: str = (
+        SchedulerConfig.transfer_aware_predictor_model
+    )
+    transfer_aware_kv_k_window: int = SchedulerConfig.transfer_aware_kv_k_window
+    transfer_aware_admission_policy: str = (
+        SchedulerConfig.transfer_aware_admission_policy
+    )
+    transfer_aware_baseline_compute_json: str = (
+        SchedulerConfig.transfer_aware_baseline_compute_json
+    )
+    transfer_aware_injection_jsonl: str = SchedulerConfig.transfer_aware_injection_jsonl
+
     kv_sharing_fast_prefill: bool = CacheConfig.kv_sharing_fast_prefill
     optimization_level: OptimizationLevel = VllmConfig.optimization_level
 
@@ -1152,6 +1173,38 @@ class EngineArgs:
         scheduler_group.add_argument(
             "--stream-interval", **scheduler_kwargs["stream_interval"]
         )
+        scheduler_group.add_argument(
+            "--enable-transfer-aware-admission",
+            **scheduler_kwargs["enable_transfer_aware_admission"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-slo-p99-itl-ms",
+            **scheduler_kwargs["transfer_aware_slo_p99_itl_ms"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-predictor-csv",
+            **scheduler_kwargs["transfer_aware_predictor_csv"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-predictor-model",
+            **scheduler_kwargs["transfer_aware_predictor_model"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-kv-k-window",
+            **scheduler_kwargs["transfer_aware_kv_k_window"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-admission-policy",
+            **scheduler_kwargs["transfer_aware_admission_policy"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-baseline-compute-json",
+            **scheduler_kwargs["transfer_aware_baseline_compute_json"],
+        )
+        scheduler_group.add_argument(
+            "--transfer-aware-injection-jsonl",
+            **scheduler_kwargs["transfer_aware_injection_jsonl"],
+        )
 
         # Compilation arguments
         compilation_kwargs = get_kwargs(CompilationConfig)
@@ -1671,6 +1724,14 @@ class EngineArgs:
             disable_hybrid_kv_cache_manager=self.disable_hybrid_kv_cache_manager,
             async_scheduling=self.async_scheduling,
             stream_interval=self.stream_interval,
+            enable_transfer_aware_admission=self.enable_transfer_aware_admission,
+            transfer_aware_slo_p99_itl_ms=self.transfer_aware_slo_p99_itl_ms,
+            transfer_aware_predictor_csv=self.transfer_aware_predictor_csv,
+            transfer_aware_predictor_model=self.transfer_aware_predictor_model,
+            transfer_aware_kv_k_window=self.transfer_aware_kv_k_window,
+            transfer_aware_admission_policy=self.transfer_aware_admission_policy,
+            transfer_aware_baseline_compute_json=self.transfer_aware_baseline_compute_json,
+            transfer_aware_injection_jsonl=self.transfer_aware_injection_jsonl,
         )
 
         if not model_config.is_multimodal_model and self.default_mm_loras:

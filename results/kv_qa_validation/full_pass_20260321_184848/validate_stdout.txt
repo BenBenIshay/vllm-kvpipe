@@ -1,0 +1,902 @@
+==========================================================================================
+  Real Q&A Correctness Validation for KV Cache Pipelining
+==========================================================================================
+  Model:      Qwen/Qwen2.5-0.5B-Instruct
+  K-window:   24
+  Inflate pool: False
+  Max tokens: 256
+  Enforce eager (both servers): True
+  Prompts:    30
+  Concurrency phases: [1, 2, 4, 8] (conc=1 runs first when included)
+  Result dir: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848
+
+
+##########################################################################################
+# TEST: Phase 1 — single-request (conc=1)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=1) ...
+  Baseline done in 32.6s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=24) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=1) ...
+  Pipelined done in 33.4s (30/30 succeeded)
+
+==========================================================================================
+  Phase 1 — single-request (conc=1)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        30/30 (100.0%)
+  High similarity (>95%): 30/30 (100.0%)
+  Average similarity:   1.0000
+  Min similarity:       1.0000
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code              YES  1.0000    1828.0ms    1878.6ms       256       256
+  code_02         code              YES  1.0000    1832.3ms    1881.0ms       256       256
+  code_03         code              YES  1.0000    1824.3ms    1879.9ms       256       256
+  context_01      contextual        YES  1.0000     521.4ms     563.6ms        69        69
+  context_02      contextual        YES  1.0000     403.9ms     418.6ms        53        53
+  creative_01     creative          YES  1.0000     168.1ms     174.8ms        21        21
+  creative_02     creative          YES  1.0000     701.3ms     720.4ms        97        97
+  fact_01         factual           YES  1.0000     160.8ms     166.2ms         8         8
+  fact_02         factual           YES  1.0000     635.1ms     647.1ms        86        86
+  fact_03         factual           YES  1.0000     389.8ms     403.0ms        52        52
+  fact_04         factual           YES  1.0000     682.8ms     701.1ms        93        93
+  fact_05         factual           YES  1.0000     579.7ms     596.3ms        79        79
+  general_01      general           YES  1.0000     574.9ms     590.9ms        79        79
+  instruct_01     instruction       YES  1.0000     509.7ms     522.5ms        69        69
+  instruct_02     instruction       YES  1.0000    1825.3ms    1865.1ms       256       256
+  instruct_03     instruction       YES  1.0000    1053.4ms    1077.9ms       146       146
+  math_01         math              YES  1.0000    1820.6ms    1872.3ms       256       256
+  math_02         math              YES  1.0000    1823.0ms    1875.5ms       256       256
+  math_03         math              YES  1.0000    1613.0ms    1662.6ms       225       225
+  multi_01        multi_step        YES  1.0000     309.6ms     321.6ms        41        41
+  multi_02        multi_step        YES  1.0000    1732.2ms    1780.8ms       242       242
+  reason_01       reasoning         YES  1.0000    1659.1ms    1707.0ms       231       231
+  reason_02       reasoning         YES  1.0000    1055.4ms    1096.6ms       146       146
+  reason_03       reasoning         YES  1.0000    1831.5ms    1881.6ms       256       256
+  reason_04       reasoning         YES  1.0000    1823.7ms    1881.3ms       256       256
+  summary_01      summarization     YES  1.0000     768.7ms     794.6ms       104       104
+  summary_02      summarization     YES  1.0000     267.4ms     280.9ms        34        34
+  translate_01    translation       YES  1.0000     424.7ms     451.7ms        57        57
+  tricky_01       tricky            YES  1.0000    1827.9ms    1875.1ms       256       256
+  tricky_02       tricky            YES  1.0000    1815.9ms    1851.7ms       252       252
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  -> MATCH
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  -> MATCH
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  -> MATCH
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  Pipelined: The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  -> MATCH
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  Pipelined: The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  -> MATCH
+
+  Latency Summary (Phase 1 — single-request (conc=1))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)             1082.1       1114.0       +2.9%
+  Median E2E (ms)           1053.4       1077.9       +2.3%
+  P99 E2E (ms)              1832.3       1881.6       +2.7%
+  Min E2E (ms)               160.8        166.2       +3.3%
+  Max E2E (ms)              1832.3       1881.6       +2.7%
+  Total tokens                 4488         4488
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/qa_results_conc1.json
+
+##########################################################################################
+# TEST: Phase 2 — multi-request (conc=2)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=2) ...
+  Baseline done in 16.8s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=24) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=2) ...
+  Pipelined done in 16.8s (30/30 succeeded)
+
+==========================================================================================
+  Phase 2 — multi-request (conc=2)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        23/30 (76.7%)
+  High similarity (>95%): 25/30 (83.3%)
+  Average similarity:   0.9485
+  Min similarity:       0.4774
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code               no  0.7581    1868.5ms    1862.0ms       256       256
+  code_02         code              YES  1.0000    1863.8ms    1857.3ms       256       256
+  code_03         code              YES  1.0000    1874.7ms    1870.5ms       256       256
+  context_01      contextual        YES  1.0000     527.3ms     532.0ms        69        69
+  context_02      contextual        YES  1.0000     414.3ms     413.7ms        53        53
+  creative_01     creative          YES  1.0000     187.4ms     184.8ms        21        21
+  creative_02     creative          YES  1.0000     726.2ms     729.8ms        97        97
+  fact_01         factual           YES  1.0000     151.3ms     126.6ms         8         8
+  fact_02         factual           YES  1.0000     741.3ms     715.3ms        86        86
+  fact_03         factual           YES  1.0000     412.4ms     409.0ms        52        52
+  fact_04         factual           YES  1.0000     702.5ms     701.1ms        93        93
+  fact_05         factual           YES  1.0000     605.5ms     603.0ms        79        79
+  general_01      general           YES  1.0000     592.5ms     597.2ms        79        79
+  instruct_01     instruction       YES  1.0000     523.0ms     537.1ms        69        69
+  instruct_02     instruction       YES  1.0000    1870.1ms    1881.9ms       256       256
+  instruct_03     instruction       YES  1.0000    1074.0ms    1078.8ms       146       146
+  math_01         math               no  0.9955    1867.9ms    1873.5ms       256       256
+  math_02         math              YES  1.0000    1876.0ms    1874.7ms       256       256
+  math_03         math              YES  1.0000    1652.2ms    1653.6ms       225       225
+  multi_01        multi_step        YES  1.0000     321.2ms     323.4ms        41        41
+  multi_02        multi_step         no  0.8894    1777.4ms    1888.9ms       242       256
+  reason_01       reasoning         YES  1.0000    1708.8ms    1715.7ms       231       231
+  reason_02       reasoning         YES  1.0000    1073.8ms    1088.5ms       146       146
+  reason_03       reasoning          no  0.4774    1873.9ms    1871.5ms       256       256
+  reason_04       reasoning          no  0.9917    1866.8ms    1870.7ms       256       256
+  summary_01      summarization     YES  1.0000     781.7ms     781.3ms       104       104
+  summary_02      summarization     YES  1.0000     274.6ms     288.3ms        34        34
+  translate_01    translation       YES  1.0000     435.9ms     440.9ms        57        57
+  tricky_01       tricky             no  0.5578    1870.0ms    1864.7ms       256       256
+  tricky_02       tricky             no  0.7853    1851.2ms    1890.5ms       252       256
+
+  --- Detailed diffs for 7 non-exact matches ---
+
+  [code_01] (similarity=0.7581)
+  Prompt: Write a Python function that checks if a string is a palindrome. Include a docst...
+    --- baseline
+    +++ pipelined
+    @@ -21,11 +21,10 @@
+         return cleaned_s == cleaned_s[::-1]
+    
+     # Example usage:
+    -print(is_palindrome("A man, a plan, a canal, Panama"))  # Output: True
+    -print(is_palindrome("Hello, World!"))  # Output: False
+    +if __name__ == "__main__":
+    +    test_string = "A man, a plan, a canal, Panama"
+    +    print(f"The string '{test_string}' is a palindrome: {is_palindrome(test_string)}")
+     ```
+    
+     ### Explanation:
+    -- **isalnum()**: This method filters out any non-alphanumeric characters from the input string `s`.
+    -- **lower()**: Converts all letters to lowercase to ensure the comparison is case-insensitive.
+    -- **cleaned_s**: Combines these steps into
+    +- **`cleaned_s = ''.join(char.lower() for char in s if char.isalnum())`:** This line removes any non-alphanumeric characters from the input string `s`. It uses a generator expression within the
+
+  [math_01] (similarity=0.9955)
+  Prompt: Calculate: (17 * 23) + (45 / 9) - 12. Show each step....
+    --- baseline
+    +++ pipelined
+    @@ -11,7 +11,7 @@
+     17 \times 23 = 391
+     \]
+    
+    -So, the first part of the expression becomes:
+    +So, the first part of our expression becomes:
+     \[
+     391
+     \]
+
+  [multi_02] (similarity=0.8894)
+  Prompt: Step by step, explain how to make a peanut butter and jelly sandwich. List each ...
+    --- baseline
+    +++ pipelined
+    @@ -23,6 +23,8 @@
+        - Remove the sandwich from the pan and serve immediately.
+    
+     7. **Optional Garnish:**
+    -   - If you prefer, you can garnish with additional jelly or a sprinkle of cinnamon if desired.
+    +   - If you prefer, you can garnish with additional slices of bread or a sprinkle of sugar.
+    
+    -Enjoy your delicious peanut butter and jelly sandwich!
+    +8. **Enjoy Your Sandwich:**
+    +
+    +This process should give you a delicious peanut butter and jelly sandwich that’s easy to
+
+  [reason_03] (similarity=0.4774)
+  Prompt: You have 8 balls, one of which is heavier. Using a balance scale, what is the mi...
+    --- baseline
+    +++ pipelined
+    @@ -3,14 +3,13 @@
+     1. **First Weighing:**
+        - Divide the eight balls into three groups: two groups of four balls each and one group of two balls.
+        - Weigh the first two groups of four balls against each other.
+    -     - If they balance, the heaviest ball must be in the group of two balls that was not weighed.
+    -     - If they do not balance, the heaviest ball is in the heavier group.
+    +     - If they balance, the heaviest ball must be in the remaining group of two balls.
+    +     - If they don't balance, the heaviest ball is in the lighter group of two balls.
+    
+     2. **Second Weighing:**
+    -   - If the heaviest ball was in the group of two balls that were not weighed (in the case where it balanced), take this group of two balls and divide them into two groups of two balls each.
+    -   - Weigh these two groups of two balls against each other.
+    -     - If they balance, the heaviest ball is still in the group of two balls that was not weighed.
+    -     - If they do not balance, the heaviest ball is in the heavier group.
+    -   - If the heaviest ball was in the heavier group from the second weighing, then the heaviest ball is already identified.
+    -
+    -3. **Third Weighing
+    +   - Now that we know the heaviest ball is either in the first or second group, proceed with the following steps:
+    ... (5 more diff lines)
+
+  [reason_04] (similarity=0.9917)
+  Prompt: If it takes 5 machines 5 minutes to make 5 widgets, how long does it take 100 ma...
+    --- baseline
+    +++ pipelined
+    @@ -8,6 +8,6 @@
+     \[ 100 \text{ machines} \times 0.1 \text{ widgets per minute/machine} = 10 \text{ widgets per minute} \]
+    
+     Next, we need to find out how many minutes it will take for these 100 machines to produce 100 widgets:
+    -\[ \text{Time} = \frac{\text{Number of widgets}}{\text{Production rate per minute}} = \frac{100 \text{ widgets}}{10 \text{ widgets per minute}} = 10 \text{ minutes} \]
+    +\[ \text{Time} = \frac{\text{Number of widgets}}{\text{Production rate}} = \frac{100 \text{ widgets}}{10 \text{ widgets per minute}} = 10 \text{ minutes} \]
+    
+    -Thus
+    +Thus, it
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  -> DIFF (sim=0.758)
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  -> MATCH
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  -> MATCH
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  Pipelined: The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  -> MATCH
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  Pipelined: The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  -> MATCH
+
+  Latency Summary (Phase 2 — multi-request (conc=2))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)             1112.2       1117.5       +0.5%
+  Median E2E (ms)           1073.8       1078.8       +0.5%
+  P99 E2E (ms)              1876.0       1890.5       +0.8%
+  Min E2E (ms)               151.3        126.6      -16.3%
+  Max E2E (ms)              1876.0       1890.5       +0.8%
+  Total tokens                 4488         4506
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/qa_results_conc2.json
+
+##########################################################################################
+# TEST: Phase 2 — multi-request (conc=4)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=4) ...
+  Baseline done in 8.9s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=24) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=4) ...
+  Pipelined done in 9.4s (30/30 succeeded)
+
+==========================================================================================
+  Phase 2 — multi-request (conc=4)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        21/30 (70.0%)
+  High similarity (>95%): 23/30 (76.7%)
+  Average similarity:   0.9245
+  Min similarity:       0.4708
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code               no  0.9642    1874.7ms    1941.8ms       256       256
+  code_02         code              YES  1.0000    1885.5ms    1994.6ms       256       256
+  code_03         code              YES  1.0000    1904.8ms    2016.1ms       256       256
+  context_01      contextual         no  0.7858     522.2ms     605.4ms        67        74
+  context_02      contextual         no  0.7346     417.0ms     555.4ms        53        69
+  creative_01     creative          YES  1.0000     178.0ms     190.0ms        21        21
+  creative_02     creative          YES  1.0000     729.8ms     790.6ms        97        97
+  fact_01         factual           YES  1.0000     180.0ms     184.0ms         8         8
+  fact_02         factual           YES  1.0000     756.0ms     774.8ms        86        86
+  fact_03         factual           YES  1.0000     508.4ms     516.8ms        52        52
+  fact_04         factual           YES  1.0000     815.7ms     850.2ms        93        93
+  fact_05         factual           YES  1.0000     603.9ms     629.2ms        79        79
+  general_01      general           YES  1.0000     583.8ms     602.0ms        79        79
+  instruct_01     instruction       YES  1.0000     521.2ms     533.7ms        69        69
+  instruct_02     instruction        no  0.4708    1839.2ms    1892.9ms       256       256
+  instruct_03     instruction       YES  1.0000    1067.8ms    1098.8ms       146       146
+  math_01         math               no  0.9175    1873.5ms    1950.7ms       256       256
+  math_02         math              YES  1.0000    1875.5ms    1945.5ms       256       256
+  math_03         math              YES  1.0000    1646.8ms    1710.8ms       225       225
+  multi_01        multi_step        YES  1.0000     319.4ms     341.2ms        41        41
+  multi_02        multi_step         no  0.5958    1787.8ms    1979.7ms       242       256
+  reason_01       reasoning         YES  1.0000    1693.0ms    1754.4ms       231       231
+  reason_02       reasoning         YES  1.0000    1080.9ms    1117.3ms       146       146
+  reason_03       reasoning         YES  1.0000    1862.5ms    1933.1ms       256       256
+  reason_04       reasoning          no  0.9967    1861.4ms    1937.0ms       256       256
+  summary_01      summarization     YES  1.0000     776.8ms     827.7ms       102       102
+  summary_02      summarization     YES  1.0000     273.6ms     291.5ms        34        34
+  translate_01    translation       YES  1.0000     424.9ms     448.3ms        57        57
+  tricky_01       tricky             no  0.5369    1870.7ms    1941.9ms       256       256
+  tricky_02       tricky             no  0.7342    1870.3ms    1942.5ms       256       256
+
+  --- Detailed diffs for 9 non-exact matches ---
+
+  [code_01] (similarity=0.9642)
+  Prompt: Write a Python function that checks if a string is a palindrome. Include a docst...
+    --- baseline
+    +++ pipelined
+    @@ -27,4 +27,4 @@
+     ```
+    
+     ### Explanation:
+    -- **`cleaned_s = ''.join(char.lower() for char in s if char.isalnum())`:** This line removes any non-alphanumeric characters from the input string `s`. It converts each character to lowercase using
+    +- **`cleaned_s = ''.join(char.lower() for char in s if char.isalnum())`:** This line removes any non-alphanumeric characters from the input string `s`. It uses a generator expression within the
+
+  [context_01] (similarity=0.7858)
+  Prompt: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1 @@
+    -The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the most significant portions of the Great Wall during its rule.
+    +The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and expanding upon the existing fortifications, including the most famous sections like the Great Wall itself.
+
+  [context_02] (similarity=0.7346)
+  Prompt: Read the passage and answer the question.
+
+Passage: Machine learning is a subset...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1 @@
+    -The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on this learned knowledge.
+    +The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to analyze data and identify patterns, which allows them to make more accurate predictions and decisions based on their own experiences rather than pre-programmed rules or algorithms.
+
+  [instruct_02] (similarity=0.4708)
+  Prompt: Give me 3 pros and 3 cons of remote work. Format as bullet points....
+    --- baseline
+    +++ pipelined
+    @@ -6,8 +6,8 @@
+    
+     ### Cons of Remote Work
+    
+    -1. **Communication Issues**: Effective communication is crucial in any workplace environment. Without the need for face-to-face interaction, it can be challenging to maintain clear lines of communication between team members.
+    -2. **Work-Life Balance Disruption**: The constant presence of colleagues at home or on the job can disrupt traditional work-life boundaries, potentially leading to burnout or dissatisfaction among some employees.
+    -3. **Technical Challenges**: Ensuring reliable internet connectivity and stable data transfer can be a challenge, particularly during remote work environments where devices might not always be available or functioning properly.
+    -4. **Social Interaction**: While social interactions are important, they can sometimes feel less meaningful when working remotely, which could impact morale and team cohesion.
+    -5. **Security Concerns**: With more people accessing sensitive information through
+    +1. **Communication Issues**: Effective communication is crucial in any workplace environment, but it becomes even more challenging when working remotely. Misunderstandings or delays in communication can lead to misunderstandings and conflicts.
+    +2. **Social Interaction**: While remote work offers the opportunity to connect with colleagues who might not have regular face-to-face interactions, social interaction can sometimes feel less natural compared to in-person meetings.
+    +3. **Health Concerns**: Working from home can increase the risk of health issues such as eye strain, neck pain, and back problems due to prolonged sitting and poor posture.
+    +4. **Lack of Social Support**: Without the support of coworkers and managers, remote workers may struggle to build relationships and maintain a sense of community within their teams.
+    +5. **Work-Life Balance
+
+  [math_01] (similarity=0.9175)
+  Prompt: Calculate: (17 * 23) + (45 / 9) - 12. Show each step....
+    --- baseline
+    +++ pipelined
+    @@ -30,14 +30,14 @@
+     ### Step 3: Perform the addition and subtraction from left to right
+     First, add 391 and 5:
+     \[
+    -391 + 5 = 406
+    +391 + 5 = 396
+     \]
+    
+    -Then, subtract 12 from 406:
+    +Then, subtract 12 from 396:
+     \[
+    -406 - 12 = 394
+    +396 - 12 = 384
+     \]
+    
+     Thus, the final answer is:
+     \[
+    -\boxed{394}
+    ... (1 more diff lines)
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  -> DIFF (sim=0.964)
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  -> MATCH
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  -> MATCH
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the mo...
+  Pipelined: The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for maintaining and exp...
+  -> DIFF (sim=0.786)
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to learn from data and make predictions or decisions based on...
+  Pipelined: The main goal of machine learning according to the passage is to provide systems the ability to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to enable computers to analyze data and identify patterns, which allows them to m...
+  -> DIFF (sim=0.735)
+
+  Latency Summary (Phase 2 — multi-request (conc=4))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)             1120.2       1176.6       +5.0%
+  Median E2E (ms)           1067.8       1098.8       +2.9%
+  P99 E2E (ms)              1904.8       2016.1       +5.8%
+  Min E2E (ms)               178.0        184.0       +3.4%
+  Max E2E (ms)              1904.8       2016.1       +5.8%
+  Total tokens                 4488         4525
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/qa_results_conc4.json
+
+##########################################################################################
+# TEST: Phase 2 — multi-request (conc=8)
+##########################################################################################
+
+  [1/2] Launching BASELINE server ...
+  Waiting for server (timeout=600s) ...
+  [OK] Baseline server ready. Sending 30 prompts (conc=8) ...
+  Baseline done in 5.2s (30/30 succeeded)
+
+  [2/2] Launching PIPELINED server (K=24) ...
+  Waiting for server (timeout=600s) ...
+  [OK] Pipelined server ready. Sending 30 prompts (conc=8) ...
+  Pipelined done in 5.4s (30/30 succeeded)
+
+==========================================================================================
+  Phase 2 — multi-request (conc=8)
+==========================================================================================
+  Total prompts:        30
+  Exact matches:        19/30 (63.3%)
+  High similarity (>95%): 23/30 (76.7%)
+  Average similarity:   0.9046
+  Min similarity:       0.3507
+
+  ID              Category        Match     Sim   Base E2E   Pipe E2E  Base tok  Pipe tok
+  ─────────────── ────────────── ────── ─────── ────────── ────────── ───────── ─────────
+  code_01         code               no  0.7393    1980.3ms    2065.8ms       256       256
+  code_02         code              YES  1.0000    1992.1ms    2106.1ms       256       256
+  code_03         code               no  0.9895    1990.4ms    2129.6ms       256       256
+  context_01      contextual        YES  1.0000     544.8ms     604.4ms        67        67
+  context_02      contextual         no  0.5770     654.6ms     525.9ms        83        58
+  creative_01     creative          YES  1.0000     196.6ms     211.7ms        21        21
+  creative_02     creative          YES  1.0000     777.4ms     831.1ms        97        97
+  fact_01         factual           YES  1.0000     184.4ms     189.6ms         8         8
+  fact_02         factual           YES  1.0000     784.1ms     809.1ms        86        86
+  fact_03         factual           YES  1.0000     522.1ms     536.2ms        52        52
+  fact_04         factual           YES  1.0000     843.2ms     867.2ms        93        93
+  fact_05         factual           YES  1.0000     726.4ms     744.8ms        79        79
+  general_01      general           YES  1.0000     603.1ms     611.8ms        79        79
+  instruct_01     instruction       YES  1.0000     526.1ms     570.8ms        69        69
+  instruct_02     instruction       YES  1.0000    1885.6ms    1933.4ms       256       256
+  instruct_03     instruction       YES  1.0000    1097.8ms    1126.8ms       146       146
+  math_01         math               no  0.9880    1978.9ms    2050.3ms       256       256
+  math_02         math              YES  1.0000    1983.8ms    2065.0ms       256       256
+  math_03         math               no  0.9112    1732.1ms    1604.0ms       225       201
+  multi_01        multi_step        YES  1.0000     349.2ms     386.5ms        41        41
+  multi_02        multi_step         no  0.4368    1940.8ms    2052.0ms       256       256
+  reason_01       reasoning          no  0.6799    1879.7ms    1679.7ms       232       199
+  reason_02       reasoning         YES  1.0000    1236.7ms    1273.6ms       146       146
+  reason_03       reasoning          no  0.5002    2058.0ms    2117.1ms       256       256
+  reason_04       reasoning          no  0.9967    1954.6ms    2015.8ms       256       256
+  summary_01      summarization      no  0.3507     779.1ms     897.6ms        95       101
+  summary_02      summarization     YES  1.0000     286.7ms     310.9ms        34        34
+  translate_01    translation       YES  1.0000     448.0ms     492.2ms        57        57
+  tricky_01       tricky             no  0.9691    1922.3ms    1997.6ms       256       256
+  tricky_02       tricky            YES  1.0000    1910.6ms    1992.0ms       256       256
+
+  --- Detailed diffs for 11 non-exact matches ---
+
+  [code_01] (similarity=0.7393)
+  Prompt: Write a Python function that checks if a string is a palindrome. Include a docst...
+    --- baseline
+    +++ pipelined
+    @@ -21,10 +21,11 @@
+         return cleaned_s == cleaned_s[::-1]
+    
+     # Example usage:
+    -if __name__ == "__main__":
+    -    test_string = "A man, a plan, a canal, Panama"
+    -    print(f"The string '{test_string}' is a palindrome: {is_palindrome(test_string)}")
+    +print(is_palindrome("A man, a plan, a canal, Panama"))  # Output: True
+    +print(is_palindrome("Hello, World!"))  # Output: False
+     ```
+    
+     ### Explanation:
+    -- **`cleaned_s = ''.join(char.lower() for char in s if char.isalnum())`:** This line removes any non-alphanumeric characters from the input string `s`. It uses a generator expression within the
+    +- **isalnum()**: This method filters out any non-alphanumeric characters from the string.
+    +- **lower()**: Converts all uppercase letters to lowercase.
+    +- **cleaned_s**: Combines these steps into one operation, effectively removing all non-alphanumeric characters
+
+  [code_03] (similarity=0.9895)
+  Prompt: Explain the difference between a list and a tuple in Python. Give one code examp...
+    --- baseline
+    +++ pipelined
+    @@ -12,8 +12,8 @@
+    
+     2. **Tuple**:
+        - A tuple is an immutable (unchangeable) collection of elements.
+    -   - Tuples are defined with parentheses `()`.
+    -   - Tuples are similar to lists in terms of being indexed and mutable.
+    +   - Tuples are also defined with parentheses `()`.
+    +   - Tuples are similar to lists in terms of being ordered and mutable.
+        - Example:
+          ```python
+          my_tuple = (1, 2, 3)
+    @@ -25,5 +25,4 @@
+     #### List Example
+     ```python
+     my_list = [1, 2, 3, 4, 5]
+    -print(my_list)  # Output: [1, 2, 3, 4, 5]
+    -
+    +print(my_list)  # Output: [1, 2, 3, 4, 5
+
+  [context_02] (similarity=0.5770)
+  Prompt: Read the passage and answer the question.
+
+Passage: Machine learning is a subset...
+    --- baseline
+    +++ pipelined
+    @@ -1 +1 @@
+    -The main goal of machine learning according to the passage is to enable systems to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to develop algorithms and models that can analyze large amounts of data and identify patterns and relationships within that data. The ultimate goal is to create systems that can make informed decisions based on this learned knowledge, potentially leading to improved performance and efficiency in various applications.
+    +The main goal of machine learning according to the passage is to enable systems to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to create algorithms and models that can analyze data and identify patterns, allowing them to make predictions or decisions based on this analysis.
+
+  [math_01] (similarity=0.9880)
+  Prompt: Calculate: (17 * 23) + (45 / 9) - 12. Show each step....
+    --- baseline
+    +++ pipelined
+    @@ -30,14 +30,14 @@
+     ### Step 3: Perform the addition and subtraction from left to right
+     First, add 391 and 5:
+     \[
+    -391 + 5 = 396
+    +391 + 5 = 406
+     \]
+    
+    -Then, subtract 12 from 396:
+    +Then, subtract 12 from 406:
+     \[
+    -396 - 12 = 384
+    +406 - 12 = 394
+     \]
+    
+     Thus, the final answer is:
+     \[
+    -\boxed{384}
+    ... (1 more diff lines)
+
+  [math_03] (similarity=0.9112)
+  Prompt: Solve for x: 2x + 7 = 19. Show your steps....
+    --- baseline
+    +++ pipelined
+    @@ -9,7 +9,7 @@
+        2x = 12
+        \]
+    
+    -2. **Solve for \(x\)**: Now that we have isolated the term with the variable, we can divide both sides by the coefficient of \(x\). The coefficient of \(x\) is 2.
+    +2. **Solve for \(x\)**: Now that we have isolated the term with the variable, we can divide both sides by 2 to solve for \(x\).
+        \[
+        \frac{2x}{2} = \frac{12}{2}
+        \]
+    @@ -18,4 +18,4 @@
+        x = 6
+        \]
+    
+    -So, the solution to the equation \(2x + 7 = 19\) is \(\boxed{x = 6}\).
+    +So, the solution is \(x = 6\).
+
+  --- Sample outputs (first 5 prompts) ---
+
+  [code_01] code
+  Q: Write a Python function that checks if a string is a palindrome. Include a docstring.
+  Baseline:  Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  Pipelined: Certainly! Below is a Python function that checks if a given string is a palindrome:
+
+```python
+def is_palindrome(s):
+    """
+    Check if the input string s is a palindrome.
+
+    A palindrome is a word, phrase, number, or other sequence of characters which reads the same backward as forward,
+    e....
+  -> DIFF (sim=0.739)
+
+  [code_02] code
+  Q: Write a Python function to compute the nth Fibonacci number using recursion with memoization.
+  Baseline:  Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  Pipelined: Certainly! Below is a Python function that computes the nth Fibonacci number using recursion and memoization:
+
+```python
+def fibonacci(n, memo={}):
+    """
+    Compute the nth Fibonacci number using recursion with memoization.
+    
+    Args:
+        n (int): The position in the Fibonacci sequence.
+ ...
+  -> MATCH
+
+  [code_03] code
+  Q: Explain the difference between a list and a tuple in Python. Give one code example for each.
+  Baseline:  In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  Pipelined: In Python, both lists and tuples are used to store collections of items, but they have some key differences:
+
+1. **List**:
+   - A list is an ordered collection of elements that can be accessed using an index.
+   - Lists are mutable (you can change their contents after creation).
+   - Lists are defin...
+  -> DIFF (sim=0.990)
+
+  [context_01] contextual
+  Q: Read the passage and answer the question.
+
+Passage: The Great Wall of China is a series of fortifica...
+  Baseline:  The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the mo...
+  Pipelined: The Ming dynasty built the most well-known sections of the Great Wall. According to the passage, "Little of the Qin wall remains. Later on, many successive dynasties built and maintained multiple stretches of border walls." This indicates that the Ming dynasty was responsible for constructing the mo...
+  -> MATCH
+
+  [context_02] contextual
+  Q: Read the passage and answer the question.
+
+Passage: Machine learning is a subset of artificial intel...
+  Baseline:  The main goal of machine learning according to the passage is to enable systems to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to develop algorithms and models that can analyze large amounts of data and identify patterns ...
+  Pipelined: The main goal of machine learning according to the passage is to enable systems to automatically learn and improve from experience without being explicitly programmed. This means that machine learning aims to create algorithms and models that can analyze data and identify patterns, allowing them to ...
+  -> DIFF (sim=0.577)
+
+  Latency Summary (Phase 2 — multi-request (conc=8))
+  Metric                   Baseline    Pipelined      Delta
+  ──────────────────── ──────────── ──────────── ──────────
+  Mean E2E (ms)             1192.3       1226.6       +2.9%
+  Median E2E (ms)           1097.8       1126.8       +2.6%
+  P99 E2E (ms)              2058.0       2129.6       +3.5%
+  Min E2E (ms)               184.4        189.6       +2.8%
+  Max E2E (ms)              2058.0       2129.6       +3.5%
+  Total tokens                 4526         4450
+
+  Results saved: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/qa_results_conc8.json
+
+==========================================================================================
+  FINAL VERDICT
+==========================================================================================
+
+  [PASS] Phase 1 — single-request (conc=1)
+    Exact matches:      30/30
+    Average similarity: 1.0000 (OK)
+    Min similarity:     1.0000 (OK)
+
+  [FAIL] Phase 2 — multi-request (conc=2)
+    Exact matches:      23/30
+    Average similarity: 0.9485 (OK)
+    Min similarity:     0.4774 (BELOW THRESHOLD 0.50)
+
+  [FAIL] Phase 2 — multi-request (conc=4)
+    Exact matches:      21/30
+    Average similarity: 0.9245 (OK)
+    Min similarity:     0.4708 (BELOW THRESHOLD 0.50)
+
+  [FAIL] Phase 2 — multi-request (conc=8)
+    Exact matches:      19/30
+    Average similarity: 0.9046 (OK)
+    Min similarity:     0.3507 (BELOW THRESHOLD 0.50)
+
+  ==================================================
+  OVERALL: FAIL — KV pipelining may have correctness issues
+  ==================================================
+
+  Validation summary: /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/validation_summary.json
+  Full results:       /home/ben/vllm/results/kv_qa_validation/full_pass_20260321_184848/

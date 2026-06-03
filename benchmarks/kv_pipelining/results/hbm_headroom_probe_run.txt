@@ -1,0 +1,19 @@
+Decode HBM headroom probe (synthetic)
+============================================================
+  GPU:           nvidia h100 nvl
+  Tensor size:   256.0 MiB × 3 (add)
+  Iterations:    200
+  DMA per iter:  32.0 MiB (H2D, pinned)
+  Peak HBM (ref): ~3350.0 GB/s (rough table; verify for your SKU)
+
+  Memory-bound kernel (solo):     3592.30 GB/s effective
+  H2D DMA (solo):                 56.51 GB/s
+  Memory-bound kernel (overlap): 1351.00 GB/s effective
+  Overlap vs solo (kernel BW):    0.376x  (~62.4% effective BW loss)
+  Est. HBM util (solo kernel):   107.2% of ref peak
+
+Interpretation:
+  - Low solo utilization + small overlap loss => room for pipelined KV prefetch.
+  - High solo utilization + large overlap loss => throttle/chunk DMA with decode.
+
+Next: run benchmarks/kv_pipelining/capacity_test.py for OOM/concurrency limits.

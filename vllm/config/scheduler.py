@@ -144,6 +144,56 @@ class SchedulerConfig:
     while a larger value (e.g., 10) reduces host overhead and may increase throughput
     by batching multiple tokens before sending."""
 
+    enable_transfer_aware_admission: bool = False
+    """When True, apply experimental admission logic that accounts for repeated
+    CPU->GPU KV movement (layer-wise offload / decode staging). Default off."""
+
+    transfer_aware_admission_epoch_steps: int = Field(default=8, ge=1)
+    """How often (in scheduler steps) to refresh transfer estimates / budgets."""
+
+    transfer_aware_bytes_per_decode_step_per_seq: float = Field(default=0.0, ge=0.0)
+    """Offline-calibrated bytes moved per decode step per sequence for pressure
+    estimates. Zero disables pressure reporting unless extended later."""
+
+    transfer_aware_max_effective_bw_bytes_per_sec: float = Field(default=0.0, ge=0.0)
+    """Upper bound on effective CPU->GPU KV bandwidth for admission (0 = unset).
+    Reserved for Phase 3 policy."""
+
+    transfer_aware_slo_p99_itl_ms: float = Field(default=0.0, ge=0.0)
+    """Per-token decode SLO (p99 ITL in milliseconds) protected by the
+    admission policy. When > 0 and ``enable_transfer_aware_admission`` is True,
+    the controller refuses admitting a new request whose predicted post-admission
+    p99 ITL would exceed this budget. Default 0 = policy disabled (stub
+    behavior).
+    """
+
+    transfer_aware_predictor_csv: str = ""
+    """Path to a feature-ON K sweep CSV (produced by
+    ``benchmarks/kv_pipelining_bench/feature_on_k_sweep.py``) used to predict
+    p99 ITL given the running decode batch size. Empty string disables the
+    predictor and the policy falls back to admit-all when enabled."""
+
+    transfer_aware_predictor_model: str = ""
+    """HuggingFace model id used to filter rows of the predictor CSV. Defaults
+    to the empty string; if empty, the controller picks the model whose rows
+    in the CSV best match the runtime model id."""
+
+    transfer_aware_kv_k_window: int = Field(default=4, ge=1)
+    """Layer KV pipelining window used for transfer-byte estimates in the
+    admission predictor (``ModelKVProfile``). Should match ``--kv-k-window``."""
+
+    transfer_aware_admission_policy: str = "combined"
+    """Admission predictor mode: ``combined`` (feature-ON ITL(K) table only) or
+    ``mechanistic`` (compute + PCIe + extra budgets)."""
+
+    transfer_aware_baseline_compute_json: str = ""
+    """Path to ``results_baseline.json`` from ``decode_only_bench --modes baseline``
+    for mechanistic policy compute term. Required when policy is ``mechanistic``."""
+
+    transfer_aware_injection_jsonl: str = ""
+    """Path to injection sweep JSONL for mechanistic PCIe delta term. Optional
+    for ``combined``; recommended for ``mechanistic``."""
+
     @staticmethod
     def default_factory(**kwargs):
         """

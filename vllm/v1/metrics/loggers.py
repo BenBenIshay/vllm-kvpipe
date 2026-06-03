@@ -319,6 +319,9 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
 
     def aggregate_scheduler_stats(self):
         self.last_scheduler_stats = SchedulerStats()
+        transfer_pressure_sum = 0.0
+        transfer_pressure_n = 0
+        merged_transfer_events: dict[str, int] = {}
         for last_scheduler_stats in self.last_scheduler_stats_dict.values():
             self.last_scheduler_stats.num_waiting_reqs += (
                 last_scheduler_stats.num_waiting_reqs
@@ -329,7 +332,20 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
             self.last_scheduler_stats.kv_cache_usage += (
                 last_scheduler_stats.kv_cache_usage
             )
+            if last_scheduler_stats.transfer_aware_admission_enabled:
+                self.last_scheduler_stats.transfer_aware_admission_enabled = True
+                transfer_pressure_sum += (
+                    last_scheduler_stats.transfer_pressure_bytes_per_step_estimate
+                )
+                transfer_pressure_n += 1
+            for key, val in last_scheduler_stats.transfer_aware_admission_events.items():
+                merged_transfer_events[key] = merged_transfer_events.get(key, 0) + val
         self.last_scheduler_stats.kv_cache_usage /= len(self.last_scheduler_stats_dict)
+        if transfer_pressure_n:
+            self.last_scheduler_stats.transfer_pressure_bytes_per_step_estimate = (
+                transfer_pressure_sum / transfer_pressure_n
+            )
+        self.last_scheduler_stats.transfer_aware_admission_events = merged_transfer_events
 
     def log(self):
         LoggingStatLogger.log(self)

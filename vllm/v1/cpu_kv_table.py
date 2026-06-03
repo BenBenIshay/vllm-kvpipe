@@ -16,6 +16,12 @@ from vllm.utils.math_utils import cdiv
 logger = logging.getLogger(__name__)
 
 
+def _fake_transfer_enabled() -> bool:
+    from vllm.v1.kv_pipelining_step import kv_pipelining_fake_transfer_enabled
+
+    return kv_pipelining_fake_transfer_enabled()
+
+
 def measure_hbm_kv_bytes(kv_caches: dict[str, torch.Tensor]) -> tuple[int, int, int]:
     """Return (unique_tensor_bytes, num_unique_tensors, per_tensor_max_bytes)."""
     seen: set[int] = set()
@@ -313,14 +319,23 @@ class CpuKvTable:
         if sync_compute:
             stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
-            self._gather_n_tokens_to_scratch(kv_gpu, gpu_scratch, phys_gpu, off_gpu, n)
+            if not _fake_transfer_enabled():
+                self._gather_n_tokens_to_scratch(
+                    kv_gpu, gpu_scratch, phys_gpu, off_gpu, n
+                )
             if snap_ev is not None:
                 snap_ev.record(stream)
-            if cpu_scratch.shape[0] == 2:
-                cpu_scratch[:, :n].copy_(gpu_scratch[:, :n], non_blocking=True)
-            else:
-                cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
+            if not _fake_transfer_enabled():
+                if cpu_scratch.shape[0] == 2:
+                    cpu_scratch[:, :n].copy_(
+                        gpu_scratch[:, :n], non_blocking=True
+                    )
+                else:
+                    cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
             save_ev.record(stream)
+
+        if _fake_transfer_enabled():
+            return
 
         def _finish_scatter() -> None:
             save_ev.synchronize()
@@ -347,6 +362,8 @@ class CpuKvTable:
         off: torch.Tensor,
         n: int,
     ) -> None:
+        if _fake_transfer_enabled():
+            return
         if kv_gpu.shape[0] == 2:
             gathered = kv_gpu[:, phys, off]
             gpu_scratch[:, :n].copy_(gathered, non_blocking=True)
@@ -381,6 +398,8 @@ class CpuKvTable:
         phys: int,
         off: int,
     ) -> None:
+        if _fake_transfer_enabled():
+            return
         if kv_gpu.shape[0] == 2:
             delta_scratch.copy_(kv_gpu[:, phys, off], non_blocking=True)
         elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
@@ -395,6 +414,8 @@ class CpuKvTable:
         tbl_block: int,
         off: int,
     ) -> None:
+        if _fake_transfer_enabled():
+            return
         if cpu_buf.shape[0] == 2:
             cpu_buf[:, tbl_block, off].copy_(delta_scratch, non_blocking=True)
         elif cpu_buf.ndim >= 3 and cpu_buf.shape[1] == 2:
@@ -442,6 +463,8 @@ class CpuKvTable:
         off: int,
         tbl_block: int,
     ) -> None:
+        if _fake_transfer_enabled():
+            return
         if kv_gpu.shape[0] == 2:
             cpu_buf[:, tbl_block, off].copy_(
                 kv_gpu[:, phys, off], non_blocking=True
@@ -467,30 +490,31 @@ class CpuKvTable:
         blocks = self.ordered_table_blocks
         with torch.cuda.stream(stream):
             stream.wait_event(sync_ev)
-            if (
-                len(phys_list) >= 2
-                and len(blocks) == len(phys_list)
-                and phys_list[-1] - phys_list[0] == len(phys_list) - 1
-                and blocks[-1] - blocks[0] == len(blocks) - 1
-            ):
-                p0, p1 = phys_list[0], phys_list[-1]
-                t0, t1 = blocks[0], blocks[-1]
-                src = [slice(None)] * kv_gpu.ndim
-                dst = [slice(None)] * cpu_buf.ndim
-                src[bd] = slice(p0, p1 + 1)
-                dst[bd] = slice(t0, t1 + 1)
-                cpu_buf[tuple(dst)].copy_(kv_gpu[tuple(src)], non_blocking=True)
-            else:
-                for phys, tb in zip(phys_list, blocks):
-                    if phys < 0 or phys >= kv_gpu.shape[bd]:
-                        continue
+            if not _fake_transfer_enabled():
+                if (
+                    len(phys_list) >= 2
+                    and len(blocks) == len(phys_list)
+                    and phys_list[-1] - phys_list[0] == len(phys_list) - 1
+                    and blocks[-1] - blocks[0] == len(blocks) - 1
+                ):
+                    p0, p1 = phys_list[0], phys_list[-1]
+                    t0, t1 = blocks[0], blocks[-1]
                     src = [slice(None)] * kv_gpu.ndim
                     dst = [slice(None)] * cpu_buf.ndim
-                    src[bd] = slice(phys, phys + 1)
-                    dst[bd] = slice(tb, tb + 1)
-                    cpu_buf[tuple(dst)].copy_(
-                        kv_gpu[tuple(src)], non_blocking=True
-                    )
+                    src[bd] = slice(p0, p1 + 1)
+                    dst[bd] = slice(t0, t1 + 1)
+                    cpu_buf[tuple(dst)].copy_(kv_gpu[tuple(src)], non_blocking=True)
+                else:
+                    for phys, tb in zip(phys_list, blocks):
+                        if phys < 0 or phys >= kv_gpu.shape[bd]:
+                            continue
+                        src = [slice(None)] * kv_gpu.ndim
+                        dst = [slice(None)] * cpu_buf.ndim
+                        src[bd] = slice(phys, phys + 1)
+                        dst[bd] = slice(tb, tb + 1)
+                        cpu_buf[tuple(dst)].copy_(
+                            kv_gpu[tuple(src)], non_blocking=True
+                        )
             save_ev.record(stream)
         return save_ev
 
@@ -545,7 +569,8 @@ class CpuKvTable:
         ready_event = torch.cuda.Event(blocking=False)
         with torch.cuda.stream(stream):
             stream.wait_event(sync_ev)
-            cpu_delta.copy_(delta, non_blocking=True)
+            if not _fake_transfer_enabled():
+                cpu_delta.copy_(delta, non_blocking=True)
             save_ev.record(stream)
             ready_event.record(stream)
 
@@ -572,7 +597,11 @@ class CpuKvTable:
         if not phys_list or len(blocks) != len(phys_list):
             return ready
 
+        fake = _fake_transfer_enabled()
+
         def _copy_range(p_start: int, p_end: int, t_start: int, t_end: int) -> None:
+            if fake:
+                return
             src = [slice(None)] * cpu_buf.ndim
             dst = [slice(None)] * kv_gpu.ndim
             src[bd] = slice(t_start, t_end + 1)
@@ -580,6 +609,8 @@ class CpuKvTable:
             kv_gpu[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
 
         def _copy_block(phys: int, tb: int) -> None:
+            if fake:
+                return
             if phys < 0 or phys >= kv_gpu.shape[bd]:
                 return
             src = [slice(None)] * cpu_buf.ndim
@@ -657,21 +688,24 @@ class CpuKvTable:
         if n == 0 or n > kv_compact.shape[bd]:
             return ready
         t0, t1 = blocks[0], blocks[-1]
-        if len(blocks) >= 2 and blocks[-1] - blocks[0] == len(blocks) - 1:
-            src = [slice(None)] * cpu_buf.ndim
-            dst = [slice(None)] * kv_compact.ndim
-            src[bd] = slice(t0, t1 + 1)
-            dst[bd] = slice(0, n)
-            kv_compact[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
-        else:
-            for local_i, tb in enumerate(blocks):
-                if tb < 0:
-                    continue
+        if not _fake_transfer_enabled():
+            if len(blocks) >= 2 and blocks[-1] - blocks[0] == len(blocks) - 1:
                 src = [slice(None)] * cpu_buf.ndim
                 dst = [slice(None)] * kv_compact.ndim
-                src[bd] = slice(tb, tb + 1)
-                dst[bd] = slice(local_i, local_i + 1)
+                src[bd] = slice(t0, t1 + 1)
+                dst[bd] = slice(0, n)
                 kv_compact[tuple(dst)].copy_(cpu_buf[tuple(src)], non_blocking=True)
+            else:
+                for local_i, tb in enumerate(blocks):
+                    if tb < 0:
+                        continue
+                    src = [slice(None)] * cpu_buf.ndim
+                    dst = [slice(None)] * kv_compact.ndim
+                    src[bd] = slice(tb, tb + 1)
+                    dst[bd] = slice(local_i, local_i + 1)
+                    kv_compact[tuple(dst)].copy_(
+                        cpu_buf[tuple(src)], non_blocking=True
+                    )
         if ready_event is not None:
             ready.record(stream)
         return ready
@@ -688,6 +722,8 @@ class CpuKvTable:
         blocks = self.ordered_table_blocks
         n = len(phys_list)
         if n == 0 or len(blocks) != n or n > kv_compact.shape[bd]:
+            return
+        if _fake_transfer_enabled():
             return
         copy_stream = stream or torch.cuda.current_stream()
         if (

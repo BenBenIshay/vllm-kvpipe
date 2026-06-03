@@ -30,6 +30,54 @@ def kv_pipelining_batched_d2h_enabled() -> bool:
     return os.environ.get("VLLM_KVPIPE_BATCHED_D2H", "1") == "1"
 
 
+def kv_pipelining_fake_transfer_enabled() -> bool:
+    """Diagnostic: infinite-bandwidth simulation for conc=1 thesis benches.
+
+    When enabled (``VLLM_KVPIPE_FAKE_TRANSFER=1``):
+
+    - Runs the **same** staging + prefetch path as production (not ``SKIP_DELTA``).
+    - **No** ``copy_`` (zero-byte D2H/H2D).
+    - Transfer stream still issues ``wait_stream`` / ``wait_event`` / ``record``.
+    - Compute stream still **issues** ``wait_event(ready)`` on instant-ready events
+      (no wait for PCIe latency; pays CUDA command-issue + host orchestration cost).
+
+    Invalid for correctness or production.
+    """
+    return os.environ.get("VLLM_KVPIPE_FAKE_TRANSFER", "0") == "1"
+
+
+def kv_pipelining_wrap_prefetch_enabled() -> bool:
+    """Close rolling prefetch: after layer i save, prefetch (i+K) mod L.
+
+    Replaces bootstrap prefetch of layers 0..K-1 at end-of-forward with
+    in-forward wrap at layers L-K..L-1 (more overlap before the next token).
+    Set ``VLLM_KVPIPE_WRAP_PREFETCH=0`` to restore bootstrap + open-chain prefetch.
+    """
+    return os.environ.get("VLLM_KVPIPE_WRAP_PREFETCH", "1") == "1"
+
+
+def build_prefetch_target_indices(
+    num_layers: int,
+    k_window: int,
+    *,
+    wrap: bool,
+) -> list[int | None]:
+    """Per-layer index to prefetch after that layer's decode save (i -> target).
+
+    Wrap mode: always ``(i + k_window) % num_layers`` (layers L-K..L-1 close
+    the ring by prefetching 0..K-1 for the next token). Legacy mode: ``i + K``
+    only when in range, else ``None`` (requires bootstrap for layers 0..K-1).
+    """
+    if k_window <= 0 or num_layers <= 0:
+        return [None] * num_layers
+    if wrap:
+        return [(i + k_window) % num_layers for i in range(num_layers)]
+    return [
+        i + k_window if i + k_window < num_layers else None
+        for i in range(num_layers)
+    ]
+
+
 @dataclass
 class DecodeStepTransferPlan:
     """Per-forward plan: slot resolution done once; per-layer issue after attention."""

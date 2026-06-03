@@ -605,6 +605,8 @@ class Worker(WorkerBase):
                     num_scheduled_tokens_np=num_scheduled_tokens_np,
                     max_num_scheduled_tokens=num_scheduled_tokens_np.max(),
                     use_cascade_attn=False,  # TODO(lucas): Handle cascade attention
+                    # Match execute_model: no CUDA graphs with KV connector.
+                    force_eager=has_kv_transfer_group(),
                 )
             )
             all_gather_tensors = {
