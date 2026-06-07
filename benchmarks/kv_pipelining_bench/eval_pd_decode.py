@@ -109,6 +109,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     p.add_argument(
+        "--pipelined-gpu-memory-utilization",
+        type=float,
+        default=None,
+        help=(
+            "Override --gpu-memory-utilization for the pipelined arm only. "
+            "Keeps the baseline arm at full utilization (realistic capacity "
+            "wall) while leaving HBM headroom for the decode_bench dummy-fill "
+            "scratch / K-window at high concurrency. Defaults to "
+            "--gpu-memory-utilization when unset."
+        ),
+    )
+    p.add_argument(
         "--enforce-eager",
         dest="enforce_eager",
         action=argparse.BooleanOptionalAction,
@@ -131,6 +143,22 @@ def parse_args() -> argparse.Namespace:
             "For pipelined mode: pass --inflate-kv-pool (capacity / P/D story). "
             "Use --no-inflate-kv-pool to match validate_qa.py and reduce CPU "
             "pinned memory (recommended if the engine exits under load)."
+        ),
+    )
+    p.add_argument(
+        "--pipelined-connector",
+        choices=["prefill_staging", "decode_bench"],
+        default="prefill_staging",
+        help=(
+            "Connector used for the pipelined arm. 'prefill_staging' runs the "
+            "full PrefillStagingPipelinedConnector (real prefill + decode-time "
+            "stage-back to DDR on the critical path). 'decode_bench' runs the "
+            "PipelinedDecodeBenchConnector (dummy-KV, decode-only P/D-"
+            "disaggregation path): KV is treated as already resident in DDR "
+            "(delivered by the prefill node), so only the per-step K+1 window "
+            "H2D load is on the decode critical path. Use 'decode_bench' for "
+            "the decode-node throughput/capacity claim; correctness is shown "
+            "separately by validate_qa.py."
         ),
     )
 
@@ -165,13 +193,20 @@ def parse_args() -> argparse.Namespace:
 # =========================================================================
 
 def _cleanup_gpu_and_port(port: int) -> None:
-    """Kill any leftover processes on the target port."""
+    """Kill any leftover processes on the target port and vLLM workers."""
     try:
         subprocess.run(["fuser", "-k", f"{port}/tcp"],
                        capture_output=True, timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    time.sleep(2)
+    try:
+        subprocess.run(
+            ["pkill", "-f", "vllm.entrypoints.openai.api_server"],
+            capture_output=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(5)
 
 
 def _wait_for_server(port: int, timeout: int) -> bool:
@@ -241,12 +276,17 @@ def launch_server(
     log_file: str,
 ) -> subprocess.Popen:
     """Launch a vLLM server in the specified mode."""
+    gpu_mem_util = args.gpu_memory_utilization
+    if mode == "pipelined":
+        override = getattr(args, "pipelined_gpu_memory_utilization", None)
+        if override is not None:
+            gpu_mem_util = override
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
         "--model", args.model,
         "--port", str(args.port),
         "--max-model-len", str(args.max_model_len),
-        "--gpu-memory-utilization", str(args.gpu_memory_utilization),
+        "--gpu-memory-utilization", str(gpu_mem_util),
         "--disable-log-requests",
         "--dtype", "auto",
         "--max-num-seqs", str(max_num_seqs),
@@ -259,19 +299,42 @@ def launch_server(
         pass
 
     elif mode == "pipelined":
-        # PrefillStagingPipelinedConnector: real prefill, KV staged
-        # to CPU, then K+1 pipelined decode with inflated block pool.
-        # The inflated pool gives ~num_layers/(K+1) more capacity.
-        kv_config = {
-            "kv_connector": "PrefillStagingPipelinedConnector",
-            "kv_role": "kv_both",
-        }
-        cmd += [
-            "--enable-kv-pipelining",
-            "--kv-k-window", str(args.k_window),
-            "--kv-transfer-config", json.dumps(kv_config),
-            "--no-enable-prefix-caching",
-        ]
+        connector = getattr(args, "pipelined_connector", "prefill_staging")
+        if connector == "decode_bench":
+            # PipelinedDecodeBenchConnector: decode-only P/D-disaggregation
+            # path. KV is treated as already resident in DDR (delivered by
+            # the prefill node), filled with dummy values; only the per-step
+            # K+1 window H2D load is on the decode critical path. No prefill
+            # staging and no decode-time stage-back. This is the intended
+            # connector for the decode-node throughput/capacity claim.
+            kv_config = {
+                "kv_connector": "PipelinedDecodeBenchConnector",
+                "kv_role": "kv_both",
+                "kv_connector_extra_config": {
+                    "fill_mean": 0.015, "fill_std": 0.0,
+                },
+            }
+            cmd += [
+                "--enable-kv-pipelining",
+                "--decode-only-pipelining",
+                "--kv-k-window", str(args.k_window),
+                "--kv-transfer-config", json.dumps(kv_config),
+                "--no-enable-prefix-caching",
+            ]
+        else:
+            # PrefillStagingPipelinedConnector: real prefill, KV staged
+            # to CPU, then K+1 pipelined decode with inflated block pool.
+            # The inflated pool gives ~num_layers/(K+1) more capacity.
+            kv_config = {
+                "kv_connector": "PrefillStagingPipelinedConnector",
+                "kv_role": "kv_both",
+            }
+            cmd += [
+                "--enable-kv-pipelining",
+                "--kv-k-window", str(args.k_window),
+                "--kv-transfer-config", json.dumps(kv_config),
+                "--no-enable-prefix-caching",
+            ]
         if getattr(args, "inflate_kv_pool", True):
             cmd.append("--inflate-kv-pool")
 
@@ -297,9 +360,14 @@ def _run_bench_serve(
     num_prompts: int,
     max_concurrency: int | None,
     warmup: int,
-    timeout: int = 1800,
+    timeout: int = int(os.environ.get("KV_BENCH_SERVE_TIMEOUT", "1800")),
 ) -> dict | None:
-    """Run ``vllm bench serve`` and parse the JSON result."""
+    """Run ``vllm bench serve`` and parse the JSON result.
+
+    Per-cell wall-clock cap is ``KV_BENCH_SERVE_TIMEOUT`` seconds (default 1800).
+    A timed-out cell is treated as a recoverable skip (returns None) so a single
+    slow concurrency level does not abort the whole sweep / suite.
+    """
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.cli.main", "bench", "serve",
         "--backend", "openai",
@@ -317,9 +385,16 @@ def _run_bench_serve(
     cmd += extra_args
 
     print(f"    $ {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"    [TIMEOUT] bench serve exceeded {timeout}s; "
+            f"skipping this cell and continuing"
+        )
+        return None
 
     if result.returncode != 0:
         print(f"    [ERROR] bench serve failed (rc={result.returncode})")

@@ -90,6 +90,7 @@ class PipelinedDecodeBenchConnectorMetadata(KVConnectorMetadata):
     decode_max_block_id: int | None = None
     decode_block_runs: list[tuple[int, int]] = field(default_factory=list)
     decode_physical_block_ids: list[int] = field(default_factory=list)
+    finished_req_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +405,11 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._decode_max_block_id = metadata.decode_max_block_id
         self._decode_block_runs = metadata.decode_block_runs
         self._decode_physical_block_ids = metadata.decode_physical_block_ids
+
+        for req_id in metadata.finished_req_ids:
+            if self._worker_state is not None:
+                self._worker_state.release_req_blocks(req_id)
+            self._worker_registered_reqs.discard(req_id)
 
         phys_for_step = self._decode_physical_block_ids or [
             b
@@ -918,6 +924,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             decode_max_block_id=decode_max_block_id,
             decode_block_runs=decode_block_runs,
             decode_physical_block_ids=decode_physical_block_ids,
+            finished_req_ids=list(scheduler_output.finished_req_ids),
         )
 
     def request_finished(
