@@ -193,20 +193,25 @@ def parse_args() -> argparse.Namespace:
 # =========================================================================
 
 def _cleanup_gpu_and_port(port: int) -> None:
-    """Kill any leftover processes on the target port and vLLM workers."""
+    """Kill leftover vLLM API servers, engine cores, and port holders."""
     try:
         subprocess.run(["fuser", "-k", f"{port}/tcp"],
                        capture_output=True, timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    try:
-        subprocess.run(
-            ["pkill", "-f", "vllm.entrypoints.openai.api_server"],
-            capture_output=True, timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    time.sleep(5)
+    for pattern in (
+        "vllm.entrypoints.openai.api_server",
+        "VLLM::EngineCore",
+        "vllm.v1.engine",
+    ):
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", pattern],
+                capture_output=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    time.sleep(8)
 
 
 def _wait_for_server(port: int, timeout: int) -> bool:
@@ -493,6 +498,7 @@ def run_mode_evaluation(
     finally:
         print(f"  Stopping {mode} server ...")
         _kill_server(proc)
+        _cleanup_gpu_and_port(args.port)
         time.sleep(args.cooldown)
 
 
