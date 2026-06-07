@@ -36,10 +36,15 @@ def kv_pipelining_fake_transfer_enabled() -> bool:
     When enabled (``VLLM_KVPIPE_FAKE_TRANSFER=1``):
 
     - Runs the **same** staging + prefetch path as production (not ``SKIP_DELTA``).
-    - **No** ``copy_`` (zero-byte D2H/H2D).
-    - Transfer stream still issues ``wait_stream`` / ``wait_event`` / ``record``.
-    - Compute stream still **issues** ``wait_event(ready)`` on instant-ready events
-      (no wait for PCIe latency; pays CUDA command-issue + host orchestration cost).
+    - Skips **only** the host<->device bus copies (the D2H/H2D ``copy_`` that
+      cross PCIe). This models *infinite bandwidth*, not free work.
+    - **Keeps** everything else apples-to-apples with the real path: the
+      device-to-device gather (``_gather_n_tokens_to_scratch``), the host-side
+      scatter (``_scatter_batched_n1_to_cpu_buf``), per-layer hooks, all CUDA
+      events (``wait_stream`` / ``wait_event`` / ``record``), and stream order.
+    - Compute stream still **issues** ``wait_event(ready)`` on instant-ready
+      events (no PCIe latency; still pays CUDA command-issue + host orchestration
+      + gather/scatter cost).
 
     Invalid for correctness or production.
     """

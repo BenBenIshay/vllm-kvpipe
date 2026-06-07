@@ -48,6 +48,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm.v1.cpu_kv_table import _kv_layout_blocks_first
 from vllm.v1.kv_cache_pipelining import LayerwisePipeliningState
 from vllm.v1.kv_pipelining_direct_window import DirectKWindowMixin
 from vllm.v1.kv_pipelining_profile import (
@@ -253,14 +254,16 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
                             dtype=kv_cache.dtype,
                             device=kv_cache.device,
                         )
+                        kv_cache[valid_ids] = fill
                     else:
-                        fill = torch.full(
-                            (len(valid_ids),) + block_shape,
-                            self._fill_mean,
-                            dtype=kv_cache.dtype,
-                            device=kv_cache.device,
-                        )
-                    kv_cache[valid_ids] = fill
+                        # Constant fill: assign the scalar in-place via
+                        # index_fill_ to avoid materializing a large transient
+                        # (num_blocks x block_shape) tensor per request/layer.
+                        # This is the dummy stand-in for prefill-delivered KV;
+                        # the value is irrelevant to decode throughput, but the
+                        # transient allocation drove admission-time OOM / TTFT
+                        # bursts at high concurrency.
+                        kv_cache.index_fill_(0, valid_ids, self._fill_mean)
 
     @staticmethod
     def _block_runs_from_ids(block_ids: set[int] | list[int]) -> list[tuple[int, int]]:
@@ -351,7 +354,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         """
         if kv_layer.ndim < 3:
             return kv_layer
-        block_dim = 1 if kv_layer.shape[0] == 2 else 0
+        block_dim = 0 if _kv_layout_blocks_first(kv_layer) else (
+            1 if kv_layer.shape[0] == 2 else 0
+        )
 
         # Prefer decode_max_block_id (covers all active sequences).
         if self._decode_max_block_id is not None:

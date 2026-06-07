@@ -13,7 +13,13 @@ import torch
 from vllm.attention.layer import AttentionLayerBase
 from vllm.config import get_layers_from_vllm_config
 from vllm.logger import init_logger
-from vllm.v1.cpu_kv_table import CpuKvTable, _block_dim, measure_hbm_kv_bytes
+from vllm.v1.cpu_kv_table import (
+    CpuKvTable,
+    _block_dim,
+    _kv_layout_blocks_first,
+    _per_token_shape,
+    measure_hbm_kv_bytes,
+)
 from vllm.v1.kv_cache_pipelining import LayerwisePipeliningState, PipeliningOrchestrator
 from vllm.v1.kv_pipelining_profile import (
     DecodeHookProfile,
@@ -331,10 +337,10 @@ class DirectKWindowMixin:
             slot = self._layer_to_slot[layer_name]
             if slot in self._delta_scratch_by_slot:
                 continue
-            if main_t.shape[0] == 2:
-                token_shape = main_t[:, 0, 0].shape
-            elif main_t.ndim >= 3 and main_t.shape[1] == 2:
+            if _kv_layout_blocks_first(main_t):
                 token_shape = main_t[0, :, 0].shape
+            elif main_t.shape[0] == 2:
+                token_shape = main_t[0, 0, 0].shape
             else:
                 token_shape = main_t[0, 0].shape
             scratch = torch.empty(
@@ -358,34 +364,32 @@ class DirectKWindowMixin:
         if self._worker_state is None:
             return
         ref = kv_caches[self._layer_names[0]]
-        if ref.shape[0] == 2:
-            token_shape = ref[:, 0, 0].shape
+        token_shape = _per_token_shape(ref)
+        if _kv_layout_blocks_first(ref):
             gpu = torch.empty(
-                (2, max_batch_tokens, *token_shape),
+                (max_batch_tokens, *token_shape),
                 dtype=ref.dtype,
                 device=ref.device,
             )
             cpu = torch.empty(
-                (2, max_batch_tokens, *token_shape),
+                (max_batch_tokens, *token_shape),
                 dtype=ref.dtype,
                 device="cpu",
                 pin_memory=True,
             )
-        elif ref.ndim >= 3 and ref.shape[1] == 2:
-            token_shape = ref[0, :, 0].shape
+        elif ref.shape[0] == 2:
             gpu = torch.empty(
-                (max_batch_tokens, *token_shape),
+                (2, max_batch_tokens, *token_shape),
                 dtype=ref.dtype,
                 device=ref.device,
             )
             cpu = torch.empty(
-                (max_batch_tokens, *token_shape),
+                (2, max_batch_tokens, *token_shape),
                 dtype=ref.dtype,
                 device="cpu",
                 pin_memory=True,
             )
         else:
-            token_shape = ref[0, 0].shape
             gpu = torch.empty(
                 (max_batch_tokens, *token_shape),
                 dtype=ref.dtype,

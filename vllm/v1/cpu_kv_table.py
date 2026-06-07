@@ -38,16 +38,37 @@ def measure_hbm_kv_bytes(kv_caches: dict[str, torch.Tensor]) -> tuple[int, int, 
     return total, len(seen), per_tensor_max
 
 
+def _kv_layout_blocks_first(kv: torch.Tensor) -> bool:
+    """True when K/V is on dim 1 (paged ``[blocks, 2, page, ...]``).
+
+    Must be checked **before** ``shape[0] == 2``: a sliced view with only
+    two blocks looks like ``[2, 2, page, ...]`` and would otherwise be
+    misclassified as K/V-first, breaking batched gather/scatter.
+    """
+    return kv.ndim >= 3 and kv.shape[1] == 2
+
+
 def _block_dim(kv: torch.Tensor) -> int:
+    if _kv_layout_blocks_first(kv):
+        return 0
     return 1 if kv.ndim >= 1 and kv.shape[0] == 2 else 0
 
 
 def _page_size(kv: torch.Tensor) -> int:
+    if _kv_layout_blocks_first(kv):
+        return int(kv.shape[2])
     if kv.ndim >= 3 and kv.shape[0] == 2:
         return int(kv.shape[2])
-    if kv.ndim >= 3 and kv.shape[1] == 2:
-        return int(kv.shape[2])
     return int(kv.shape[1])
+
+
+def _per_token_shape(kv: torch.Tensor) -> tuple[int, ...]:
+    """Trailing dims for one decode token in batched D2H scratch."""
+    if _kv_layout_blocks_first(kv):
+        return tuple(kv[0, :, 0].shape)
+    if kv.shape[0] == 2:
+        return tuple(kv[0, 0, 0].shape)
+    return tuple(kv[0, 0].shape)
 
 
 def _kv_to_delta_flat(kv: torch.Tensor) -> torch.Tensor:
@@ -56,7 +77,7 @@ def _kv_to_delta_flat(kv: torch.Tensor) -> torch.Tensor:
     if kv.shape[0] == 2:
         nb, ps = kv.shape[1], kv.shape[2]
         return kv.reshape(2, nb * ps, -1)
-    if kv.ndim >= 3 and kv.shape[1] == 2:
+    if _kv_layout_blocks_first(kv):
         nb, ps = kv.shape[0], kv.shape[2]
         return kv.permute(1, 0, 2, *range(3, kv.ndim)).reshape(2, nb * ps, -1)
     nb, ps = kv.shape[0], kv.shape[1]
@@ -319,14 +340,20 @@ class CpuKvTable:
         if sync_compute:
             stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
-            if not _fake_transfer_enabled():
-                self._gather_n_tokens_to_scratch(
-                    kv_gpu, gpu_scratch, phys_gpu, off_gpu, n
-                )
+            # GPU-side gather (device-to-device) is real compute, NOT a PCIe
+            # transfer — keep it under fake so the upper bound is apples-to-
+            # apples (infinite *bandwidth*, not free gather).
+            self._gather_n_tokens_to_scratch(
+                kv_gpu, gpu_scratch, phys_gpu, off_gpu, n
+            )
             if snap_ev is not None:
                 snap_ev.record(stream)
             if not _fake_transfer_enabled():
-                if cpu_scratch.shape[0] == 2:
+                # The gpu_scratch -> cpu_scratch copy is the actual D2H bus
+                # transfer; this is the only thing infinite bandwidth removes.
+                if _kv_layout_blocks_first(cpu_scratch):
+                    cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
+                elif cpu_scratch.shape[0] == 2:
                     cpu_scratch[:, :n].copy_(
                         gpu_scratch[:, :n], non_blocking=True
                     )
@@ -334,9 +361,8 @@ class CpuKvTable:
                     cpu_scratch[:n].copy_(gpu_scratch[:n], non_blocking=True)
             save_ev.record(stream)
 
-        if _fake_transfer_enabled():
-            return
-
+        # Host-side scatter (cpu_scratch -> cpu_buf) is a host memory write,
+        # not a PCIe transfer — keep it under fake too.
         def _finish_scatter() -> None:
             save_ev.synchronize()
             self._scatter_batched_n1_to_cpu_buf(
@@ -362,14 +388,14 @@ class CpuKvTable:
         off: torch.Tensor,
         n: int,
     ) -> None:
-        if _fake_transfer_enabled():
-            return
-        if kv_gpu.shape[0] == 2:
-            gathered = kv_gpu[:, phys, off]
-            gpu_scratch[:, :n].copy_(gathered, non_blocking=True)
-        elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
+        # Device-to-device gather: real GPU compute, kept under fake transfer
+        # (infinite bandwidth removes only the host<->device bus copy).
+        if _kv_layout_blocks_first(kv_gpu):
             gathered = kv_gpu[phys, :, off]
             gpu_scratch[:n].copy_(gathered, non_blocking=True)
+        elif kv_gpu.shape[0] == 2:
+            gathered = kv_gpu[:, phys, off]
+            gpu_scratch[:, :n].copy_(gathered, non_blocking=True)
         else:
             gathered = kv_gpu[phys, off]
             gpu_scratch[:n].copy_(gathered, non_blocking=True)
@@ -384,10 +410,10 @@ class CpuKvTable:
     ) -> None:
         blocks = tbl_blocks[:n].long()
         off_slice = offs[:n].long()
-        if cpu_buf.shape[0] == 2:
-            cpu_buf[:, blocks, off_slice] = cpu_scratch[:, :n]
-        elif cpu_buf.ndim >= 3 and cpu_buf.shape[1] == 2:
+        if _kv_layout_blocks_first(cpu_buf):
             cpu_buf[blocks, :, off_slice] = cpu_scratch[:n]
+        elif cpu_buf.shape[0] == 2:
+            cpu_buf[:, blocks, off_slice] = cpu_scratch[:, :n]
         else:
             cpu_buf[blocks, off_slice] = cpu_scratch[:n]
 
@@ -400,10 +426,10 @@ class CpuKvTable:
     ) -> None:
         if _fake_transfer_enabled():
             return
-        if kv_gpu.shape[0] == 2:
-            delta_scratch.copy_(kv_gpu[:, phys, off], non_blocking=True)
-        elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
+        if _kv_layout_blocks_first(kv_gpu):
             delta_scratch.copy_(kv_gpu[phys, :, off], non_blocking=True)
+        elif kv_gpu.shape[0] == 2:
+            delta_scratch.copy_(kv_gpu[:, phys, off], non_blocking=True)
         else:
             delta_scratch.copy_(kv_gpu[phys, off], non_blocking=True)
 
@@ -416,10 +442,10 @@ class CpuKvTable:
     ) -> None:
         if _fake_transfer_enabled():
             return
-        if cpu_buf.shape[0] == 2:
-            cpu_buf[:, tbl_block, off].copy_(delta_scratch, non_blocking=True)
-        elif cpu_buf.ndim >= 3 and cpu_buf.shape[1] == 2:
+        if _kv_layout_blocks_first(cpu_buf):
             cpu_buf[tbl_block, :, off].copy_(delta_scratch, non_blocking=True)
+        elif cpu_buf.shape[0] == 2:
+            cpu_buf[:, tbl_block, off].copy_(delta_scratch, non_blocking=True)
         else:
             cpu_buf[tbl_block, off].copy_(delta_scratch, non_blocking=True)
 
@@ -465,12 +491,12 @@ class CpuKvTable:
     ) -> None:
         if _fake_transfer_enabled():
             return
-        if kv_gpu.shape[0] == 2:
+        if _kv_layout_blocks_first(kv_gpu):
+            cpu_buf[tbl_block, :, off].copy_(kv_gpu[phys, :, off], non_blocking=True)
+        elif kv_gpu.shape[0] == 2:
             cpu_buf[:, tbl_block, off].copy_(
                 kv_gpu[:, phys, off], non_blocking=True
             )
-        elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
-            cpu_buf[tbl_block, :, off].copy_(kv_gpu[phys, :, off], non_blocking=True)
         else:
             cpu_buf[tbl_block, off].copy_(kv_gpu[phys, off], non_blocking=True)
 
@@ -554,10 +580,10 @@ class CpuKvTable:
         if (table_slots < 0).any():
             return None
 
-        if kv_gpu.shape[0] == 2:
-            delta = kv_gpu[:, gpu_blocks, offsets]
-        elif kv_gpu.ndim >= 3 and kv_gpu.shape[1] == 2:
+        if _kv_layout_blocks_first(kv_gpu):
             delta = kv_gpu[gpu_blocks, :, offsets]
+        elif kv_gpu.shape[0] == 2:
+            delta = kv_gpu[:, gpu_blocks, offsets]
         else:
             delta = kv_gpu[gpu_blocks, offsets]
 
