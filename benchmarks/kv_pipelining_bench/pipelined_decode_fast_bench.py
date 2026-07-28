@@ -121,7 +121,7 @@ def clamp_gpu_mem_for_pipelined_window_buffers(ns: argparse.Namespace) -> None:
     if getattr(ns, "no_pipelined_gpu_mem_cap", False):
         return
     modes = ns.modes or []
-    if "pipelined" not in modes:
+    if "pipelined" not in modes and "hybrid" not in modes:
         return
     override = getattr(ns, "pipelined_gpu_mem_cap", None)
     if getattr(ns, "inflate_kv_pool", False) and override is None:
@@ -344,6 +344,11 @@ def build_parser() -> argparse.ArgumentParser:
         "if --with-baseline",
     )
     p.add_argument("--k-window", type=int, default=6, dest="k_window")
+    p.add_argument("--hybrid-b-hbm-max", type=int, default=49)
+    p.add_argument("--hybrid-seq-tokens", type=int, default=512)
+    p.add_argument("--hybrid-pcie-gbps", type=float, default=25.1)
+    p.add_argument("--hybrid-b-tok", type=int, default=131072)
+    p.add_argument("--hybrid-itl-ms", type=float, default=0.0)
     p.add_argument(
         "--enforce-eager",
         dest="enforce_eager",
@@ -400,6 +405,16 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Request ignore_eos so fixed decode lengths are honored (default: true)",
+    )
+    p.add_argument(
+        "--prefix-caching-on",
+        dest="prefix_caching_on",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Leave vLLM prefix caching enabled (default: on). Use "
+            "--no-prefix-caching-on to disable on both baseline and pipelined."
+        ),
     )
     p.add_argument(
         "--itl-steady-skip",
@@ -460,6 +475,12 @@ def launch_server(
     max_num_batched_tokens: int | None,
     log_file: str | None,
     inflate_kv_pool: bool = False,
+    prefix_caching_on: bool = True,
+    hybrid_b_hbm_max: int = 49,
+    hybrid_seq_tokens: int = 512,
+    hybrid_pcie_gbps: float = 25.1,
+    hybrid_b_tok: int = 131072,
+    hybrid_itl_ms: float = 0.0,
 ) -> subprocess.Popen:
     cmd = [
         sys.executable,
@@ -484,13 +505,19 @@ def launch_server(
     if max_num_batched_tokens is not None:
         cmd += ["--max-num-batched-tokens", str(max_num_batched_tokens)]
 
-    if mode == "baseline":
+    if mode == "vanilla":
+        # Plain vLLM: NO kv-transfer-config -> no connector -> CUDA graphs allowed
+        # (real prefill + decode). Used to price eager-vs-graph host launch cost.
+        pass
+    elif mode == "baseline":
         kv_config = {
             "kv_connector": "DecodeBenchConnector",
             "kv_role": "kv_both",
             "kv_connector_extra_config": {"fill_mean": 0.015, "fill_std": 0.0},
         }
         cmd += ["--kv-transfer-config", json.dumps(kv_config)]
+        if not prefix_caching_on:
+            cmd.append("--no-enable-prefix-caching")
     elif mode == "pipelined":
         kv_config = {
             "kv_connector": "PipelinedDecodeBenchConnector",
@@ -504,10 +531,43 @@ def launch_server(
             str(k_window),
             "--kv-transfer-config",
             json.dumps(kv_config),
-            "--no-enable-prefix-caching",
         ]
+        if not prefix_caching_on:
+            cmd.append("--no-enable-prefix-caching")
         if inflate_kv_pool:
             cmd.append("--inflate-kv-pool")
+    elif mode == "hybrid":
+        kv_config = {
+            "kv_connector": "PipelinedDecodeBenchConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"fill_mean": 0.015, "fill_std": 0.0},
+        }
+        hybrid_b_hbm = int(hybrid_b_hbm_max)
+        hybrid_seq = int(hybrid_seq_tokens)
+        hybrid_pcie = float(hybrid_pcie_gbps)
+        hybrid_b_tok_val = int(hybrid_b_tok)
+        hybrid_itl = float(hybrid_itl_ms)
+        cmd += [
+            "--enable-kv-pipelining",
+            "--kv-k-window",
+            str(k_window),
+            "--kv-transfer-config",
+            json.dumps(kv_config),
+            "--enable-transfer-aware-admission",
+            "--enable-hybrid-kv-tiers",
+            "--hybrid-b-hbm-max",
+            str(hybrid_b_hbm),
+            "--hybrid-seq-tokens",
+            str(hybrid_seq),
+            "--hybrid-pcie-gbps",
+            str(hybrid_pcie),
+            "--hybrid-b-tok",
+            str(hybrid_b_tok_val),
+        ]
+        if hybrid_itl > 0:
+            cmd += ["--hybrid-itl-ms", str(hybrid_itl)]
+        if not prefix_caching_on:
+            cmd.append("--no-enable-prefix-caching")
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -562,6 +622,12 @@ def run_mode(ns: argparse.Namespace, mode: str, result_dir: Path) -> dict[str, A
         inflate_kv_pool=bool(
             getattr(ns, "inflate_kv_pool", False) and mode == "pipelined"
         ),
+        prefix_caching_on=bool(getattr(ns, "prefix_caching_on", True)),
+        hybrid_b_hbm_max=int(getattr(ns, "hybrid_b_hbm_max", 49)),
+        hybrid_seq_tokens=int(getattr(ns, "hybrid_seq_tokens", 512)),
+        hybrid_pcie_gbps=float(getattr(ns, "hybrid_pcie_gbps", 25.1)),
+        hybrid_b_tok=int(getattr(ns, "hybrid_b_tok", 131072)),
+        hybrid_itl_ms=float(getattr(ns, "hybrid_itl_ms", 0.0)),
     )
 
     abort_mem = threading.Event()
@@ -734,6 +800,7 @@ def run_benchmark(ns: argparse.Namespace) -> dict[str, Any]:
         "memory_kill_server_on_abort": getattr(ns, "memory_kill_server_on_abort", True),
         "concurrent_itl_throughput": getattr(ns, "concurrent_itl_throughput", True),
         "skip_isolated_latency": getattr(ns, "skip_isolated_latency", False),
+        "prefix_caching_on": getattr(ns, "prefix_caching_on", True),
     }
     try:
         rev = subprocess.run(
@@ -810,6 +877,10 @@ def main() -> None:
         f"(capacity mode; --no-inflate-kv-pool for HBM-saving debug runs)"
     )
     print(f"  Enforce eager  : {ns.enforce_eager}")
+    print(
+        f"  Prefix caching : {getattr(ns, 'prefix_caching_on', True)} "
+        f"(--no-prefix-caching-on to disable both arms)"
+    )
     print(f"  GPU mem util   : {ns.gpu_memory_utilization:.4f}")
     print(f"  Result dir     : {ns.result_dir}")
 

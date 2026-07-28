@@ -728,6 +728,26 @@ def _run_throughput_test(
     }
 
 
+def _maybe_profile(port: int, action: str) -> None:
+    """Diagnostic: wrap the timed concurrent wave with vLLM torch-profiler.
+
+    Enabled only when env ``KVPIPE_PROFILE_WAVE=1`` (server must be launched with
+    ``VLLM_TORCH_PROFILER_DIR`` set). ``action`` is "start" or "stop". Failures are
+    swallowed so a missing profiler endpoint never breaks the benchmark.
+    """
+    if os.environ.get("KVPIPE_PROFILE_WAVE", "0") != "1":
+        return
+    path = "/start_profile" if action == "start" else "/stop_profile"
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=b"", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            resp.read()
+    except Exception as e:  # noqa: BLE001
+        print(f"  [profile] {action} failed: {str(e)[:120]}")
+
+
 def _run_throughput_test_streaming(
     port: int,
     model_name: str,
@@ -749,6 +769,7 @@ def _run_throughput_test_streaming(
     """
     prompt = _generate_prompt(input_len)
     results: list[dict[str, Any]] = []
+    _maybe_profile(port, "start")
     t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = [
@@ -767,6 +788,7 @@ def _run_throughput_test_streaming(
         for f in as_completed(futures):
             results.append(f.result())
     elapsed = time.monotonic() - t0
+    _maybe_profile(port, "stop")
 
     oks = [r for r in results if r.get("success")]
     successes = len(oks)

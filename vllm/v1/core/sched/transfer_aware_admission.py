@@ -45,6 +45,7 @@ class TransferAwareAdmissionController:
         "_predictor",
         "_predictor_loaded",
         "_predictor_load_error",
+        "_req_tier",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig") -> None:
@@ -56,6 +57,17 @@ class TransferAwareAdmissionController:
         self._predictor: Optional[object] = None
         self._predictor_loaded: bool = False
         self._predictor_load_error: Optional[str] = None
+        self._req_tier: dict[str, str] = {}
+
+    def get_req_tier(self, req_id: str) -> str | None:
+        return self._req_tier.get(req_id)
+
+    def release_req_tier(self, req_id: str) -> None:
+        self._req_tier.pop(req_id, None)
+
+    def release_finished(self, finished_req_ids: list[str]) -> None:
+        for req_id in finished_req_ids:
+            self.release_req_tier(req_id)
 
     # ------------------------------------------------------- step lifecycle
 
@@ -95,6 +107,11 @@ class TransferAwareAdmissionController:
         if not cfg.enable_transfer_aware_admission:
             return True, "disabled"
 
+        if cfg.enable_hybrid_kv_tiers:
+            return self._should_admit_hybrid(
+                request=request, running_requests=running_requests
+            )
+
         # SLO budget unset -> stub. Preserves the pre-Phase-4 contract.
         slo_ms = float(cfg.transfer_aware_slo_p99_itl_ms or 0.0)
         if slo_ms <= 0:
@@ -128,6 +145,66 @@ class TransferAwareAdmissionController:
         if predicted_p99 > slo_ms:
             return False, "predicted_slo_breach"
         return True, "ok"
+
+    def _should_admit_hybrid(
+        self,
+        *,
+        request: "Request",
+        running_requests: "list[Request]",
+    ) -> tuple[bool, str]:
+        from vllm.v1.hybrid_kv_roofline import (
+            bytes_per_token,
+            effective_pcie_gbps,
+            max_offload_batch,
+            max_offload_from_env,
+        )
+
+        cfg = self.scheduler_config
+        hbm_max = int(cfg.hybrid_b_hbm_max or 0)
+        hbm_count = sum(
+            1 for r in running_requests if self._req_tier.get(r.request_id) == "hbm"
+        )
+        cpu_count = sum(
+            1 for r in running_requests if self._req_tier.get(r.request_id) == "cpu"
+        )
+        # Requests without tier yet (legacy) count as cpu for safety.
+        untagged = sum(
+            1 for r in running_requests if r.request_id not in self._req_tier
+        )
+        cpu_count += untagged
+
+        if hbm_max > 0 and hbm_count < hbm_max:
+            self._req_tier[request.request_id] = "hbm"
+            return True, "hybrid_hbm"
+
+        itl_ms = float(cfg.hybrid_itl_ms or 0.0)
+        if itl_ms <= 0:
+            predictor = self._maybe_load_predictor()
+            if predictor is not None:
+                try:
+                    itl_ms = float(predictor.predict_p99_itl_ms(len(running_requests) + 1))
+                except Exception:
+                    itl_ms = 16.0
+            else:
+                itl_ms = 16.0
+
+        b_tok = int(cfg.hybrid_b_tok or 0)
+        if b_tok <= 0:
+            b_tok = bytes_per_token(
+                num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2
+            )
+        x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
+        seq_tokens = int(cfg.hybrid_seq_tokens or 512)
+        off_max = max_offload_batch(seq_tokens, itl_ms, x_eff, b_tok)
+        env_cap = max_offload_from_env()
+        if env_cap is not None:
+            off_max = min(off_max, env_cap)
+
+        if cpu_count < off_max:
+            self._req_tier[request.request_id] = "cpu"
+            return True, "hybrid_cpu"
+
+        return False, "hybrid_offload_cap"
 
     # ------------------------------------------------------ telemetry hooks
 

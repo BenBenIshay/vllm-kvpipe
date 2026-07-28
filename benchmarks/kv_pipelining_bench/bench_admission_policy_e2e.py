@@ -100,34 +100,64 @@ def _launch_server(
     baseline_compute_json: str,
     injection_jsonl: str,
     extra_env: dict[str, str] | None,
+    hybrid_tiers: bool = False,
 ) -> subprocess.Popen:
     """Start a vLLM API server with feature ON; admission policy optional."""
-    kv_config = {
-        "kv_connector": "PrefillStagingPipelinedConnector",
-        "kv_role": "kv_both",
-    }
-    cmd = [
-        python, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", model,
-        "--port", str(port),
-        "--max-model-len", str(max_model_len),
-        "--gpu-memory-utilization", str(gpu_mem_util),
-        "--max-num-seqs", str(max_num_seqs),
-        "--disable-log-requests",
-        "--dtype", "auto",
-        "--enforce-eager",
-        "--enable-kv-pipelining",
-        "--kv-k-window", str(k_window),
-        "--free-original-kv-cache",
-        "--kv-transfer-config", json.dumps(kv_config),
-        "--no-enable-prefix-caching",
-    ]
+    if hybrid_tiers:
+        kv_config = {
+            "kv_connector": "PipelinedDecodeBenchConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"fill_mean": 0.015, "fill_std": 0.0},
+        }
+        cmd = [
+            python, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", model,
+            "--port", str(port),
+            "--max-model-len", str(max_model_len),
+            "--gpu-memory-utilization", str(gpu_mem_util),
+            "--max-num-seqs", str(max_num_seqs),
+            "--disable-log-requests",
+            "--dtype", "auto",
+            "--enforce-eager",
+            "--enable-kv-pipelining",
+            "--kv-k-window", str(k_window),
+            "--kv-transfer-config", json.dumps(kv_config),
+        ]
+    else:
+        kv_config = {
+            "kv_connector": "PrefillStagingPipelinedConnector",
+            "kv_role": "kv_both",
+        }
+        cmd = [
+            python, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", model,
+            "--port", str(port),
+            "--max-model-len", str(max_model_len),
+            "--gpu-memory-utilization", str(gpu_mem_util),
+            "--max-num-seqs", str(max_num_seqs),
+            "--disable-log-requests",
+            "--dtype", "auto",
+            "--enforce-eager",
+            "--enable-kv-pipelining",
+            "--kv-k-window", str(k_window),
+            "--free-original-kv-cache",
+            "--kv-transfer-config", json.dumps(kv_config),
+            "--no-enable-prefix-caching",
+        ]
     if enable_admission:
         cmd += [
             "--enable-transfer-aware-admission",
             "--transfer-aware-slo-p99-itl-ms", str(slo_p99_itl_ms),
             "--transfer-aware-predictor-csv", predictor_csv,
         ]
+        if hybrid_tiers:
+            cmd += [
+                "--enable-hybrid-kv-tiers",
+                "--hybrid-b-hbm-max", "49",
+                "--hybrid-seq-tokens", "512",
+                "--hybrid-pcie-gbps", "25.1",
+                "--hybrid-b-tok", "131072",
+            ]
         if predictor_model:
             cmd += ["--transfer-aware-predictor-model", predictor_model]
         if admission_policy:
@@ -432,15 +462,17 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _arm_admission_config(arm: str, args: argparse.Namespace) -> tuple[bool, str]:
-    """Return (enable_admission, transfer_aware_admission_policy) for an arm name."""
+def _arm_admission_config(arm: str, args: argparse.Namespace) -> tuple[bool, str, bool]:
+    """Return (enable_admission, policy, hybrid_tiers) for an arm name."""
     if arm == "stock":
-        return False, "combined"
+        return False, "combined", False
     if arm == "policy":
-        return True, "combined"
+        return True, "combined", False
+    if arm == "hybrid":
+        return True, "combined", True
     if arm == "mechanistic":
-        return True, "mechanistic"
-    raise ValueError(f"Unknown arm {arm!r}; use stock, policy, or mechanistic")
+        return True, "mechanistic", False
+    raise ValueError(f"Unknown arm {arm!r}; use stock, policy, hybrid, or mechanistic")
 
 
 def main() -> None:
@@ -452,7 +484,11 @@ def main() -> None:
     sys.path.insert(0, str(_THIS))
     from hf_env import apply_hf_token_from_user_file  # noqa: WPS433
     apply_hf_token_from_user_file()
-    extra_env: dict[str, str] = {"HF_HUB_CACHE": "/data/ben/huggingface"}
+    extra_env: dict[str, str] = {
+        "HF_HUB_CACHE": os.environ.get(
+            "HF_HUB_CACHE", "/mnt/beegfs/benishay/huggingface"
+        ),
+    }
     if "HF_TOKEN" in os.environ:
         extra_env["HF_TOKEN"] = os.environ["HF_TOKEN"]
 
@@ -463,7 +499,7 @@ def main() -> None:
     raw_rows: list[dict] = []
 
     for arm in args.arms:
-        enable_adm, adm_policy = _arm_admission_config(arm, args)
+        enable_adm, adm_policy, hybrid_tiers = _arm_admission_config(arm, args)
         port = _free_port(start=args.port_base)
         log_path = args.out / f"server_{arm}.log"
         proc = _launch_server(
@@ -478,6 +514,7 @@ def main() -> None:
             baseline_compute_json=str(args.baseline_compute_json),
             injection_jsonl=str(args.injection_jsonl),
             extra_env=extra_env,
+            hybrid_tiers=hybrid_tiers,
         )
         try:
             print(f"\n=== arm={arm} | port={port} | predictor_csv={args.predictor_csv} "

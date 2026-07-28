@@ -238,6 +238,9 @@ class SchedulerOutput:
     # EC Cache Connector metadata
     ec_connector_metadata: ECConnectorMetadata | None = None
 
+    # Hybrid tiered KV: req_id -> "hbm" | "cpu" (empty when hybrid tiers off).
+    req_kv_tiers: dict[str, str] | None = None
+
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

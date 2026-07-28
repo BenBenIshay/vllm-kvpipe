@@ -777,6 +777,16 @@ class Scheduler(SchedulerInterface):
         self.prev_step_scheduled_req_ids.clear()
         self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
 
+        self.transfer_aware_admission.release_finished(list(self.finished_req_ids))
+
+        req_kv_tiers: dict[str, str] | None = None
+        if self.scheduler_config.enable_hybrid_kv_tiers:
+            req_kv_tiers = {}
+            for req_id in num_scheduled_tokens:
+                tier = self.transfer_aware_admission.get_req_tier(req_id)
+                if tier is not None:
+                    req_kv_tiers[req_id] = tier
+
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,
@@ -792,6 +802,7 @@ class Scheduler(SchedulerInterface):
             # the previous and the current steps.
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
+            req_kv_tiers=req_kv_tiers,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:

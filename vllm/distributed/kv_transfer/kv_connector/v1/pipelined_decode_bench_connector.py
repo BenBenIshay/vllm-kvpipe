@@ -91,6 +91,9 @@ class PipelinedDecodeBenchConnectorMetadata(KVConnectorMetadata):
     decode_block_runs: list[tuple[int, int]] = field(default_factory=list)
     decode_physical_block_ids: list[int] = field(default_factory=list)
     finished_req_ids: list[str] = field(default_factory=list)
+    req_kv_tiers: dict[str, str] = field(default_factory=dict)
+    cpu_decode_req_ids: list[str] = field(default_factory=list)
+    hbm_decode_req_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +125,20 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         # --- config knobs ---
         cache_cfg = vllm_config.cache_config
+        sched_cfg = vllm_config.scheduler_config
+        self._hybrid_tiers = bool(
+            getattr(sched_cfg, "enable_hybrid_kv_tiers", False)
+        )
         # This connector is used only for dummy decode-only P/D benchmarking.
         # Treat it as decode-only even if the derived cache flag is not visible
-        # yet during early engine construction.
-        self._decode_only = True
+        # yet during early engine construction — unless hybrid tiers keep full
+        # HBM-resident KV for the HBM cohort.
+        self._decode_only = not self._hybrid_tiers
         self._block_size = cache_cfg.block_size
         self._init_direct_k_window(
-            vllm_config, k_window=int(getattr(cache_cfg, "kv_k_window", 4)), decode_only=True
+            vllm_config,
+            k_window=int(getattr(cache_cfg, "kv_k_window", 4)),
+            decode_only=self._decode_only,
         )
 
         # Fill parameters (from extra config)
@@ -157,6 +167,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._decode_block_runs: list[tuple[int, int]] = []
         self._decode_physical_block_ids: list[int] = []
         self._worker_registered_reqs: set[str] = set()
+        self._hbm_tier_req_ids: set[str] = set()
 
         # Block inflation (decode-only P/D mode)
         self._num_blocks_pipelined: int | None = None
@@ -401,6 +412,11 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         self._forward_context = forward_context
         self._has_decode_work = metadata.has_decode_work
+        self._hybrid_hbm_only_decode = (
+            self._hybrid_tiers
+            and metadata.has_decode_work
+            and not metadata.cpu_decode_req_ids
+        )
         self._decode_max_seq_len = metadata.decode_max_seq_len
         self._decode_max_block_id = metadata.decode_max_block_id
         self._decode_block_runs = metadata.decode_block_runs
@@ -410,6 +426,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             if self._worker_state is not None:
                 self._worker_state.release_req_blocks(req_id)
             self._worker_registered_reqs.discard(req_id)
+            self._hbm_tier_req_ids.discard(req_id)
 
         phys_for_step = self._decode_physical_block_ids or [
             b
@@ -424,7 +441,19 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             self._fill_kv_on_gpu(metadata.reqs_to_fill)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
-            self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
+            if self._hybrid_tiers:
+                cpu_fills = {
+                    req_id: fill
+                    for req_id, fill in metadata.reqs_to_fill.items()
+                    if metadata.req_kv_tiers.get(req_id, "cpu") == "cpu"
+                }
+                for req_id in metadata.reqs_to_fill:
+                    if metadata.req_kv_tiers.get(req_id) == "hbm":
+                        self._hbm_tier_req_ids.add(req_id)
+                if cpu_fills:
+                    self._stage_all_layers_to_cpu(cpu_fills)
+            else:
+                self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
             t2 = time.perf_counter()
             self._total_fill_time += t1 - t0
             self._total_stage_time += t2 - t1
@@ -438,6 +467,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         # --- Phase 2: Bind window buffers + prefetch -----------------------
         if not metadata.has_decode_work:
+            return
+
+        if self._hybrid_hbm_only_decode:
             return
 
         if prof is not None:
@@ -499,6 +531,8 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             prof.fwd.start_load_host_ms += (time.perf_counter() - t_start) * 1000.0
 
     def wait_for_layer_load(self, layer_name: str) -> None:
+        if getattr(self, "_hybrid_hbm_only_decode", False):
+            return
         if self._worker_state is None:
             return
         prof = self._hook_profile
@@ -548,6 +582,8 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         **kwargs: Any,
     ) -> None:
         if self._worker_state is None or not self._has_decode_work:
+            return
+        if getattr(self, "_hybrid_hbm_only_decode", False):
             return
         slot_mapping = getattr(attn_metadata, "slot_mapping", None)
         num_actual_tokens = getattr(attn_metadata, "num_actual_tokens", None)
@@ -864,6 +900,17 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             scheduler_output.scheduled_spec_decode_tokens.keys()
         )
         active_decode_req_ids = sorted(decode_req_ids) if decode_only else []
+        req_kv_tiers = dict(scheduler_output.req_kv_tiers or {})
+        if req_kv_tiers:
+            cpu_decode_req_ids = [
+                r for r in active_decode_req_ids if req_kv_tiers.get(r, "cpu") == "cpu"
+            ]
+            hbm_decode_req_ids = [
+                r for r in active_decode_req_ids if req_kv_tiers.get(r) == "hbm"
+            ]
+        else:
+            cpu_decode_req_ids = list(active_decode_req_ids)
+            hbm_decode_req_ids = []
         has_decode_work = len(active_decode_req_ids) > 0
 
         # When there are fills, the FIRST step has both new reqs (fill) and
@@ -911,7 +958,10 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         ] if decode_block_runs else []
 
         layers_to_prefetch: list[str] = []
-        if self._k_window > 0 and has_work and has_decode_work:
+        pipelined_decode = (
+            self._k_window > 0 and has_work and len(cpu_decode_req_ids) > 0
+        )
+        if pipelined_decode:
             layers_to_prefetch = self._layer_names[: self._k_window]
 
         return PipelinedDecodeBenchConnectorMetadata(
@@ -925,6 +975,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             decode_block_runs=decode_block_runs,
             decode_physical_block_ids=decode_physical_block_ids,
             finished_req_ids=list(scheduler_output.finished_req_ids),
+            req_kv_tiers=req_kv_tiers,
+            cpu_decode_req_ids=cpu_decode_req_ids,
+            hbm_decode_req_ids=hbm_decode_req_ids,
         )
 
     def request_finished(

@@ -1095,7 +1095,16 @@ def _get_pipelining_block_inflation(
     # decode_only_pipelining-derived cache flag is visible here.  The dummy P/D
     # connector is decode-only by construction, so infer the intended rolling-K
     # layout from the connector too.
-    if connector_name == "PipelinedDecodeBenchConnector":
+    hybrid_tiers = bool(
+        getattr(vllm_config.scheduler_config, "enable_hybrid_kv_tiers", False)
+    )
+    if hybrid_tiers:
+        logger.info(
+            "KV pipelining: hybrid tiers enabled — full HBM KV layout; "
+            "CPU-tier transfers via CpuKvTable only."
+        )
+        return False, 0, False
+    if connector_name == "PipelinedDecodeBenchConnector" and not hybrid_tiers:
         decode_only = True
     enable_pip = bool(getattr(cache_cfg, "enable_kv_pipelining", False))
     k_window = int(getattr(cache_cfg, "kv_k_window", 0))

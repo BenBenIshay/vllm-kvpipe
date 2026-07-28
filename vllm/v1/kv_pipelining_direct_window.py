@@ -340,7 +340,7 @@ class DirectKWindowMixin:
             if _kv_layout_blocks_first(main_t):
                 token_shape = main_t[0, :, 0].shape
             elif main_t.shape[0] == 2:
-                token_shape = main_t[0, 0, 0].shape
+                token_shape = main_t[:, 0, 0].shape
             else:
                 token_shape = main_t[0, 0].shape
             scratch = torch.empty(
