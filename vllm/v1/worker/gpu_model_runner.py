@@ -915,6 +915,7 @@ class GPUModelRunner(
                 num_computed_tokens=new_req_data.num_computed_tokens,
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
+                kv_tier=(scheduler_output.req_kv_tiers or {}).get(req_id, "hbm"),
             )
             self.requests[req_id] = req_state
 

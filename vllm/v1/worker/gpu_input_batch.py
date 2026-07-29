@@ -49,6 +49,11 @@ class CachedRequestState:
     # Used when both async_scheduling and spec_decode are enabled.
     prev_num_draft_len: int = 0
 
+    # Hybrid tiered-KV: "hbm" (full KV resident in HBM) or "cpu" (rolling
+    # K-window, KV streamed from CPU). Defaults to "hbm" so non-hybrid paths
+    # (vanilla, all-HBM) are unaffected.
+    kv_tier: str = "hbm"
+
     # for pooling models
     pooling_params: PoolingParams | None = None
     pooling_states: PoolingStates | None = None
@@ -107,6 +112,10 @@ class InputBatch:
 
         self._req_ids: list[str | None] = []
         self.req_id_to_index: dict[str, int] = {}
+        # Hybrid tiered-KV: per-request "hbm"|"cpu" tier, keyed by req_id so it
+        # is invariant under slot swap_states()/condense() (no slot-indexed
+        # array to keep coherent). Default tier is "hbm".
+        self.kv_tier_by_req_id: dict[str, str] = {}
 
         # TODO(woosuk): This buffer could be too large if max_model_len is big.
         # Find a way to reduce the CPU memory usage.
@@ -318,6 +327,7 @@ class InputBatch:
             self.spec_token_ids[req_index].clear()
 
         self.req_id_to_index[req_id] = req_index
+        self.kv_tier_by_req_id[req_id] = getattr(request, "kv_tier", "hbm")
 
         # Copy the prompt token ids and output token ids.
         num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
@@ -480,6 +490,7 @@ class InputBatch:
         if req_index is None:
             return None
 
+        self.kv_tier_by_req_id.pop(req_id, None)
         self.batch_update_builder.removed_append(req_index)
         self._req_ids[req_index] = None
         self.req_output_token_ids[req_index] = None
