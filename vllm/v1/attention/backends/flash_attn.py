@@ -633,13 +633,20 @@ class FlashAttentionImpl(AttentionImpl):
             v_cache: torch.Tensor,
             bt: torch.Tensor,
             seq: torch.Tensor,
+            pre_sliced: bool = False,
         ) -> None:
             m = idx.numel()
             if m == 0:
                 return
             q_sub = q.index_select(0, idx)
-            seq_sub = seq.index_select(0, idx)
-            bt_sub = bt.index_select(0, idx)
+            if pre_sliced:
+                # bt/seq are already in idx (=cpu) order (e.g. a compacted CPU
+                # block table); use directly, only the query is gathered.
+                seq_sub = seq
+                bt_sub = bt
+            else:
+                seq_sub = seq.index_select(0, idx)
+                bt_sub = bt.index_select(0, idx)
             cu_q = torch.arange(0, m + 1, device=q.device, dtype=torch.int32)
             out_sub = torch.empty(
                 (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
@@ -670,21 +677,38 @@ class FlashAttentionImpl(AttentionImpl):
 
         # HBM cohort -> resident full-N pool (== the R0 path).
         _tier_pass(hbm_idx, key_cache, value_cache, block_table, seqused_k)
-        # CPU cohort -> Step 1: same resident pool (bitwise-equal check). Step 2
-        # swaps to the rolling region carried on `split`.
+
+        # CPU cohort. Three modes, in priority order:
+        #  (rung-c) rolling_from_resident: gather the CPU cohort's resident
+        #    blocks into a COMPACTED [0:W) layout and attend with the remapped
+        #    block table -> validates the compacted dual-region attention math.
+        #  (rung-d) rolling_kv_caches: per-layer rolling slot streamed from host.
+        #  (step 1) neither: same resident pool (bitwise-equal to single pass).
         rk = None
         if split.rolling_kv_caches is not None:
             rk = split.rolling_kv_caches.get(getattr(layer, "layer_name", None))
-        if rk is not None and split.rolling_block_table is not None:
+        if (
+            split.rolling_from_resident
+            and split.cpu_sorted_ids is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            kc = key_cache.index_select(0, split.cpu_sorted_ids)
+            vc = value_cache.index_select(0, split.cpu_sorted_ids)
+            _tier_pass(
+                cpu_idx, kc, vc,
+                split.rolling_block_table, split.rolling_seqused_k,
+                pre_sliced=True,
+            )
+        elif rk is not None and split.rolling_block_table is not None:
             r_kc, r_vc = rk.unbind(0)
             _tier_pass(
-                cpu_idx,
-                r_kc,
-                r_vc,
+                cpu_idx, r_kc, r_vc,
                 split.rolling_block_table,
                 split.rolling_seqused_k
                 if split.rolling_seqused_k is not None
                 else seqused_k,
+                pre_sliced=split.rolling_seqused_k is not None,
             )
         else:
             _tier_pass(cpu_idx, key_cache, value_cache, block_table, seqused_k)

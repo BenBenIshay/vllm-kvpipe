@@ -26,8 +26,14 @@ class HybridDecodeSplit:
     cpu_idx: torch.Tensor  # int64, CPU-tier rows
     # Step 2 (optional): CPU cohort reads a separate rolling region.
     rolling_kv_caches: dict[str, torch.Tensor] | None = None  # layer_name -> tensor
-    rolling_block_table: torch.Tensor | None = None
-    rolling_seqused_k: torch.Tensor | None = None
+    rolling_block_table: torch.Tensor | None = None  # [n_cpu, max_blk], cpu_idx order
+    rolling_seqused_k: torch.Tensor | None = None    # [n_cpu], cpu_idx order
+    # Step 2 rung-c (gather-from-resident): the CPU pass gathers its resident
+    # blocks into a compacted layout and attends with rolling_block_table. This
+    # validates the compacted dual-region attention math without needing the
+    # host->rolling streaming or the block-manager saving (those are rung-d).
+    rolling_from_resident: bool = False
+    cpu_sorted_ids: torch.Tensor | None = None  # resident block ids, long, sorted
     meta: dict = field(default_factory=dict)
 
 

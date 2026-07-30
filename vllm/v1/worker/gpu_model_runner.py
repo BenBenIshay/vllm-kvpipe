@@ -824,6 +824,7 @@ class GPUModelRunner(
         num_reqs: int,
         num_tokens_unpadded: int,
         req_kv_tiers: dict[str, str] | None = None,
+        attn_metadata=None,
     ) -> None:
         """Publish this step's HBM/CPU decode-row split for the attention impl.
 
@@ -884,12 +885,61 @@ class GPUModelRunner(
             clear_hybrid_decode_split()
             return
         dev = self.device
-        set_hybrid_decode_split(
-            HybridDecodeSplit(
-                hbm_idx=torch.tensor(hbm_rows, dtype=torch.int64, device=dev),
-                cpu_idx=torch.tensor(cpu_rows, dtype=torch.int64, device=dev),
-            )
+        split = HybridDecodeSplit(
+            hbm_idx=torch.tensor(hbm_rows, dtype=torch.int64, device=dev),
+            cpu_idx=torch.tensor(cpu_rows, dtype=torch.int64, device=dev),
         )
+        # Rung-c: compact the CPU cohort's resident blocks and give the CPU pass
+        # a remapped block table so it attends a compacted [0:W) layout. Proves
+        # the compacted dual-region attention == resident before the rung-d
+        # memory saving (host->rolling stream + block-manager free).
+        if os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
+            self._build_rolling_compaction(split, cpu_rows, attn_metadata, _dbg)
+        set_hybrid_decode_split(split)
+
+    def _build_rolling_compaction(
+        self, split, cpu_rows: list[int], attn_metadata, dbg: bool
+    ) -> None:
+        """Fill split's rung-c compaction fields from the built attn metadata."""
+        import numpy as np
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        sl = getattr(meta0, "seq_lens", None)
+        if bt is None or sl is None:
+            return  # cannot compact without metadata; CPU pass stays on resident
+        dev = self.device
+        block_size = self.cache_config.block_size
+        cpu_idx_t = torch.tensor(cpu_rows, dtype=torch.int64, device=bt.device)
+        bt_cpu = bt.index_select(0, cpu_idx_t).cpu().numpy()   # [n_cpu, max_blk]
+        seq_cpu = sl.index_select(0, cpu_idx_t)                 # [n_cpu] on device
+        seq_np = seq_cpu.cpu().numpy()
+        n_cpu, max_blk = bt_cpu.shape
+        # Valid blocks per row = ceil(seq/block_size); collect their resident ids.
+        n_valid = [int((int(s) + block_size - 1) // block_size) for s in seq_np]
+        all_blocks = sorted({
+            int(bt_cpu[r, j]) for r in range(n_cpu) for j in range(min(n_valid[r], max_blk))
+        })
+        cmap = {b: i for i, b in enumerate(all_blocks)}
+        remapped = np.zeros((n_cpu, max_blk), dtype=np.int32)
+        for r in range(n_cpu):
+            for j in range(min(n_valid[r], max_blk)):
+                remapped[r, j] = cmap[int(bt_cpu[r, j])]
+        split.rolling_from_resident = True
+        split.cpu_sorted_ids = torch.tensor(all_blocks, dtype=torch.int64, device=dev)
+        split.rolling_block_table = torch.from_numpy(remapped).to(dev)
+        split.rolling_seqused_k = seq_cpu.to(dev).to(torch.int32)
+        if dbg:
+            logger.info(
+                "HYBRID rolling compaction: n_cpu=%d W=%d max_blk=%d",
+                n_cpu, len(all_blocks), max_blk,
+            )
 
     # Note: used for model runner override.
     def _init_device_properties(self) -> None:
@@ -3367,7 +3417,8 @@ class GPUModelRunner(
         # VLLM_KVPIPE_HYBRID_TWOPASS=1 and the step is a genuinely mixed pure
         # decode; leaves the standard single-pass path untouched otherwise.
         self._maybe_set_hybrid_decode_split(
-            num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers
+            num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers,
+            attn_metadata,
         )
 
         # Run the model.
