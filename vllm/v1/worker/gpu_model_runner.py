@@ -898,6 +898,29 @@ class GPUModelRunner(
             self._build_rolling_compaction(split, cpu_rows, attn_metadata, _dbg)
         if _rungd:
             self._maybe_setup_rungd(split, _dbg)
+            # rung-d FREE: the CPU cohort's KV is fully host-managed, so skip its
+            # resident write (slot_mapping = -1). This makes the CPU rows'
+            # main-pool blocks unnecessary — the precondition for capping their
+            # allocation (serve-more). Gated separately so the =2 read/write
+            # verify (which references resident) stays valid without it.
+            if (
+                split.rungd
+                and os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+            ):
+                metas = attn_metadata
+                if isinstance(metas, dict):
+                    metas = list(metas.values())
+                elif not isinstance(metas, (list, tuple)):
+                    metas = [metas]
+                seen = set()
+                for m in metas:
+                    sm = getattr(m, "slot_mapping", None)
+                    if sm is None or id(sm) in seen:
+                        continue
+                    seen.add(id(sm))
+                    ci = torch.tensor(cpu_rows, dtype=torch.long, device=sm.device)
+                    ci = ci[ci < sm.shape[0]]
+                    sm.index_fill_(0, ci, -1)
         set_hybrid_decode_split(split)
 
     def _maybe_setup_rungd(self, split, dbg: bool) -> None:
