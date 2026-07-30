@@ -298,11 +298,17 @@ class DirectKWindowMixin:
             total_bytes / (1 << 30),
         )
 
+        # Create the CpuKvTable for decode-only (R1) always, and for hybrid tiers
+        # only when CPU-tier streaming is enabled (B0 resident-only must stay lean
+        # and not pin the large host table).
+        _hybrid_stream = getattr(self, "_hybrid_tiers", False) and getattr(
+            self, "_hybrid_stream_cpu", False
+        )
         if (
             enable_cpu_table
             and self._worker_state is not None
             and self._k_window > 0
-            and self._decode_only
+            and (self._decode_only or _hybrid_stream)
         ):
             table = CpuKvTable.create(
                 kv_caches=kv_caches,

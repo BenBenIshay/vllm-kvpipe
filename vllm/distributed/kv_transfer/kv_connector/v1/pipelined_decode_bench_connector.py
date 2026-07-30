@@ -168,11 +168,14 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._decode_physical_block_ids: list[int] = []
         self._worker_registered_reqs: set[str] = set()
         self._hbm_tier_req_ids: set[str] = set()
-        # Hybrid mixed-batch (Option B) build gate. B0 (False): hybrid mode runs
+        # Hybrid mixed-batch (Option B) build gate. B0 (off): hybrid mode runs
         # resident-only (no CPU-tier streaming) so the mixed step is correct and
-        # crash-free while the streaming + second attention pass are built. B1
-        # flips this on to stream the CPU cohort through the rolling buffers.
-        self._hybrid_stream_cpu: bool = False
+        # crash-free. B1 (VLLM_KVPIPE_HYBRID_STREAM=1) streams the CPU cohort's
+        # KV to CPU and refreshes their resident blocks per layer. Env-gated so
+        # the default stays on the safe B0 path while B1 is validated.
+        self._hybrid_stream_cpu: bool = bool(
+            int(os.environ.get("VLLM_KVPIPE_HYBRID_STREAM", "0"))
+        )
 
         # Block inflation (decode-only P/D mode)
         self._num_blocks_pipelined: int | None = None
