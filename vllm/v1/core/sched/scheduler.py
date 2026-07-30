@@ -744,6 +744,36 @@ class Scheduler(SchedulerInterface):
                     )
                 )
 
+        # Hybrid tiered-KV: measure main-pool block OCCUPANCY by tier. The
+        # rung-c/write-redirect mechanisms (both bitwise-validated) would move
+        # the CPU tier's KV to the rolling region + host, so the blocks the CPU
+        # tier holds here are exactly the main-pool HBM that becomes freeable ->
+        # the measured capacity opportunity. Env-gated; off by default.
+        import os as _os
+        if _os.environ.get("VLLM_KVPIPE_TIER_OCCUPANCY", "0") == "1" and self.running:
+            blk_hbm = blk_cpu = n_hbm = n_cpu = 0
+            for _req in self.running:
+                _rid = _req.request_id
+                try:
+                    _nb = len(self.kv_cache_manager.get_block_ids(_rid)[0])
+                except Exception:
+                    _nb = 0
+                _tier = self.transfer_aware_admission.get_req_tier(_rid) or "hbm"
+                if _tier == "cpu":
+                    blk_cpu += _nb
+                    n_cpu += 1
+                else:
+                    blk_hbm += _nb
+                    n_hbm += 1
+            _bp = getattr(self.kv_cache_manager, "block_pool", None)
+            _free = _bp.get_num_free_blocks() if _bp is not None else -1
+            _total = getattr(_bp, "num_gpu_blocks", -1) if _bp is not None else -1
+            logger.info(
+                "TIER_OCCUPANCY: n_hbm=%d n_cpu=%d blk_hbm=%d blk_cpu=%d "
+                "free=%d total=%d",
+                n_hbm, n_cpu, blk_hbm, blk_cpu, _free, _total,
+            )
+
         # Construct the scheduler output.
         if self.use_v2_model_runner:
             scheduled_new_reqs = scheduled_new_reqs + scheduled_resumed_reqs
