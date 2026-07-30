@@ -583,6 +583,8 @@ class FlashAttentionImpl(AttentionImpl):
         *,
         layer: torch.nn.Module,
         query: torch.Tensor,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
         output: torch.Tensor,
@@ -698,8 +700,21 @@ class FlashAttentionImpl(AttentionImpl):
             _st = split.rungd_streamer
             _ln = getattr(layer, "layer_name", None)
             _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
-            _st.save_layer(_ln)  # resident -> host (captures current token; backstop)
-            _slot = _st.load_layer_rolling(_ln, _lidx)  # host -> rolling(lidx%k)
+            # Stream this layer's seeded history (host mirror) -> rolling slot,
+            # then write-redirect THIS step's token into the slot + host so the
+            # CPU cohort needs no resident KV (what enables freeing its blocks).
+            _slot = _st.load_layer_rolling(_ln, _lidx)  # host history -> rolling
+            if (
+                key is not None and value is not None
+                and split.cpu_cur_compact is not None
+            ):
+                _st.write_current_token(
+                    _lidx,
+                    split.cpu_cur_resident, split.cpu_cur_compact,
+                    split.cpu_cur_offset,
+                    key.index_select(0, cpu_idx),
+                    value.index_select(0, cpu_idx),
+                )
             if _slot is not None:
                 _k_slot, _v_slot = _slot.unbind(0)
                 _tier_pass(
@@ -910,6 +925,8 @@ class FlashAttentionImpl(AttentionImpl):
                 if self._maybe_hybrid_two_pass(
                     layer=layer,
                     query=query,
+                    key=key,
+                    value=value,
                     key_cache=key_cache,
                     value_cache=value_cache,
                     output=output,

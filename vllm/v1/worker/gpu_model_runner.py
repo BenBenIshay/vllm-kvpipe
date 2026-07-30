@@ -945,6 +945,11 @@ class GPUModelRunner(
             if dbg:
                 logger.info("HYBRID rung-d: skip step (%s)", e)
             return
+        # Seed each block's history to the host mirror once (before the forward
+        # writes this step's token); per-token updates come from the impl's
+        # write_current_token. This makes the CPU cohort's KV self-sufficient on
+        # host, with no dependence on resident for correctness.
+        streamer.seed_blocks(split.cpu_sorted_ids.tolist())
         split.rungd = True
         split.rungd_streamer = streamer
         split.rungd_layer_index = self._rungd_layer_index
@@ -987,6 +992,21 @@ class GPUModelRunner(
         split.cpu_sorted_ids = torch.tensor(all_blocks, dtype=torch.int64, device=dev)
         split.rolling_block_table = torch.from_numpy(remapped).to(dev)
         split.rolling_seqused_k = seq_cpu.to(dev).to(torch.int32)
+        # Current-token position per CPU row (for the write-redirect).
+        cur_res, cur_cmp, cur_off = [], [], []
+        for r in range(n_cpu):
+            p = int(seq_np[r]) - 1
+            bidx = p // block_size
+            if bidx >= max_blk:
+                cur_res.append(-1); cur_cmp.append(-1); cur_off.append(0)
+                continue
+            rb = int(bt_cpu[r, bidx])
+            cur_res.append(rb)
+            cur_cmp.append(cmap.get(rb, -1))
+            cur_off.append(p % block_size)
+        split.cpu_cur_resident = cur_res
+        split.cpu_cur_compact = cur_cmp
+        split.cpu_cur_offset = cur_off
         if dbg:
             logger.info(
                 "HYBRID rolling compaction: n_cpu=%d W=%d max_blk=%d",

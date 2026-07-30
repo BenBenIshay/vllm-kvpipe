@@ -41,6 +41,11 @@ class HybridDecodeSplit:
     rungd: bool = False
     rungd_streamer: object | None = None  # HybridCpuStreamer
     rungd_layer_index: dict | None = None  # layer_name -> layer_idx
+    # Current decode token position per CPU row (cpu_idx order), for the
+    # write-redirect: new-token KV -> host mirror + rolling slot.
+    cpu_cur_resident: list | None = None  # resident block id of the current token
+    cpu_cur_compact: list | None = None   # its compacted rolling block id
+    cpu_cur_offset: list | None = None    # offset within the block
     meta: dict = field(default_factory=dict)
 
 

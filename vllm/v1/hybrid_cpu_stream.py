@@ -201,3 +201,65 @@ class HybridCpuStreamer:
         for row in rows_block_ids:
             out.append([self._compact_map[b] for b in row if b in self._compact_map])
         return out
+
+    def seed_blocks(self, physical_block_ids: list[int]) -> None:
+        """One-time D2H seed of each block's history into the host mirror.
+
+        Unlike stage_new_blocks (which tracks the per-step cohort set that
+        set_cpu_cohort overwrites), this keeps a persistent 'seeded' set so a
+        block's resident history is captured exactly once, when it first
+        appears; subsequent per-token updates come from write_current_token.
+        """
+        if not hasattr(self, "_rungd_seeded"):
+            self._rungd_seeded: set[int] = set()
+        fresh = [
+            b for b in physical_block_ids
+            if b is not None and b >= 0 and b not in self._rungd_seeded
+        ]
+        if not fresh:
+            return
+        idx = torch.tensor(sorted(set(fresh)), dtype=torch.long)
+        g0 = self._kv[self._layers[0]]
+        if int(idx.max()) >= g0.shape[self._bd] or int(idx.min()) < 0:
+            return
+        torch.cuda.synchronize()
+        for ln in self._layers:
+            g = self._kv[ln]
+            gathered = g.index_select(self._bd, idx.to(g.device)).to("cpu")
+            self._cpu[ln].index_copy_(self._bd, idx, gathered)
+        torch.cuda.synchronize()
+        self._rungd_seeded.update(fresh)
+
+    def write_current_token(
+        self,
+        layer_idx: int,
+        resident_blocks: list[int],
+        compact_ids: list[int],
+        offsets: list[int],
+        keys: torch.Tensor,   # [n_cpu, nkv, hd] (this layer's new-token K)
+        values: torch.Tensor,  # [n_cpu, nkv, hd]
+    ) -> None:
+        """Write the CPU cohort's new decode-token KV into (a) the host mirror at
+        its resident-block position (so future streams include it) and (b) the
+        current rolling slot at its compact position (so THIS layer's attention
+        sees it). This is the write-redirect: the token never needs a resident
+        block, which is what lets the main-pool blocks be freed.
+        """
+        if not getattr(self, "_rolling", None):
+            return
+        slot = self._rolling[layer_idx % self._k_roll]
+        ln = self._layers[layer_idx] if layer_idx < len(self._layers) else None
+        host = self._cpu.get(ln) if ln is not None else None
+        n = keys.shape[0]
+        k_host = keys.to("cpu")
+        v_host = values.to("cpu")
+        for r in range(n):
+            off = offsets[r]
+            cid = compact_ids[r]
+            # rolling slot: [2, W, bs, nkv, hd] on GPU (bd for the slot is 1).
+            slot[0, cid, off].copy_(keys[r])
+            slot[1, cid, off].copy_(values[r])
+            if host is not None:
+                rb = resident_blocks[r]
+                host[0, rb, off].copy_(k_host[r])
+                host[1, rb, off].copy_(v_host[r])
