@@ -126,3 +126,75 @@ class HybridCpuStreamer:
 
     def clear(self) -> None:
         self._cpu_blocks.clear()
+
+    # ================= Step 2: compact rolling region ======================
+    # The saving: instead of the CPU cohort holding its KV resident in all
+    # `num_layers` per-layer tensors, hold only `k_window` COMPACT rolling
+    # tensors (each big enough for the cohort's block footprint W) and stream
+    # layer L's KV into slot `L % k_window` just before layer L's attention.
+    # A block-table remap sends the CPU rows into the compacted [0:W) ids.
+
+    def build_rolling_region(self, k_window: int, w_max_blocks: int) -> None:
+        """Allocate k_window compact GPU rolling tensors (once).
+
+        Each mirrors a resident layer tensor's shape but with `w_max_blocks`
+        blocks along the block dimension instead of the full pool.
+        """
+        if not self._layers:
+            return
+        g = self._kv[self._layers[0]]
+        shape = list(g.shape)
+        shape[self._bd] = int(w_max_blocks)
+        self._k_roll = max(1, int(k_window))
+        self._w_max = int(w_max_blocks)
+        self._rolling = [
+            torch.empty(shape, dtype=g.dtype, device=g.device)
+            for _ in range(self._k_roll)
+        ]
+        # Populated by set_cpu_cohort each step.
+        self._cpu_sorted_host: torch.Tensor | None = None  # resident ids, long
+        self._compact_map: dict[int, int] = {}
+        self._w_cur = 0
+
+    def set_cpu_cohort(self, cpu_block_ids: list[int]) -> None:
+        """Fix this step's resident->compact block map (sorted, deduped)."""
+        blocks = sorted({b for b in cpu_block_ids if b is not None and b >= 0})
+        if len(blocks) > self._w_max:
+            raise ValueError(
+                f"CPU cohort footprint {len(blocks)} exceeds rolling region "
+                f"w_max={self._w_max}"
+            )
+        self._compact_map = {b: i for i, b in enumerate(blocks)}
+        self._cpu_sorted_host = torch.tensor(blocks, dtype=torch.long)
+        self._w_cur = len(blocks)
+
+    def load_layer_rolling(self, layer_name: str, layer_idx: int) -> torch.Tensor | None:
+        """Stream layer L's CPU-cohort KV host mirror -> rolling slot L%k.
+
+        Returns the rolling slot tensor (so the caller can hand it to the
+        attention impl), or None if inactive.
+        """
+        if (
+            layer_name not in self._cpu
+            or self._cpu_sorted_host is None
+            or self._w_cur == 0
+            or not getattr(self, "_rolling", None)
+        ):
+            return None
+        slot = self._rolling[layer_idx % self._k_roll]
+        # host mirror rows for this cohort, in sorted(=compact) order
+        src = self._cpu[layer_name].index_select(self._bd, self._cpu_sorted_host)
+        slot.narrow(self._bd, 0, self._w_cur).copy_(src.to(slot.device))
+        return slot
+
+    def rolling_slot_for(self, layer_idx: int) -> torch.Tensor | None:
+        if not getattr(self, "_rolling", None):
+            return None
+        return self._rolling[layer_idx % self._k_roll]
+
+    def remap_rows(self, rows_block_ids: list[list[int]]) -> list[list[int]]:
+        """Map each row's resident block ids -> compacted rolling ids."""
+        out: list[list[int]] = []
+        for row in rows_block_ids:
+            out.append([self._compact_map[b] for b in row if b in self._compact_map])
+        return out
