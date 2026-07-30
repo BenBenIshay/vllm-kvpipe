@@ -819,6 +819,78 @@ class GPUModelRunner(
                 decode_threshold=self.reorder_batch_threshold,
             )
 
+    def _maybe_set_hybrid_decode_split(
+        self,
+        num_reqs: int,
+        num_tokens_unpadded: int,
+        req_kv_tiers: dict[str, str] | None = None,
+    ) -> None:
+        """Publish this step's HBM/CPU decode-row split for the attention impl.
+
+        Gated hard: only when VLLM_KVPIPE_HYBRID_TWOPASS=1, the step is a pure
+        decode (exactly one query token per request, so query-row i == request
+        index i), and the batch is genuinely mixed (both tiers present). In
+        every other case the split is cleared and attention runs its standard
+        single pass. This is the runner-side half of the two-pass dual-region
+        decode; see vllm/v1/hybrid_attn_ctx.py.
+        """
+        import os
+
+        from vllm.v1.hybrid_attn_ctx import (
+            HybridDecodeSplit,
+            clear_hybrid_decode_split,
+            set_hybrid_decode_split,
+        )
+
+        if os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS", "0") not in ("1", "2"):
+            return  # feature off — never touch the context ("2" = self-verify)
+        _dbg = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS_DEBUG", "0") == "1"
+        # Pure decode only: one token per request keeps query rows aligned to
+        # request indices (and thus to block_table rows).
+        if num_tokens_unpadded != num_reqs or num_reqs == 0:
+            if _dbg:
+                logger.info(
+                    "HYBRID two-pass split SKIP (not pure decode): "
+                    "num_reqs=%d num_tokens=%d",
+                    num_reqs, num_tokens_unpadded,
+                )
+            clear_hybrid_decode_split()
+            return
+        # Prefer this step's fresh tiers from the scheduler (the same source the
+        # connector splits on); fall back to the InputBatch dict (set at add).
+        fresh = req_kv_tiers or {}
+        tiers = self.input_batch.kv_tier_by_req_id
+        r2i = self.input_batch.req_id_to_index
+        hbm_rows: list[int] = []
+        cpu_rows: list[int] = []
+        for req_id, idx in r2i.items():
+            if idx >= num_reqs:
+                continue
+            tier = fresh.get(req_id) or tiers.get(req_id, "hbm")
+            if tier == "cpu":
+                cpu_rows.append(idx)
+            else:
+                hbm_rows.append(idx)
+        # Only a genuinely mixed batch benefits from the split; a homogeneous
+        # batch is handled correctly (and faster) by the single pass.
+        if _dbg:
+            logger.info(
+                "HYBRID two-pass split: num_reqs=%d num_tokens=%d hbm=%d cpu=%d "
+                "tier_sample=%s",
+                num_reqs, num_tokens_unpadded, len(hbm_rows), len(cpu_rows),
+                {k: tiers.get(k, "hbm") for k in list(r2i)[:8]},
+            )
+        if not cpu_rows or not hbm_rows:
+            clear_hybrid_decode_split()
+            return
+        dev = self.device
+        set_hybrid_decode_split(
+            HybridDecodeSplit(
+                hbm_idx=torch.tensor(hbm_rows, dtype=torch.int64, device=dev),
+                cpu_idx=torch.tensor(cpu_rows, dtype=torch.int64, device=dev),
+            )
+        )
+
     # Note: used for model runner override.
     def _init_device_properties(self) -> None:
         """Initialize attributes from torch.cuda.get_device_properties"""
@@ -3289,6 +3361,14 @@ class GPUModelRunner(
             cudagraph_mode = CUDAGraphMode.NONE
             # Mark KV scales as calculated after the first forward pass
             self.calculate_kv_scales = False
+
+        # Hybrid tiered-KV: compute this step's HBM/CPU row split so the
+        # attention impl can run a two-pass (dual-region) decode. No-op unless
+        # VLLM_KVPIPE_HYBRID_TWOPASS=1 and the step is a genuinely mixed pure
+        # decode; leaves the standard single-pass path untouched otherwise.
+        self._maybe_set_hybrid_decode_split(
+            num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers
+        )
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.

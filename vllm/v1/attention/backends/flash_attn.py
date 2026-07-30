@@ -3,6 +3,7 @@
 """Attention layer with FlashAttention."""
 
 import copy
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -577,6 +578,118 @@ class FlashAttentionImpl(AttentionImpl):
 
         self.supports_quant_query_input = True
 
+    def _maybe_hybrid_two_pass(
+        self,
+        *,
+        layer: torch.nn.Module,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        output: torch.Tensor,
+        num_actual_tokens: int,
+        max_seqlen_k: int,
+        seqused_k: torch.Tensor,
+        block_table: torch.Tensor,
+        sliding_window_size: list[int] | None,
+        causal: bool,
+    ) -> bool:
+        """Two-pass dual-region decode for hybrid tiered KV.
+
+        When the runner has published a per-step HBM/CPU row split (see
+        vllm/v1/hybrid_attn_ctx.py), split this decode's rows by tier and run
+        one flash_attn call per tier, each writing into its own rows of the
+        shared output buffer. Numerically validated in isolation by
+        benchmarks/kv_pipelining_bench/two_pass_attn_numeric_test.py.
+
+        Step 1 (current): both tiers read the SAME resident pool, so the result
+        is bitwise-equal to the single pass — this proves the split/gather/
+        scatter plumbing end-to-end without yet changing memory. Step 2 will
+        point the CPU pass at split.rolling_kv_caches[layer.layer_name] + the
+        rolling block table to deliver the HBM saving.
+
+        Returns True iff it fully wrote the output (caller skips the single
+        pass); False to fall back to the standard single pass.
+        """
+        from vllm.v1.hybrid_attn_ctx import get_hybrid_decode_split
+
+        split = get_hybrid_decode_split()
+        if split is None:
+            return False
+        hbm_idx = split.hbm_idx
+        cpu_idx = split.cpu_idx
+        n = num_actual_tokens
+        # The split must exactly partition this step's decode rows (pure decode,
+        # 1 query token per row). Any mismatch (padding / stale split / prefill
+        # mixed in) -> bail to the safe single pass.
+        if hbm_idx.numel() + cpu_idx.numel() != n or seqused_k.shape[0] != n:
+            return False
+
+        q = query[:num_actual_tokens]
+        out = output[:num_actual_tokens]
+
+        def _tier_pass(
+            idx: torch.Tensor,
+            k_cache: torch.Tensor,
+            v_cache: torch.Tensor,
+            bt: torch.Tensor,
+            seq: torch.Tensor,
+        ) -> None:
+            m = idx.numel()
+            if m == 0:
+                return
+            q_sub = q.index_select(0, idx)
+            seq_sub = seq.index_select(0, idx)
+            bt_sub = bt.index_select(0, idx)
+            cu_q = torch.arange(0, m + 1, device=q.device, dtype=torch.int32)
+            out_sub = torch.empty(
+                (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
+            )
+            descale_shape = (m, self.num_kv_heads)
+            flash_attn_varlen_func(
+                q=q_sub,
+                k=k_cache,
+                v=v_cache,
+                out=out_sub,
+                cu_seqlens_q=cu_q,
+                max_seqlen_q=1,
+                seqused_k=seq_sub,
+                max_seqlen_k=max_seqlen_k,  # safe upper bound for a subset
+                softmax_scale=self.scale,
+                causal=causal,
+                alibi_slopes=self.alibi_slopes,
+                window_size=sliding_window_size,
+                block_table=bt_sub,
+                softcap=self.logits_soft_cap,
+                fa_version=self.vllm_flash_attn_version,
+                q_descale=layer._q_scale.expand(descale_shape),
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                s_aux=self.sinks,
+            )
+            out.index_copy_(0, idx, out_sub)
+
+        # HBM cohort -> resident full-N pool (== the R0 path).
+        _tier_pass(hbm_idx, key_cache, value_cache, block_table, seqused_k)
+        # CPU cohort -> Step 1: same resident pool (bitwise-equal check). Step 2
+        # swaps to the rolling region carried on `split`.
+        rk = None
+        if split.rolling_kv_caches is not None:
+            rk = split.rolling_kv_caches.get(getattr(layer, "layer_name", None))
+        if rk is not None and split.rolling_block_table is not None:
+            r_kc, r_vc = rk.unbind(0)
+            _tier_pass(
+                cpu_idx,
+                r_kc,
+                r_vc,
+                split.rolling_block_table,
+                split.rolling_seqused_k
+                if split.rolling_seqused_k is not None
+                else seqused_k,
+            )
+        else:
+            _tier_pass(cpu_idx, key_cache, value_cache, block_table, seqused_k)
+        return True
+
     def forward(
         self,
         layer: torch.nn.Module,
@@ -711,6 +824,67 @@ class FlashAttentionImpl(AttentionImpl):
                     if self.sliding_window is not None
                     else None
                 )
+                # Hybrid tiered-KV: if the runner published an HBM/CPU row split
+                # for this decode step, run attention as two passes (one per
+                # tier), each over its own KV region. Returns True only when it
+                # fully handled the step; otherwise fall through to the standard
+                # single pass (identical to upstream).
+                #
+                # VLLM_KVPIPE_HYBRID_TWOPASS=2 is a self-verify mode: compute the
+                # standard single pass into a scratch buffer on the SAME inputs
+                # and compare against the two-pass output, in-process, so the
+                # check is immune to cross-run batching nondeterminism.
+                _hybrid_verify = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS") == "2"
+                _ref = None
+                if _hybrid_verify:
+                    _ref = torch.empty_like(output[:num_actual_tokens])
+                    flash_attn_varlen_func(
+                        q=query[:num_actual_tokens],
+                        k=key_cache,
+                        v=value_cache,
+                        out=_ref,
+                        cu_seqlens_q=cu_seqlens_q,
+                        max_seqlen_q=max_seqlen_q,
+                        seqused_k=seqused_k,
+                        max_seqlen_k=max_seqlen_k,
+                        softmax_scale=self.scale,
+                        causal=attn_metadata.causal,
+                        alibi_slopes=self.alibi_slopes,
+                        window_size=sliding_window_size,
+                        block_table=block_table,
+                        softcap=self.logits_soft_cap,
+                        scheduler_metadata=scheduler_metadata,
+                        fa_version=self.vllm_flash_attn_version,
+                        q_descale=layer._q_scale.expand(descale_shape),
+                        k_descale=layer._k_scale.expand(descale_shape),
+                        v_descale=layer._v_scale.expand(descale_shape),
+                        num_splits=attn_metadata.max_num_splits,
+                        s_aux=self.sinks,
+                    )
+                if self._maybe_hybrid_two_pass(
+                    layer=layer,
+                    query=query,
+                    key_cache=key_cache,
+                    value_cache=value_cache,
+                    output=output,
+                    num_actual_tokens=num_actual_tokens,
+                    max_seqlen_k=max_seqlen_k,
+                    seqused_k=seqused_k,
+                    block_table=block_table,
+                    sliding_window_size=sliding_window_size,
+                    causal=attn_metadata.causal,
+                ):
+                    if _ref is not None:
+                        _o = output[:num_actual_tokens]
+                        _d = (_o.float() - _ref.float()).abs()
+                        _bad = int((_d.amax(dim=tuple(range(1, _d.ndim))) > 0).sum())
+                        logger.info(
+                            "HYBRID two-pass verify [%s]: max|diff|=%.3e "
+                            "mismatched_rows=%d/%d",
+                            getattr(layer, "layer_name", "?"),
+                            float(_d.max()), _bad, num_actual_tokens,
+                        )
+                    return output
                 flash_attn_varlen_func(
                     q=query[:num_actual_tokens],
                     k=key_cache,
