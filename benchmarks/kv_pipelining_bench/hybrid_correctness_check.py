@@ -93,11 +93,11 @@ def run_cfg(port: int, mode: str, b_hbm_max: int = 8, stream: bool = False) -> s
 
 
 def main():
+    # Clean isolation: SAME cpu-tier (b_hbm_max=0), toggle ONLY streaming.
+    # Zero confound -> any difference is the streaming path alone.
     cfgs = [
-        ("vanilla (no connector, real resident)", 9881, "vanilla", 8, False),
-        ("R1 pipelined (all-CPU rolling, known-correct)", 9882, "pipelined", 8, False),
-        ("hybrid resident (b_hbm_max=8, stream off)", 9883, "hybrid", 8, False),
-        ("hybrid CPU-streamed (b_hbm_max=0, stream on)", 9884, "hybrid", 0, True),
+        ("cpu-tier RESIDENT (b_hbm_max=0, stream OFF)", 9891, "hybrid", 0, False),
+        ("cpu-tier STREAMED (b_hbm_max=0, stream ON)", 9892, "hybrid", 0, True),
     ]
     out = {}
     for label, port, mode, bhm, stream in cfgs:
@@ -106,16 +106,16 @@ def main():
         out[label] = txt
         print(repr(txt), flush=True)
     print("=" * 60)
-    van = out[cfgs[0][0]]
-    r1 = out[cfgs[1][0]]
-    hres = out[cfgs[2][0]]
-    hstream = out[cfgs[3][0]]
-    print(f"vanilla == R1 pipelined?        {van == r1}")
-    print(f"vanilla == hybrid resident?     {van == hres}")
-    print(f"R1 == hybrid CPU-streamed?      {r1 == hstream}")
-    print(f"hybrid resident == streamed?    {hres == hstream}")
-    print("-> If vanilla==R1==hres but != hstream: hybrid streaming is the bug.")
-    print("-> If vanilla != hres: connector alters KV (harness confound).")
+    resident = out[cfgs[0][0]]
+    streamed = out[cfgs[1][0]]
+    if resident.startswith("<server") or streamed.startswith("<server"):
+        print("INCONCLUSIVE: a server did not start.")
+    elif resident == streamed:
+        print("RUNG-C PASS: streaming preserves KV (streamed == resident, "
+              "same cpu-tier, only streaming toggled).")
+    else:
+        print("RUNG-C FAIL: streaming corrupts KV (streamed != resident with "
+              "ONLY streaming toggled -> the bug is in the streaming path).")
 
 
 if __name__ == "__main__":

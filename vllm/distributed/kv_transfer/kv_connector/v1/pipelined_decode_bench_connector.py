@@ -968,7 +968,17 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         if has_decode_work:
             max_bid = -1
             all_active_blocks: set[int] = set()
-            for blocks in self._active_req_blocks.values():
+            # Hybrid streaming: only the CPU-tier cohort's blocks are staged/
+            # streamed. Streaming HBM-tier blocks would round-trip (and corrupt)
+            # their resident KV through a CpuKvTable that was never staged for
+            # them. Restrict the prefetch/stage block set to the CPU cohort.
+            if self._hybrid_tiers and self._hybrid_stream_cpu:
+                block_src = (
+                    self._active_req_blocks.get(r) for r in cpu_decode_req_ids
+                )
+            else:
+                block_src = self._active_req_blocks.values()
+            for blocks in block_src:
                 if blocks:
                     max_bid = max(max_bid, max(blocks))
                     all_active_blocks.update(blocks)
