@@ -168,6 +168,11 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._decode_physical_block_ids: list[int] = []
         self._worker_registered_reqs: set[str] = set()
         self._hbm_tier_req_ids: set[str] = set()
+        # Hybrid mixed-batch (Option B) build gate. B0 (False): hybrid mode runs
+        # resident-only (no CPU-tier streaming) so the mixed step is correct and
+        # crash-free while the streaming + second attention pass are built. B1
+        # flips this on to stream the CPU cohort through the rolling buffers.
+        self._hybrid_stream_cpu: bool = False
 
         # Block inflation (decode-only P/D mode)
         self._num_blocks_pipelined: int | None = None
@@ -412,11 +417,24 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         self._forward_context = forward_context
         self._has_decode_work = metadata.has_decode_work
-        self._hybrid_hbm_only_decode = (
-            self._hybrid_tiers
-            and metadata.has_decode_work
-            and not metadata.cpu_decode_req_ids
+        # Skip the rolling-window prefetch/wait/save path when: (a) all decode
+        # reqs are HBM-tier, or (b) CPU streaming is not yet enabled (B0
+        # resident-only). In both cases every row reads resident HBM KV.
+        self._hybrid_hbm_only_decode = self._hybrid_tiers and metadata.has_decode_work and (
+            not metadata.cpu_decode_req_ids or not self._hybrid_stream_cpu
         )
+        if self._hybrid_tiers and (
+            metadata.hbm_decode_req_ids or metadata.cpu_decode_req_ids
+        ) and not getattr(self, "_logged_cohort_split", False):
+            logger.info(
+                "HYBRID cohort split: %d hbm + %d cpu decode reqs "
+                "(stream_cpu=%s, hbm_only_path=%s)",
+                len(metadata.hbm_decode_req_ids),
+                len(metadata.cpu_decode_req_ids),
+                self._hybrid_stream_cpu,
+                self._hybrid_hbm_only_decode,
+            )
+            self._logged_cohort_split = True
         self._decode_max_seq_len = metadata.decode_max_seq_len
         self._decode_max_block_id = metadata.decode_max_block_id
         self._decode_block_runs = metadata.decode_block_runs
@@ -450,7 +468,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
                 for req_id in metadata.reqs_to_fill:
                     if metadata.req_kv_tiers.get(req_id) == "hbm":
                         self._hbm_tier_req_ids.add(req_id)
-                if cpu_fills:
+                # B0 resident-only: skip CPU staging (CpuKvTable not wired yet).
+                # B1 enables _hybrid_stream_cpu and stages the CPU cohort.
+                if cpu_fills and self._hybrid_stream_cpu:
                     self._stage_all_layers_to_cpu(cpu_fills)
             else:
                 self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
