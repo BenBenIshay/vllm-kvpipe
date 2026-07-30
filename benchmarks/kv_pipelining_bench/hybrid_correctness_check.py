@@ -32,7 +32,7 @@ def launch(port: int, mode: str, b_hbm_max: int = 8, stream: bool = False) -> su
     cmd = [
         PY, "-m", "vllm.entrypoints.openai.api_server",
         "--model", MODEL, "--port", str(port),
-        "--max-model-len", "1024", "--gpu-memory-utilization", "0.4",
+        "--max-model-len", "1024", "--gpu-memory-utilization", "0.15",
         "--disable-log-requests", "--dtype", "auto", "--max-num-seqs", "8",
         "--enforce-eager",
     ]

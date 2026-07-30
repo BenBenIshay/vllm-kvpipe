@@ -176,6 +176,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._hybrid_stream_cpu: bool = bool(
             int(os.environ.get("VLLM_KVPIPE_HYBRID_STREAM", "0"))
         )
+        # Clean CPU-tier streamer (Option B), decoupled from DirectKWindow.
+        self._hybrid_streamer = None
+        self._hybrid_use_streamer: bool = False
 
         # Block inflation (decode-only P/D mode)
         self._num_blocks_pipelined: int | None = None
@@ -471,10 +474,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
                 for req_id in metadata.reqs_to_fill:
                     if metadata.req_kv_tiers.get(req_id) == "hbm":
                         self._hbm_tier_req_ids.add(req_id)
-                # B0 resident-only: skip CPU staging (CpuKvTable not wired yet).
-                # B1 enables _hybrid_stream_cpu and stages the CPU cohort.
-                if cpu_fills and self._hybrid_stream_cpu:
-                    self._stage_all_layers_to_cpu(cpu_fills)
+                # B1 (clean streamer path) stages the CPU cohort lazily on the
+                # first decode step via HybridCpuStreamer.stage_new_blocks; no
+                # CpuKvTable staging here.
             else:
                 self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
             t2 = time.perf_counter()
@@ -487,6 +489,25 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
                 t2 - t1,
                 len(metadata.reqs_to_fill),
             )
+
+        # --- Hybrid CPU-tier streaming (Option B, clean path) --------------
+        # Decoupled from DirectKWindow: mirror the CPU cohort's resident blocks
+        # to host and refresh them per layer (per-layer hooks). Bypasses Phase 2.
+        self._hybrid_use_streamer = False
+        if (
+            self._hybrid_tiers
+            and self._hybrid_stream_cpu
+            and metadata.has_decode_work
+            and metadata.cpu_decode_req_ids
+        ):
+            self._ensure_hybrid_streamer()
+            if self._hybrid_streamer is not None:
+                self._hybrid_use_streamer = True
+                # decode_physical_block_ids is already restricted to the CPU cohort.
+                self._hybrid_streamer.stage_new_blocks(
+                    self._decode_physical_block_ids or []
+                )
+                return  # skip DirectKWindow Phase 2; hooks drive the streamer
 
         # --- Phase 2: Bind window buffers + prefetch -----------------------
         if not metadata.has_decode_work:
@@ -553,7 +574,21 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         if prof is not None:
             prof.fwd.start_load_host_ms += (time.perf_counter() - t_start) * 1000.0
 
+    def _ensure_hybrid_streamer(self) -> None:
+        if self._hybrid_streamer is not None or self._kv_caches is None:
+            return
+        from vllm.v1.hybrid_cpu_stream import HybridCpuStreamer
+        self._hybrid_streamer = HybridCpuStreamer(
+            self._kv_caches, list(self._layer_names)
+        )
+
     def wait_for_layer_load(self, layer_name: str) -> None:
+        # Clean hybrid streamer: refresh this layer's CPU-cohort resident blocks
+        # from the host mirror before attention reads them.
+        if getattr(self, "_hybrid_use_streamer", False):
+            if self._hybrid_streamer is not None:
+                self._hybrid_streamer.load_layer(layer_name)
+            return
         if getattr(self, "_hybrid_hbm_only_decode", False):
             return
         if self._worker_state is None:
@@ -604,6 +639,12 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         attn_metadata: "AttentionMetadata",
         **kwargs: Any,
     ) -> None:
+        # Clean hybrid streamer: capture this layer's new decode-token KV for the
+        # CPU cohort back into the host mirror after attention.
+        if getattr(self, "_hybrid_use_streamer", False):
+            if self._hybrid_streamer is not None:
+                self._hybrid_streamer.save_layer(layer_name)
+            return
         if self._worker_state is None or not self._has_decode_work:
             return
         if getattr(self, "_hybrid_hbm_only_decode", False):
