@@ -41,5 +41,18 @@ compact read (rung-c), write-redirect, rolling load, host mirror.
    B_hbm+B_off; MEASURE served concurrency > B_hbm and correct outputs. This is
    the A100 "beneficial" result. [hybrid_tier_occupancy.py → served-concurrency]
 
-## Status
-- Increment: START (1). Node 2053223/nova06. See state-hybrid-kv-execution memory.
+## Status (2026-07-30)
+- **Increments 1-4 (read path) DONE + bitwise PASS (commit 5a8a2b202):** CPU cohort
+  served from the k_window=4 host-streamed rolling region; =2 verify 576 layer-
+  steps `max|diff|=0`. Current-token capture via `save_layer` (resident backstop).
+- **Increment 5 (free CPU main blocks) — NEXT, precise path:** use
+  `block_pool.free_blocks` + null the main block table for CPU-tier reqs. Safe
+  because CPU attention uses the rolling block table, not the main one. Needs:
+  seed host once → free old blocks → write-redirect the decode token to host +
+  rolling slot (drop the resident write-head) OR keep a 1-block write head. The
+  general case (seq grows past seeded blocks) needs a small rolling block
+  allocator; a bounded test (generation fits the last block) demonstrates serve-
+  more first. Delicate (live-block free) → gate on CPU-token == resident.
+- **Increment 6:** small pool fits B_hbm, admit B_hbm+B_off, measure served
+  concurrency > B_hbm + correct tokens = the A100 "beneficial" result.
+- Node 2053223/nova06. See state-hybrid-kv-execution memory.
