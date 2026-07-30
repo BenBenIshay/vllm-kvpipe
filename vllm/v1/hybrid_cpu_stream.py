@@ -167,6 +167,9 @@ class HybridCpuStreamer:
         self._compact_map = {b: i for i, b in enumerate(blocks)}
         self._cpu_sorted_host = torch.tensor(blocks, dtype=torch.long)
         self._w_cur = len(blocks)
+        # Keep the block set coherent so save_layer/load_layer (host mirror
+        # refresh) operate on exactly this cohort.
+        self._cpu_blocks = set(blocks)
 
     def load_layer_rolling(self, layer_name: str, layer_idx: int) -> torch.Tensor | None:
         """Stream layer L's CPU-cohort KV host mirror -> rolling slot L%k.

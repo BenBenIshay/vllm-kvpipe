@@ -34,6 +34,13 @@ class HybridDecodeSplit:
     # host->rolling streaming or the block-manager saving (those are rung-d).
     rolling_from_resident: bool = False
     cpu_sorted_ids: torch.Tensor | None = None  # resident block ids, long, sorted
+    # rung-d (serve-more): the CPU cohort's KV is streamed from a host mirror
+    # into a k_window-shared rolling region (HybridCpuStreamer), so it costs
+    # k_window layer-copies instead of num_layers. When set, the CPU pass reads
+    # the streamed rolling slot for each layer instead of gathering resident.
+    rungd: bool = False
+    rungd_streamer: object | None = None  # HybridCpuStreamer
+    rungd_layer_index: dict | None = None  # layer_name -> layer_idx
     meta: dict = field(default_factory=dict)
 
 

@@ -688,6 +688,28 @@ class FlashAttentionImpl(AttentionImpl):
         if split.rolling_kv_caches is not None:
             rk = split.rolling_kv_caches.get(getattr(layer, "layer_name", None))
         if (
+            split.rungd
+            and split.rungd_streamer is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            # serve-more: stream this layer's CPU-cohort KV host mirror -> the
+            # k_window-shared rolling slot, then attend the compacted slot.
+            _st = split.rungd_streamer
+            _ln = getattr(layer, "layer_name", None)
+            _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
+            _st.save_layer(_ln)  # resident -> host (captures current token; backstop)
+            _slot = _st.load_layer_rolling(_ln, _lidx)  # host -> rolling(lidx%k)
+            if _slot is not None:
+                _k_slot, _v_slot = _slot.unbind(0)
+                _tier_pass(
+                    cpu_idx, _k_slot, _v_slot,
+                    split.rolling_block_table, split.rolling_seqused_k,
+                    pre_sliced=True,
+                )
+            else:
+                _tier_pass(cpu_idx, key_cache, value_cache, block_table, seqused_k)
+        elif (
             split.rolling_from_resident
             and split.cpu_sorted_ids is not None
             and split.rolling_block_table is not None

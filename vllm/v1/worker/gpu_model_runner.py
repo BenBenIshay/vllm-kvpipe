@@ -893,9 +893,61 @@ class GPUModelRunner(
         # a remapped block table so it attends a compacted [0:W) layout. Proves
         # the compacted dual-region attention == resident before the rung-d
         # memory saving (host->rolling stream + block-manager free).
-        if os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
+        _rungd = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD", "0") == "1"
+        if _rungd or os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
             self._build_rolling_compaction(split, cpu_rows, attn_metadata, _dbg)
+        if _rungd:
+            self._maybe_setup_rungd(split, _dbg)
         set_hybrid_decode_split(split)
+
+    def _maybe_setup_rungd(self, split, dbg: bool) -> None:
+        """Attach the host-streamed rolling region (HybridCpuStreamer) so the CPU
+        pass reads its KV from a k_window-shared rolling region streamed from a
+        host mirror — the serve-more mechanism. Reuses the compaction fields set
+        by _build_rolling_compaction. Correctness gate keeps the CPU cohort
+        resident as an ignored backstop (save_layer captures the current token
+        from resident); the block-free comes after.
+        """
+        if split.cpu_sorted_ids is None or split.rolling_block_table is None:
+            return
+        from vllm.attention.layer import Attention
+        from vllm.v1.hybrid_cpu_stream import HybridCpuStreamer
+
+        if getattr(self, "_rungd_streamer", None) is None:
+            attn_layers = self.compilation_config.static_forward_context
+            kv_dict: dict = {}
+            for name, mod in attn_layers.items():
+                if isinstance(mod, Attention):
+                    kc = getattr(mod, "kv_cache", None)
+                    if kc and len(kc) > 0 and kc[0].numel() > 0:
+                        kv_dict[name] = kc[0]
+            if not kv_dict:
+                return
+            try:
+                ordered = list(self.kv_cache_config.kv_cache_groups[0].layer_names)
+            except Exception:
+                ordered = list(kv_dict.keys())
+            ordered = [n for n in ordered if n in kv_dict]
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            streamer = HybridCpuStreamer(kv_dict, ordered)
+            streamer.build_rolling_region(k_window, w_max_blocks=512)
+            self._rungd_streamer = streamer
+            self._rungd_layer_index = {n: i for i, n in enumerate(ordered)}
+            if dbg:
+                logger.info(
+                    "HYBRID rung-d: streamer ready, %d layers, k_window=%d",
+                    len(ordered), k_window,
+                )
+        streamer = self._rungd_streamer
+        try:
+            streamer.set_cpu_cohort(split.cpu_sorted_ids.tolist())
+        except ValueError as e:
+            if dbg:
+                logger.info("HYBRID rung-d: skip step (%s)", e)
+            return
+        split.rungd = True
+        split.rungd_streamer = streamer
+        split.rungd_layer_index = self._rungd_layer_index
 
     def _build_rolling_compaction(
         self, split, cpu_rows: list[int], attn_metadata, dbg: bool
