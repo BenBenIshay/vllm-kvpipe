@@ -354,8 +354,22 @@ class Scheduler(SchedulerInterface):
                 continue
 
             # Schedule newly needed KV blocks for the request.
+            # rung-d serve-more: a CPU-tier request past prefill is served from
+            # the host-block-id pool, so it needs NO new main-pool blocks — cap
+            # its growth so its decode blocks stay free for others.
+            import os as _os2
+            _rungd_cap_run = (
+                _os2.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+                and getattr(self.scheduler_config, "enable_hybrid_kv_tiers", False)
+                and self.transfer_aware_admission.get_req_tier(request.request_id)
+                == "cpu"
+                and request.num_computed_tokens >= request.num_prompt_tokens
+            )
             with record_function_or_nullcontext("schedule: allocate_slots"):
                 while True:
+                    if _rungd_cap_run:
+                        new_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                        break
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
                         num_new_tokens,
@@ -633,34 +647,16 @@ class Scheduler(SchedulerInterface):
                     else 0
                 )
 
-                # rung-d serve-more: a CPU-tier request that has finished prefill
-                # is served entirely from the host-block-id pool, so it needs NO
-                # new main-pool blocks. Cap its growth (keep its prefill blocks;
-                # allocate nothing more) -> those decode blocks stay free for
-                # other requests. Its decode KV lives in the pool; its resident
-                # slot writes are skipped (slot_mapping=-1) in the worker.
-                import os as _os
-                _rungd_cap = (
-                    _os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
-                    and getattr(self.scheduler_config, "enable_hybrid_kv_tiers", False)
-                    and self.transfer_aware_admission.get_req_tier(
-                        request.request_id
-                    ) == "cpu"
-                    and request.num_computed_tokens >= request.num_prompt_tokens
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request,
+                    num_new_tokens,
+                    num_new_computed_tokens=num_new_local_computed_tokens,
+                    new_computed_blocks=new_computed_blocks,
+                    num_lookahead_tokens=effective_lookahead_tokens,
+                    num_external_computed_tokens=num_external_computed_tokens,
+                    delay_cache_blocks=load_kv_async,
+                    num_encoder_tokens=num_encoder_tokens,
                 )
-                if _rungd_cap:
-                    new_blocks = self.kv_cache_manager.empty_kv_cache_blocks
-                else:
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request,
-                        num_new_tokens,
-                        num_new_computed_tokens=num_new_local_computed_tokens,
-                        new_computed_blocks=new_computed_blocks,
-                        num_lookahead_tokens=effective_lookahead_tokens,
-                        num_external_computed_tokens=num_external_computed_tokens,
-                        delay_cache_blocks=load_kv_async,
-                        num_encoder_tokens=num_encoder_tokens,
-                    )
 
                 if new_blocks is None:
                     # The request cannot be scheduled.

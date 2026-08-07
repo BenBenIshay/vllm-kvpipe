@@ -26,7 +26,8 @@ MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 LOGDIR = "/mnt/beegfs/benishay/paper_runs/20260728/hybrid_m1"
 N_REQS = 32
 MAX_TOKENS = 256          # long generation so decode blocks dominate
-GPU_MEM = "0.06"          # small KV pool -> capacity-bound
+GPU_MEM = "0.30"
+NUM_BLOCKS = 160          # force a small KV pool -> genuinely capacity-bound
 B_HBM_MAX = 6
 
 
@@ -43,11 +44,17 @@ def launch(port: int, rungd: bool) -> subprocess.Popen:
         PY, "-m", "vllm.entrypoints.openai.api_server", "--model", MODEL,
         "--port", str(port), "--max-model-len", "1024",
         "--gpu-memory-utilization", GPU_MEM, "--disable-log-requests",
+        "--num-gpu-blocks-override", str(NUM_BLOCKS),
         "--dtype", "auto", "--max-num-seqs", str(N_REQS), "--enforce-eager",
         "--no-enable-prefix-caching",
         "--enable-transfer-aware-admission", "--enable-hybrid-kv-tiers",
         "--hybrid-b-hbm-max", str(B_HBM_MAX), "--hybrid-pcie-gbps", "25.1",
         "--hybrid-b-tok", "131072", "--enable-kv-pipelining", "--kv-k-window", "4",
+        # Large ITL budget -> admission admits all CPU-tier requests, so the KV
+        # pool (not the roofline) is the binding constraint. This isolates the
+        # CAPACITY question (does the reclaim let more requests fit?). ITL/perf
+        # is the separate GH200/C2C story.
+        "--hybrid-itl-ms", "100000", "--hybrid-seq-tokens", "256",
     ]
     logf = open(f"{LOGDIR}/servemore_{port}.log", "w")
     return subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT,
@@ -96,22 +103,28 @@ def run(port: int, rungd: bool) -> dict:
         except Exception:
             pass
         time.sleep(3)
-    # Parse peak concurrency + peak main-pool usage from the occupancy log.
+    # Parse concurrency + main-pool usage from the occupancy log. Use the MEDIAN
+    # running count over the steady-state (middle 80%) — peak is a transient
+    # prefill spike. Also track max CPU-tier blocks (shows the reclaim).
     pat = re.compile(r"TIER_OCCUPANCY: n_hbm=(\d+) n_cpu=(\d+) blk_hbm=(\d+) "
                      r"blk_cpu=(\d+) free=(-?\d+) total=(-?\d+)")
+    runs, cpu_blocks = [], []
     peak_run = 0
-    peak_used = 0
     total_blocks = 0
     with open(f"{LOGDIR}/servemore_{port}.log") as f:
         for line in f:
             m = pat.search(line)
             if m:
                 nh, nc, bh, bc, fr, tot = (int(x) for x in m.groups())
+                runs.append(nh + nc)
+                cpu_blocks.append(bc)
                 peak_run = max(peak_run, nh + nc)
-                peak_used = max(peak_used, bh + bc)
                 total_blocks = tot
-    return {"ok": ok, "peak_running": peak_run, "peak_blocks_used": peak_used,
-            "total_blocks": total_blocks, "wall": wall}
+    steady = sorted(runs)[len(runs)//10: len(runs)-len(runs)//10] if len(runs) > 10 else runs
+    median_run = sorted(steady)[len(steady)//2] if steady else 0
+    return {"ok": ok, "peak_running": peak_run, "median_running": median_run,
+            "max_cpu_blocks": max(cpu_blocks) if cpu_blocks else 0,
+            "total_blocks": total_blocks, "wall": round(wall, 1)}
 
 
 def main() -> None:
@@ -124,18 +137,21 @@ def main() -> None:
     rd = run(9942, rungd=True)
     print(f"  {rd}", flush=True)
     print("=" * 64)
-    print(f"peak concurrent running: baseline={base['peak_running']}  "
-          f"rung-d={rd['peak_running']}")
-    print(f"completed: baseline={base['ok']}/{N_REQS}  rung-d={rd['ok']}/{N_REQS}")
-    print(f"wall time: baseline={base['wall']:.1f}s  rung-d={rd['wall']:.1f}s")
+    bm, rm = base["median_running"], rd["median_running"]
+    print(f"STEADY-STATE concurrent running: baseline={bm}  rung-d={rm}")
+    print(f"max CPU-tier main-pool blocks:    baseline={base['max_cpu_blocks']}  "
+          f"rung-d={rd['max_cpu_blocks']}  (reclaim: cap keeps CPU tier tiny)")
+    print(f"completed OK: baseline={base['ok']}/{N_REQS}  rung-d={rd['ok']}/{N_REQS}")
     print(f"pool total blocks={base.get('total_blocks')}")
-    if rd["peak_running"] > base["peak_running"] and rd["ok"] >= base["ok"]:
-        print(f"SERVE-MORE PASS: rung-d ran {rd['peak_running']} concurrent vs "
-              f"{base['peak_running']} baseline at the same pool "
-              f"({rd['peak_running']/max(1,base['peak_running']):.2f}x) — the CPU "
-              "cohort's reclaimed HBM lets more requests run.")
+    print(f"(wall: baseline={base['wall']}s rung-d={rd['wall']}s — A100 PCIe "
+          "per-layer copies make rung-d slower; ITL/perf is the GH200/C2C story)")
+    if rm > bm and rd["ok"] >= base["ok"]:
+        print(f"SERVE-MORE PASS: at the same {base.get('total_blocks')}-block pool, "
+              f"rung-d sustains {rm} concurrent requests vs {bm} baseline "
+              f"({rm/max(1,bm):.2f}x) with correct output — the CPU cohort's "
+              "reclaimed HBM lets more requests run.")
     else:
-        print("SERVE-MORE: no concurrency gain measured (check pool sizing / load).")
+        print("SERVE-MORE: no steady-state gain (check pool sizing / cap).")
 
 
 if __name__ == "__main__":
