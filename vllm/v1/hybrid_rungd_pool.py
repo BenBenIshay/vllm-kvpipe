@@ -62,6 +62,8 @@ class RungdHostPool:
         self.free_list: list[int] = list(range(self.h_max))
         self.req_blocks: dict[str, list[int]] = {}   # req_id -> [host_block_id]
         self.req_seeded: set[str] = set()            # prefill seeded
+        # Resident tensors (layer_name -> [2, nblk, bs, nkv, hd]) for seeding.
+        self.resident: dict[str, torch.Tensor] = {}
         # Per-step state (set by build_step).
         self._active_host: list[int] = []            # sorted host block ids
         self._compact: dict[int, int] = {}           # host block id -> [0:W)
@@ -100,6 +102,14 @@ class RungdHostPool:
         self.host[layer_name].index_copy_(1, dst, gathered)
 
     def mark_seeded(self, req_id: str) -> None:
+        self.req_seeded.add(req_id)
+
+    def seed_req(self, req_id: str, resident_block_ids: list[int]) -> None:
+        """Seed all layers' prefill KV for a request from resident, once."""
+        if req_id in self.req_seeded or not self.resident:
+            return
+        for ln in self.layers:
+            self.seed_layer(req_id, ln, self.resident[ln], resident_block_ids)
         self.req_seeded.add(req_id)
 
     # -- per-step compaction ------------------------------------------------

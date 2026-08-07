@@ -578,6 +578,53 @@ class FlashAttentionImpl(AttentionImpl):
 
         self.supports_quant_query_input = True
 
+    def _pool_cpu_override(
+        self, split, layer, query, key, value, output, num_actual_tokens,
+        sliding_window_size,
+    ) -> None:
+        """Overwrite CPU decode rows' attention output with attention over their
+        host-block-id pool (rung-d serve-more). The standard single pass already
+        ran for all rows; this replaces the CPU rows (whose resident KV is stale)
+        and folds this step's token into the pool."""
+        pool = split.rungd_pool
+        cpu_idx = split.cpu_idx
+        if (
+            pool is None or cpu_idx.numel() == 0
+            or split.rolling_block_table is None
+            or split.rolling_seqused_k is None
+        ):
+            return
+        ln = getattr(layer, "layer_name", None)
+        lidx = (split.rungd_layer_index or {}).get(ln, 0)
+        slot = pool.stream_layer(lidx)
+        if key is not None and value is not None and split.cpu_cur_compact:
+            pool.write_token(
+                lidx, split.cpu_cur_compact, split.cpu_cur_offset,
+                split.cpu_cur_hostblock,
+                key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+            )
+        k_slot, v_slot = slot.unbind(0)
+        m = cpu_idx.numel()
+        out = output[:num_actual_tokens]
+        q_sub = query[:num_actual_tokens].index_select(0, cpu_idx)
+        out_sub = torch.empty(
+            (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
+        )
+        cu = torch.arange(0, m + 1, device=query.device, dtype=torch.int32)
+        descale_shape = (m, self.num_kv_heads)
+        flash_attn_varlen_func(
+            q=q_sub, k=k_slot, v=v_slot, out=out_sub, cu_seqlens_q=cu,
+            max_seqlen_q=1, seqused_k=split.rolling_seqused_k,
+            max_seqlen_k=int(split.rolling_seqused_k.max()),
+            softmax_scale=self.scale, causal=True, alibi_slopes=self.alibi_slopes,
+            window_size=sliding_window_size, block_table=split.rolling_block_table,
+            softcap=self.logits_soft_cap, fa_version=self.vllm_flash_attn_version,
+            q_descale=layer._q_scale.expand(descale_shape),
+            k_descale=layer._k_scale.expand(descale_shape),
+            v_descale=layer._v_scale.expand(descale_shape), s_aux=self.sinks,
+        )
+        out.index_copy_(0, cpu_idx, out_sub)
+
     def _maybe_hybrid_two_pass(
         self,
         *,
@@ -690,6 +737,30 @@ class FlashAttentionImpl(AttentionImpl):
         if split.rolling_kv_caches is not None:
             rk = split.rolling_kv_caches.get(getattr(layer, "layer_name", None))
         if (
+            split.rungd_pool is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            # serve-more: CPU cohort KV in the host-block-id pool. Stream this
+            # layer's history -> rolling slot, write-redirect this step's token,
+            # attend the compacted slot. No resident block needed.
+            _pool = split.rungd_pool
+            _ln = getattr(layer, "layer_name", None)
+            _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
+            _slot = _pool.stream_layer(_lidx)
+            if key is not None and value is not None and split.cpu_cur_compact:
+                _pool.write_token(
+                    _lidx, split.cpu_cur_compact, split.cpu_cur_offset,
+                    split.cpu_cur_hostblock,
+                    key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+                )
+            _k_slot, _v_slot = _slot.unbind(0)
+            _tier_pass(
+                cpu_idx, _k_slot, _v_slot,
+                split.rolling_block_table, split.rolling_seqused_k,
+                pre_sliced=True,
+            )
+        elif (
             split.rungd
             and split.rungd_streamer is not None
             and split.rolling_block_table is not None
@@ -895,6 +966,16 @@ class FlashAttentionImpl(AttentionImpl):
                 # standard single pass into a scratch buffer on the SAME inputs
                 # and compare against the two-pass output, in-process, so the
                 # check is immune to cross-run batching nondeterminism.
+                # rung-d serve-more override: the standard single pass runs for
+                # ALL rows; then the CPU *decode* rows' output is overwritten
+                # with attention over their host-block-id pool. Works on any step
+                # (incl. while other requests prefill).
+                from vllm.v1.hybrid_attn_ctx import get_hybrid_decode_split
+                _split = get_hybrid_decode_split()
+                _pool_override = (
+                    _split is not None
+                    and getattr(_split, "rungd_pool", None) is not None
+                )
                 _hybrid_verify = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS") == "2"
                 _ref = None
                 if _hybrid_verify:
@@ -922,7 +1003,7 @@ class FlashAttentionImpl(AttentionImpl):
                         num_splits=attn_metadata.max_num_splits,
                         s_aux=self.sinks,
                     )
-                if self._maybe_hybrid_two_pass(
+                if not _pool_override and self._maybe_hybrid_two_pass(
                     layer=layer,
                     query=query,
                     key=key,
@@ -971,6 +1052,21 @@ class FlashAttentionImpl(AttentionImpl):
                     num_splits=attn_metadata.max_num_splits,
                     s_aux=self.sinks,
                 )
+                if _pool_override:
+                    self._pool_cpu_override(
+                        _split, layer, query, key, value, output,
+                        num_actual_tokens, sliding_window_size,
+                    )
+                    if _ref is not None:
+                        _o = output[:num_actual_tokens]
+                        _d = (_o.float() - _ref.float()).abs()
+                        _bad = int((_d.amax(dim=tuple(range(1, _d.ndim))) > 0).sum())
+                        logger.info(
+                            "HYBRID two-pass verify [%s]: max|diff|=%.3e "
+                            "mismatched_rows=%d/%d",
+                            getattr(layer, "layer_name", "?"),
+                            float(_d.max()), _bad, num_actual_tokens,
+                        )
                 return output
 
         # Cascade attention (rare case).

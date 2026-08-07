@@ -846,6 +846,15 @@ class GPUModelRunner(
         if os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS", "0") not in ("1", "2"):
             return  # feature off — never touch the context ("2" = self-verify)
         _dbg = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS_DEBUG", "0") == "1"
+        # rung-d serve-more: pool-manage CPU DECODE rows on EVERY step (incl.
+        # steps where other requests prefill), via a standard-pass + CPU-decode
+        # override. This avoids losing a CPU request's tokens on non-pure-decode
+        # steps. Handled entirely here; returns before the two-pass gate.
+        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1":
+            self._setup_rungd_pool_path(
+                num_reqs, req_kv_tiers, attn_metadata, _dbg
+            )
+            return
         # Pure decode only: one token per request keeps query rows aligned to
         # request indices (and thus to block_table rows).
         if num_tokens_unpadded != num_reqs or num_reqs == 0:
@@ -881,7 +890,11 @@ class GPUModelRunner(
                 num_reqs, num_tokens_unpadded, len(hbm_rows), len(cpu_rows),
                 {k: tiers.get(k, "hbm") for k in list(r2i)[:8]},
             )
-        if not cpu_rows or not hbm_rows:
+        # rung-d serve-more: the CPU cohort must be pool-managed on EVERY pure-
+        # decode step (an all-CPU step still needs the pool, else its tokens go
+        # to resident and the pool loses them). Other paths need a genuine mix.
+        _free_gate = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+        if not cpu_rows or (not hbm_rows and not _free_gate):
             clear_hybrid_decode_split()
             return
         dev = self.device
@@ -894,19 +907,23 @@ class GPUModelRunner(
         # the compacted dual-region attention == resident before the rung-d
         # memory saving (host->rolling stream + block-manager free).
         _rungd = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD", "0") == "1"
-        if _rungd or os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
+        _free = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+        if _free:
+            # serve-more path: host-block-id pool, resident blocks reclaimed.
+            self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, _dbg)
+        elif _rungd or os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
             self._build_rolling_compaction(split, cpu_rows, attn_metadata, _dbg)
-        if _rungd:
-            self._maybe_setup_rungd(split, _dbg)
+            if _rungd:
+                self._maybe_setup_rungd(split, _dbg)
+        if _rungd or _free:
             # rung-d FREE: the CPU cohort's KV is fully host-managed, so skip its
             # resident write (slot_mapping = -1). This makes the CPU rows'
             # main-pool blocks unnecessary — the precondition for capping their
             # allocation (serve-more). Gated separately so the =2 read/write
             # verify (which references resident) stays valid without it.
-            if (
-                split.rungd
-                and os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
-            ):
+            if split.rungd and _free and os.environ.get(
+                "VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1"
+            ) == "1":
                 metas = attn_metadata
                 if isinstance(metas, dict):
                     metas = list(metas.values())
@@ -976,6 +993,169 @@ class GPUModelRunner(
         split.rungd = True
         split.rungd_streamer = streamer
         split.rungd_layer_index = self._rungd_layer_index
+
+    def _setup_rungd_pool_path(
+        self, num_reqs: int, req_kv_tiers, attn_metadata, dbg: bool
+    ) -> None:
+        """rung-d serve-more entry: identify CPU *decode* rows on ANY step and
+        pool-manage them (standard pass + CPU-decode override in the impl)."""
+        import os
+
+        from vllm.v1.hybrid_attn_ctx import (
+            HybridDecodeSplit,
+            clear_hybrid_decode_split,
+            set_hybrid_decode_split,
+        )
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        qsl = getattr(meta0, "query_start_loc", None)
+        if qsl is None or num_reqs == 0:
+            clear_hybrid_decode_split()
+            return
+        qsl_np = qsl.cpu().numpy()
+        fresh = req_kv_tiers or {}
+        tiers = self.input_batch.kv_tier_by_req_id
+        cpu_rows: list[int] = []       # request row index (block_table / seq_lens)
+        cpu_qidx: list[int] = []       # query token index of that row's decode token
+        for i in range(num_reqs):
+            if i + 1 >= len(qsl_np):
+                break
+            if int(qsl_np[i + 1] - qsl_np[i]) != 1:
+                continue  # not a decode row (prefill / chunked)
+            rid = self.input_batch._req_ids[i]
+            tier = fresh.get(rid) or tiers.get(rid, "hbm")
+            if tier == "cpu":
+                cpu_rows.append(i)
+                cpu_qidx.append(int(qsl_np[i]))
+        if not cpu_rows:
+            clear_hybrid_decode_split()
+            return
+        dev = self.device
+        split = HybridDecodeSplit(
+            hbm_idx=torch.empty(0, dtype=torch.int64, device=dev),
+            cpu_idx=torch.tensor(cpu_qidx, dtype=torch.int64, device=dev),
+        )
+        self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, dbg)
+        if not split.rungd:
+            clear_hybrid_decode_split()
+            return
+        # Skip the CPU decode tokens' resident write (their KV is in the pool).
+        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1") == "1":
+            metas = attn_metadata
+            if isinstance(metas, dict):
+                metas = list(metas.values())
+            elif not isinstance(metas, (list, tuple)):
+                metas = [metas]
+            seen = set()
+            qi = torch.tensor(cpu_qidx, dtype=torch.long, device=dev)
+            for m in metas:
+                sm = getattr(m, "slot_mapping", None)
+                if sm is None or id(sm) in seen:
+                    continue
+                seen.add(id(sm))
+                q = qi[qi < sm.shape[0]].to(sm.device)
+                sm.index_fill_(0, q, -1)
+        set_hybrid_decode_split(split)
+
+    def _maybe_setup_rungd_pool(
+        self, split, cpu_rows: list[int], attn_metadata, dbg: bool
+    ) -> None:
+        """Serve-more: manage the CPU cohort's KV in a host-block-id pool so its
+        main-pool blocks can be reclaimed. Seeds each request's prefill from
+        resident once (before the scheduler frees it), then grows + streams +
+        write-redirects purely in the pool's own id space."""
+        import math
+
+        from vllm.attention.layer import Attention
+        from vllm.v1.hybrid_rungd_pool import RungdHostPool
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        sl = getattr(meta0, "seq_lens", None)
+        if bt is None or sl is None:
+            return
+        dev = self.device
+        bs = self.cache_config.block_size
+        cpu_idx_t = torch.tensor(cpu_rows, dtype=torch.int64, device=bt.device)
+        bt_cpu = bt.index_select(0, cpu_idx_t).cpu().numpy()
+        seq_cpu = sl.index_select(0, cpu_idx_t).cpu().numpy()
+        req_ids = [self.input_batch._req_ids[r] for r in cpu_rows]
+
+        if getattr(self, "_rungd_pool", None) is None:
+            attn_layers = self.compilation_config.static_forward_context
+            kv_dict: dict = {}
+            for name, mod in attn_layers.items():
+                if isinstance(mod, Attention):
+                    kc = getattr(mod, "kv_cache", None)
+                    if kc and len(kc) > 0 and kc[0].numel() > 0:
+                        kv_dict[name] = kc[0]
+            if not kv_dict:
+                return
+            try:
+                ordered = list(self.kv_cache_config.kv_cache_groups[0].layer_names)
+            except Exception:
+                ordered = list(kv_dict.keys())
+            ordered = [n for n in ordered if n in kv_dict]
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            t0 = kv_dict[ordered[0]]
+            pool = RungdHostPool(
+                layer_names=ordered, kv_shape=tuple(t0.shape), block_size=bs,
+                k_window=k_window, h_max_blocks=4096, w_max_blocks=512,
+                device=dev, dtype=t0.dtype,
+            )
+            pool.resident = kv_dict
+            self._rungd_pool = pool
+            self._rungd_layer_index = {n: i for i, n in enumerate(ordered)}
+            if dbg:
+                logger.info("HYBRID rung-d POOL ready: %d layers, k_window=%d",
+                            len(ordered), k_window)
+        pool = self._rungd_pool
+
+        try:
+            for i, rid in enumerate(req_ids):
+                seqlen = int(seq_cpu[i])
+                nb = max(1, math.ceil(seqlen / bs))
+                pool.ensure_req(rid, nb)
+                if rid not in pool.req_seeded:
+                    resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
+                    pool.seed_req(rid, resident_ids)
+            rolling_bt, seqused = pool.build_step(
+                req_ids, [int(seq_cpu[i]) for i in range(len(req_ids))]
+            )
+        except RuntimeError as e:
+            if dbg:
+                logger.info("HYBRID rung-d POOL skip (%s)", e)
+            return
+        cur_comp, cur_off, cur_hb = [], [], []
+        for i, rid in enumerate(req_ids):
+            p = int(seq_cpu[i]) - 1
+            c, off = pool.compact_of(rid, p)
+            cur_comp.append(c)
+            cur_off.append(off)
+            cur_hb.append(pool.req_blocks[rid][p // bs])
+        split.rungd = True
+        split.rungd_pool = pool
+        split.rungd_layer_index = self._rungd_layer_index
+        split.rolling_block_table = rolling_bt.to(dev)
+        split.rolling_seqused_k = seqused.to(dev)
+        split.cpu_cur_compact = cur_comp
+        split.cpu_cur_offset = cur_off
+        split.cpu_cur_hostblock = cur_hb
+        if dbg:
+            logger.info("HYBRID rung-d POOL step: n_cpu=%d W=%d",
+                        len(req_ids), pool._w_cur)
 
     def _build_rolling_compaction(
         self, split, cpu_rows: list[int], attn_metadata, dbg: bool

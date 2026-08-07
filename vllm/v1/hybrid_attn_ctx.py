@@ -46,6 +46,10 @@ class HybridDecodeSplit:
     cpu_cur_resident: list | None = None  # resident block id of the current token
     cpu_cur_compact: list | None = None   # its compacted rolling block id
     cpu_cur_offset: list | None = None    # offset within the block
+    # rung-d FREE (serve-more): CPU cohort KV in a host-block-id pool, resident
+    # blocks reclaimed. When set, the CPU pass streams/writes via the pool.
+    rungd_pool: object | None = None      # RungdHostPool
+    cpu_cur_hostblock: list | None = None  # host block id of the current token
     meta: dict = field(default_factory=dict)
 
 
