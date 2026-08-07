@@ -95,10 +95,15 @@ def run(port: int, b_hbm_max: int, rungd_free: bool) -> dict[str, str]:
 
 
 def main() -> None:
-    print("=== A: all-resident (b_hbm_max=2, no rung-d) ===", flush=True)
-    a = run(9921, b_hbm_max=2, rungd_free=False)
-    print("=== B: mixed + pool (b_hbm_max=1, RUNGD_FREE=1) ===", flush=True)
-    b = run(9922, b_hbm_max=1, rungd_free=True)
+    # Compare the SAME cohort (all CPU-tier, b_hbm_max=0) served resident vs via
+    # the pool — toggling only rung-d. This cancels the bench connector's CPU-
+    # cohort fake-fill (identical in both), so any per-prompt divergence is the
+    # pool path alone. (Comparing CPU-vs-HBM would be a confound: the connector
+    # treats the CPU cohort's KV differently.)
+    print("=== A: CPU-tier RESIDENT (b_hbm_max=0, no rung-d) ===", flush=True)
+    a = run(9921, b_hbm_max=0, rungd_free=False)
+    print("=== B: CPU-tier POOL (b_hbm_max=0, RUNGD_FREE=1) ===", flush=True)
+    b = run(9922, b_hbm_max=0, rungd_free=True)
     print("=" * 64)
     if any(v.startswith("<no-start>") for v in {**a, **b}.values()):
         print("INCONCLUSIVE: a server did not start.")
