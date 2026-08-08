@@ -63,7 +63,17 @@ class RungdHostPool:
         # staging buffer per layer (per-layer avoids a stage-reuse race), so
         # layer L+1's host->rolling H2D overlaps layer L's attention compute.
         # Requires k_window >= 2 so consecutive layers use distinct slots.
-        self._async = self.k >= 2 and torch.cuda.is_available()
+        # Async double-buffering hides the host->rolling transfer under compute.
+        # It pays off in the TRANSFER-bound regime (large cohort / many layers /
+        # high-BW C2C); on a small model + small cohort over PCIe its per-layer
+        # bookkeeping can exceed the tiny transfer it hides, so it is OPT-IN
+        # (VLLM_KVPIPE_RUNGD_ASYNC=1). Default sync path is unchanged.
+        import os as _os
+        self._async = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
+            and self.k >= 2 and torch.cuda.is_available()
+        )
+        self._async_min_w = 0
         self._copy_stream = torch.cuda.Stream() if self._async else None
         self._stage: list[torch.Tensor] = [
             torch.empty(rshape, dtype=dtype, device="cpu", pin_memory=True)
@@ -188,8 +198,8 @@ class RungdHostPool:
         slot = self.rolling[layer_idx % self.k]
         if self._w_cur == 0:
             return slot
-        if not self._async:
-            self._sync_stream_into(layer_idx, slot)
+        if not self._async or self._w_cur < self._async_min_w:
+            self._sync_stream_into(layer_idx, slot)         # tiny transfer / off
         else:
             ev = self._events.pop(layer_idx, None)
             if ev is not None:

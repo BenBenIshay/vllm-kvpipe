@@ -84,8 +84,16 @@ def run(port: int, slo_ms: float, itl_ms: float) -> dict:
     try:
         if not wait_ready(port):
             return {"ok": 0, "peak_cpu": 0, "median_run": 0}
-        with ThreadPoolExecutor(max_workers=N_REQS) as ex:
-            res = list(ex.map(lambda i: one(port, i), range(N_REQS)))
+        # STAGGERED arrivals: submit one every STAGGER seconds so later requests
+        # see a running CPU cohort with grown sequences. A burst would admit
+        # everyone before the roofline / guardrail engages (gate-new-only).
+        ex = ThreadPoolExecutor(max_workers=N_REQS)
+        futs = []
+        for i in range(N_REQS):
+            futs.append(ex.submit(one, port, i))
+            time.sleep(0.4)
+        res = [f.result() for f in futs]
+        ex.shutdown()
         ok = sum(1 for r in res if r > 0)
     finally:
         try:
@@ -109,23 +117,29 @@ def run(port: int, slo_ms: float, itl_ms: float) -> dict:
 
 
 def main() -> None:
-    # Same hide-budget target (itl_ms); vary only the measured-ITL SLO guardrail.
-    print("=== TIGHT SLO (20ms) — guardrail should throttle CPU admission ===", flush=True)
-    tight = run(9961, slo_ms=20.0, itl_ms=8.0)
+    # Isolate the B1 seq-length-aware roofline: vary the hide budget (itl_ms) with
+    # a generous SLO. As the staggered cohort's sequences grow, a TIGHT budget
+    # caps how many CPU-tier requests run concurrently; a LOOSE budget admits more.
+    print("=== TIGHT budget (itl_ms=2) — roofline should cap CPU concurrency ===",
+          flush=True)
+    tight = run(9961, slo_ms=5000.0, itl_ms=2.0)
     print(f"  {tight}", flush=True)
-    print("=== LOOSE SLO (2000ms) — controller admits many CPU-tier ===", flush=True)
-    loose = run(9962, slo_ms=2000.0, itl_ms=8.0)
+    print("=== LOOSE budget (itl_ms=40) — roofline admits many CPU-tier ===",
+          flush=True)
+    loose = run(9962, slo_ms=5000.0, itl_ms=40.0)
     print(f"  {loose}", flush=True)
     print("=" * 64)
-    print(f"peak CPU-tier concurrency: tight-SLO={tight['peak_cpu']}  "
-          f"loose-SLO={loose['peak_cpu']}")
+    print(f"steady-state concurrent running: tight={tight['median_run']}  "
+          f"loose={loose['median_run']}")
+    print(f"peak CPU-tier concurrency:        tight={tight['peak_cpu']}  "
+          f"loose={loose['peak_cpu']}")
     print(f"completed OK: tight={tight['ok']}/{N_REQS}  loose={loose['ok']}/{N_REQS}")
     if loose["peak_cpu"] > tight["peak_cpu"] and tight["ok"] == N_REQS == loose["ok"]:
-        print(f"CONTROLLER PASS: the ITL guardrail adapts CPU-tier parallelism to "
-              f"the SLO — loose SLO admits {loose['peak_cpu']} vs tight "
-              f"{tight['peak_cpu']}, both correct, no manual off_max tuning.")
+        print(f"CONTROLLER PASS: the seq-aware roofline adapts CPU-tier parallelism "
+              f"to the hide budget — loose admits {loose['peak_cpu']} concurrent CPU "
+              f"vs tight {tight['peak_cpu']}, both correct, no manual off_max.")
     else:
-        print("CONTROLLER: no clear SLO-driven adaptation (inspect logs).")
+        print("CONTROLLER: no clear budget-driven adaptation (inspect logs).")
 
 
 if __name__ == "__main__":
