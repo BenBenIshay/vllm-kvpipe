@@ -1029,6 +1029,17 @@ class FlashAttentionImpl(AttentionImpl):
                             float(_d.max()), _bad, num_actual_tokens,
                         )
                     return output
+                # opt #5: when the pool override recomputes the CPU decode rows,
+                # skip their expensive KV reads in the standard pass (attend a
+                # single key; their output is overwritten below).
+                _seqused_std = seqused_k
+                _crr = getattr(_split, "cpu_req_rows", None) if _pool_override else None
+                if (
+                    _crr is not None and _crr.numel() > 0
+                    and int(_crr.max()) < seqused_k.shape[0]
+                ):
+                    _seqused_std = seqused_k.clone()
+                    _seqused_std.index_fill_(0, _crr, 1)
                 flash_attn_varlen_func(
                     q=query[:num_actual_tokens],
                     k=key_cache,
@@ -1036,7 +1047,7 @@ class FlashAttentionImpl(AttentionImpl):
                     out=output[:num_actual_tokens],
                     cu_seqlens_q=cu_seqlens_q,
                     max_seqlen_q=max_seqlen_q,
-                    seqused_k=seqused_k,
+                    seqused_k=_seqused_std,
                     max_seqlen_k=max_seqlen_k,
                     softmax_scale=self.scale,
                     causal=attn_metadata.causal,

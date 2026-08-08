@@ -50,6 +50,10 @@ class HybridDecodeSplit:
     # blocks reclaimed. When set, the CPU pass streams/writes via the pool.
     rungd_pool: object | None = None      # RungdHostPool
     cpu_cur_hostblock: list | None = None  # host block id of the current token
+    # Request-row indices of the CPU decode rows (seqused_k is per-request), used
+    # to mask them out of the standard attention pass (opt #5) since the pool
+    # override recomputes them anyway.
+    cpu_req_rows: torch.Tensor | None = None
     meta: dict = field(default_factory=dict)
 
 

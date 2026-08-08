@@ -1041,6 +1041,8 @@ class GPUModelRunner(
             hbm_idx=torch.empty(0, dtype=torch.int64, device=dev),
             cpu_idx=torch.tensor(cpu_qidx, dtype=torch.int64, device=dev),
         )
+        # Request-row indices (for masking CPU rows out of the standard pass).
+        split.cpu_req_rows = torch.tensor(cpu_rows, dtype=torch.int64, device=dev)
         self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, dbg)
         if not split.rungd:
             clear_hybrid_decode_split()
