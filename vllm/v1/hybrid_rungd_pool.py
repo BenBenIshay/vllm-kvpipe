@@ -59,6 +59,18 @@ class RungdHostPool:
         self.rolling: list[torch.Tensor] = [
             torch.empty(rshape, dtype=dtype, device=device) for _ in range(self.k)
         ]
+        # Async double-buffering (opt #2): a side copy stream + one pinned
+        # staging buffer per layer (per-layer avoids a stage-reuse race), so
+        # layer L+1's host->rolling H2D overlaps layer L's attention compute.
+        # Requires k_window >= 2 so consecutive layers use distinct slots.
+        self._async = self.k >= 2 and torch.cuda.is_available()
+        self._copy_stream = torch.cuda.Stream() if self._async else None
+        self._stage: list[torch.Tensor] = [
+            torch.empty(rshape, dtype=dtype, device="cpu", pin_memory=True)
+            for _ in range(len(self.layers))
+        ] if self._async else []
+        self._events: dict[int, torch.cuda.Event] = {}
+        self._active_host_cpu: torch.Tensor | None = None
         self.free_list: list[int] = list(range(self.h_max))
         self.req_blocks: dict[str, list[int]] = {}   # req_id -> [host_block_id]
         self.req_seeded: set[str] = set()            # prefill seeded
@@ -124,6 +136,9 @@ class RungdHostPool:
         self._active_host = sorted(host_set)
         self._compact = {b: i for i, b in enumerate(self._active_host)}
         self._w_cur = len(self._active_host)
+        # Fresh per-step: the compact host-block set + a clean prefetch chain.
+        self._active_host_cpu = torch.tensor(self._active_host, dtype=torch.long)
+        self._events = {}
         if self._w_cur > self.w_max:
             raise RuntimeError(
                 f"rolling region W={self._w_cur} exceeds w_max={self.w_max}"
@@ -143,15 +158,46 @@ class RungdHostPool:
         return self._compact[hb], position % self.block_size
 
     # -- per-layer streaming + write ---------------------------------------
+    def _sync_stream_into(self, layer_idx: int, slot: torch.Tensor) -> None:
+        """Blocking host->rolling refresh (fallback / first layer of a step)."""
+        gathered = self.host[self.layers[layer_idx]].index_select(
+            1, self._active_host_cpu)
+        slot.narrow(1, 0, self._w_cur).copy_(gathered.to(slot.device))
+
+    def _launch_prefetch(self, layer_idx: int) -> None:
+        """Issue layer_idx's host->rolling H2D on the side stream (overlaps the
+        current layer's attention). Uses layer_idx's own pinned stage buffer."""
+        if self._w_cur == 0 or not self._async:
+            return
+        slot = self.rolling[layer_idx % self.k]
+        stage_v = self._stage[layer_idx].narrow(1, 0, self._w_cur)
+        # Gather the cohort's host blocks into this layer's pinned stage (CPU).
+        stage_v.copy_(self.host[self.layers[layer_idx]].index_select(
+            1, self._active_host_cpu))
+        # Don't overwrite the slot until its previous (main-stream) read is done.
+        self._copy_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self._copy_stream):
+            slot.narrow(1, 0, self._w_cur).copy_(stage_v, non_blocking=True)
+        ev = torch.cuda.Event()
+        ev.record(self._copy_stream)
+        self._events[layer_idx] = ev
+
     def stream_layer(self, layer_idx: int) -> torch.Tensor:
-        """Refresh the rolling slot for this layer from the host mirror."""
+        """Refresh this layer's rolling slot from the host mirror and prefetch the
+        next layer. With double-buffering the H2D overlaps compute."""
         slot = self.rolling[layer_idx % self.k]
         if self._w_cur == 0:
             return slot
-        ln = self.layers[layer_idx]
-        idx = torch.tensor(self._active_host, dtype=torch.long)
-        src = self.host[ln].index_select(1, idx)          # [2, W, ...] host
-        slot.narrow(1, 0, self._w_cur).copy_(src.to(slot.device))
+        if not self._async:
+            self._sync_stream_into(layer_idx, slot)
+        else:
+            ev = self._events.pop(layer_idx, None)
+            if ev is not None:
+                torch.cuda.current_stream().wait_event(ev)  # prefetched H2D done
+            else:
+                self._sync_stream_into(layer_idx, slot)     # first layer / miss
+            if layer_idx + 1 < len(self.layers):
+                self._launch_prefetch(layer_idx + 1)
         return slot
 
     def write_token(
@@ -164,15 +210,26 @@ class RungdHostPool:
         values: torch.Tensor,
     ) -> None:
         """Fold the new decode-token KV into the host mirror (host block) and the
-        current rolling slot (compact block)."""
+        current rolling slot (compact block). Vectorized: flatten (block, offset)
+        into one axis and scatter all rows with a single index_copy_ per target
+        (no per-row Python loop)."""
+        n = keys.shape[0]
+        if n == 0:
+            return
         slot = self.rolling[layer_idx % self.k]
         ln = self.layers[layer_idx]
         host = self.host[ln]
-        kc = keys.to("cpu")
-        vc = values.to("cpu")
-        for r in range(keys.shape[0]):
-            off = offsets[r]
-            slot[0, compact_ids[r], off].copy_(keys[r])
-            slot[1, compact_ids[r], off].copy_(values[r])
-            host[0, host_blocks[r], off].copy_(kc[r])
-            host[1, host_blocks[r], off].copy_(vc[r])
+        bs = slot.shape[2]
+        dev = slot.device
+        offs_l = torch.as_tensor(offsets, dtype=torch.long)
+        # slot: [2, W, bs, nkv, hd] -> [2, W*bs, nkv, hd]; pos = compact*bs+off
+        slot_pos = (torch.as_tensor(compact_ids, dtype=torch.long) * bs
+                    + offs_l).to(dev)
+        slot_flat = slot.view(2, slot.shape[1] * bs, *slot.shape[3:])
+        slot_flat[0].index_copy_(0, slot_pos, keys)
+        slot_flat[1].index_copy_(0, slot_pos, values)
+        # host mirror (pinned CPU): pos = host_block*bs+off
+        host_pos = torch.as_tensor(host_blocks, dtype=torch.long) * bs + offs_l
+        host_flat = host.view(2, host.shape[1] * bs, *host.shape[3:])
+        host_flat[0].index_copy_(0, host_pos, keys.to("cpu"))
+        host_flat[1].index_copy_(0, host_pos, values.to("cpu"))
