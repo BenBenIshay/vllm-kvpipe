@@ -1044,26 +1044,46 @@ class GPUModelRunner(
         # Request-row indices (for masking CPU rows out of the standard pass).
         split.cpu_req_rows = torch.tensor(cpu_rows, dtype=torch.int64, device=dev)
         self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, dbg)
+        # Skip the CPU decode tokens' resident write. When the pool set up OK
+        # this is because their KV lives in the pool; when it FAILED (should not
+        # happen with h_max sized to capacity) it is DEFENSIVE — the scheduler
+        # already capped these requests' blocks, so a resident write would land
+        # in a reused block and corrupt it. Either way, skip the write.
+        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1") == "1":
+            self._rungd_skip_cpu_resident_write(attn_metadata, cpu_qidx, dev)
         if not split.rungd:
+            if not getattr(self, "_rungd_pool_fail_warned", False):
+                logger.warning(
+                    "HYBRID rung-d: pool could not manage %d CPU-tier requests "
+                    "this step; they degrade (resident write skipped to avoid "
+                    "corruption). Raise VLLM_KVPIPE_RUNGD_HMAX if this recurs.",
+                    len(cpu_qidx),
+                )
+                self._rungd_pool_fail_warned = True
             clear_hybrid_decode_split()
             return
-        # Skip the CPU decode tokens' resident write (their KV is in the pool).
-        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1") == "1":
-            metas = attn_metadata
-            if isinstance(metas, dict):
-                metas = list(metas.values())
-            elif not isinstance(metas, (list, tuple)):
-                metas = [metas]
-            seen = set()
-            qi = torch.tensor(cpu_qidx, dtype=torch.long, device=dev)
-            for m in metas:
-                sm = getattr(m, "slot_mapping", None)
-                if sm is None or id(sm) in seen:
-                    continue
-                seen.add(id(sm))
-                q = qi[qi < sm.shape[0]].to(sm.device)
-                sm.index_fill_(0, q, -1)
         set_hybrid_decode_split(split)
+
+    def _rungd_skip_cpu_resident_write(
+        self, attn_metadata, cpu_qidx: list[int], dev
+    ) -> None:
+        """Set the CPU decode rows' slot_mapping to -1 so reshape_and_cache skips
+        their resident write (their KV is pool-managed, and their main-pool
+        blocks are capped)."""
+        metas = attn_metadata
+        if isinstance(metas, dict):
+            metas = list(metas.values())
+        elif not isinstance(metas, (list, tuple)):
+            metas = [metas]
+        seen = set()
+        qi = torch.tensor(cpu_qidx, dtype=torch.long, device=dev)
+        for m in metas:
+            sm = getattr(m, "slot_mapping", None)
+            if sm is None or id(sm) in seen:
+                continue
+            seen.add(id(sm))
+            q = qi[qi < sm.shape[0]].to(sm.device)
+            sm.index_fill_(0, q, -1)
 
     def _maybe_setup_rungd_pool(
         self, split, cpu_rows: list[int], attn_metadata, dbg: bool
@@ -1073,6 +1093,7 @@ class GPUModelRunner(
         resident once (before the scheduler frees it), then grows + streams +
         write-redirects purely in the pool's own id space."""
         import math
+        import os
 
         from vllm.attention.layer import Attention
         from vllm.v1.hybrid_rungd_pool import RungdHostPool
@@ -1112,9 +1133,23 @@ class GPUModelRunner(
             ordered = [n for n in ordered if n in kv_dict]
             k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
             t0 = kv_dict[ordered[0]]
+            # Size the pool so it CANNOT exhaust for a valid workload: every
+            # concurrent CPU-tier request can hold its full sequence. h_max =
+            # max_num_seqs * ceil(max_model_len/block_size); the active compact
+            # region (w_max) is at most all of them. Overridable for headroom.
+            max_bpr = max(1, math.ceil(int(self.max_model_len) / bs))
+            max_seqs = int(getattr(self.scheduler_config, "max_num_seqs", 256) or 256)
+            h_max = max_seqs * max_bpr + 8
+            # Override (mainly for tuning/tests); keep >= capacity in production.
+            _env_h = os.environ.get("VLLM_KVPIPE_RUNGD_HMAX", "").strip()
+            if _env_h:
+                try:
+                    h_max = int(_env_h)
+                except ValueError:
+                    pass
             pool = RungdHostPool(
                 layer_names=ordered, kv_shape=tuple(t0.shape), block_size=bs,
-                k_window=k_window, h_max_blocks=4096, w_max_blocks=512,
+                k_window=k_window, h_max_blocks=h_max, w_max_blocks=h_max,
                 device=dev, dtype=t0.dtype,
             )
             pool.resident = kv_dict
@@ -1239,9 +1274,14 @@ class GPUModelRunner(
         new/resumed/paused/finished request in the batch.
         """
         # Remove finished requests from the cached states.
+        _rungd_pool = getattr(self, "_rungd_pool", None)
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
             self.num_prompt_logprobs.pop(req_id, None)
+            # rung-d: return the request's host-pool blocks + clear its seeded
+            # state so the host block-id pool does not leak over a long run.
+            if _rungd_pool is not None:
+                _rungd_pool.free_req(req_id)
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
         # scheduled_req_ids overlap. This happens when a request is aborted and
