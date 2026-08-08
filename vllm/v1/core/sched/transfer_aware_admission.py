@@ -46,6 +46,9 @@ class TransferAwareAdmissionController:
         "_predictor_loaded",
         "_predictor_load_error",
         "_req_tier",
+        # B2 closed-loop ITL guardrail state.
+        "_resident_step_ms_ema",
+        "_itl_throttled_state",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig") -> None:
@@ -58,6 +61,9 @@ class TransferAwareAdmissionController:
         self._predictor_loaded: bool = False
         self._predictor_load_error: Optional[str] = None
         self._req_tier: dict[str, str] = {}
+        # B2: EMA of the measured resident decode step time (ms); 0 = no data.
+        self._resident_step_ms_ema: float = 0.0
+        self._itl_throttled_state: bool = False
 
     def get_req_tier(self, req_id: str) -> str | None:
         return self._req_tier.get(req_id)
@@ -75,6 +81,40 @@ class TransferAwareAdmissionController:
         """Reset per-step counters at the start of Scheduler.schedule()."""
         self._events_this_step.clear()
         self._schedule_step_index += 1
+
+    # ------------------------------------------------ B2 closed-loop guardrail
+
+    def observe_step_time(self, step_ms: float, is_decode_only: bool) -> None:
+        """Feed the measured engine step time (≈ resident ITL) back to the
+        controller. Only decode-only steps are counted (prefill steps are
+        naturally longer). Updates an EMA and the OK/THROTTLED state with
+        hysteresis around the SLO."""
+        if not is_decode_only or step_ms <= 0:
+            return
+        a = 0.2  # EMA weight
+        prev = self._resident_step_ms_ema
+        self._resident_step_ms_ema = step_ms if prev <= 0 else (
+            a * step_ms + (1 - a) * prev
+        )
+        slo = float(self.scheduler_config.transfer_aware_slo_p99_itl_ms or 0.0)
+        if slo <= 0:
+            self._itl_throttled_state = False
+            return
+        ema = self._resident_step_ms_ema
+        if self._itl_throttled_state:
+            if ema < slo * 0.85:          # low watermark -> resume admitting
+                self._itl_throttled_state = False
+        elif ema > slo * 0.95:            # high watermark -> stop admitting
+            self._itl_throttled_state = True
+
+    def _budget_margin(self) -> float:
+        raw = os.environ.get("VLLM_KVPIPE_HYBRID_BUDGET_MARGIN", "").strip()
+        if raw:
+            try:
+                return min(0.9, max(0.0, float(raw)))
+            except ValueError:
+                pass
+        return 0.1
 
     def estimate_running_transfer_pressure_bytes_per_step(
         self, running_requests: "list[Request]"
@@ -155,7 +195,6 @@ class TransferAwareAdmissionController:
         from vllm.v1.hybrid_kv_roofline import (
             bytes_per_token,
             effective_pcie_gbps,
-            max_offload_batch,
             max_offload_from_env,
         )
 
@@ -177,6 +216,13 @@ class TransferAwareAdmissionController:
             self._req_tier[request.request_id] = "hbm"
             return True, "hybrid_hbm"
 
+        # B2 closed-loop guardrail: if the measured resident ITL has drifted over
+        # the SLO, admit no new CPU-tier requests until it recovers.
+        if self._itl_throttled_state:
+            return False, "hybrid_itl_throttled"
+
+        # Hide budget (ms of resident compute a transfer can overlap): prefer the
+        # MEASURED resident step time (B2 EMA); else configured/predicted itl_ms.
         itl_ms = float(cfg.hybrid_itl_ms or 0.0)
         if itl_ms <= 0:
             predictor = self._maybe_load_predictor()
@@ -187,6 +233,11 @@ class TransferAwareAdmissionController:
                     itl_ms = 16.0
             else:
                 itl_ms = 16.0
+        # B1's hide budget uses the configured itl_ms (a stable target ≈ the
+        # resident-only step time); the MEASURED step time drives only the B2
+        # guardrail below (using the EMA here would be circular, since it already
+        # includes the CPU cohort's transfer).
+        budget_ms = itl_ms
 
         b_tok = int(cfg.hybrid_b_tok or 0)
         if b_tok <= 0:
@@ -194,13 +245,23 @@ class TransferAwareAdmissionController:
                 num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2
             )
         x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
-        seq_tokens = int(cfg.hybrid_seq_tokens or 512)
-        off_max = max_offload_batch(seq_tokens, itl_ms, x_eff, b_tok)
-        env_cap = max_offload_from_env()
-        if env_cap is not None:
-            off_max = min(off_max, env_cap)
 
-        if cpu_count < off_max:
+        # B1 seq-length-aware roofline: the per-step CPU->GPU transfer is the
+        # cohort re-streaming its FULL history each step, so it scales with each
+        # request's ACTUAL sequence length (not a fixed seq_tokens). Admit while
+        # the cumulative transfer stays under the hide budget. Re-evaluated on
+        # every admission, so the count shrinks as running sequences grow.
+        budget_bytes = (budget_ms / 1000.0) * x_eff * 1e9 * (1.0 - self._budget_margin())
+        cpu_bytes = float(b_tok) * sum(
+            int(getattr(r, "num_computed_tokens", 0) or 0)
+            for r in running_requests
+            if self._req_tier.get(r.request_id) == "cpu"
+        )
+        new_bytes = float(b_tok) * int(getattr(request, "num_prompt_tokens", 0) or 0)
+
+        env_cap = max_offload_from_env()
+        over_env_cap = env_cap is not None and cpu_count >= env_cap
+        if (not over_env_cap) and (cpu_bytes + new_bytes) <= budget_bytes:
             self._req_tier[request.request_id] = "cpu"
             return True, "hybrid_cpu"
 

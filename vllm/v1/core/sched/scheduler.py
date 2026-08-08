@@ -255,6 +255,18 @@ class Scheduler(SchedulerInterface):
 
     def schedule(self) -> SchedulerOutput:
         self.transfer_aware_admission.begin_schedule_step()
+        # B2 closed-loop ITL guardrail: feed the previous engine step's duration
+        # (~ resident inter-token latency) to the admission controller. Measured
+        # as wall time between schedule() calls; tagged with whether the previous
+        # step was decode-only (prefill steps are naturally longer, so ignored).
+        _rungd_now = time.monotonic()
+        _rungd_prev = getattr(self, "_rungd_last_sched_t", None)
+        if _rungd_prev is not None:
+            self.transfer_aware_admission.observe_step_time(
+                (_rungd_now - _rungd_prev) * 1000.0,
+                getattr(self, "_rungd_last_decode_only", False),
+            )
+        self._rungd_last_sched_t = _rungd_now
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -868,6 +880,10 @@ class Scheduler(SchedulerInterface):
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
+        # B2: record whether THIS step is decode-only, for the next step's timing.
+        self._rungd_last_decode_only = (
+            len(new_reqs_data) == 0 and total_num_scheduled_tokens > 0
+        )
         return scheduler_output
 
     def _preempt_request(self, request: Request, timestamp: float) -> None:
