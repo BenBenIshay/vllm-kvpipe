@@ -120,9 +120,9 @@ def main() -> None:
     # Isolate the B1 seq-length-aware roofline: vary the hide budget (itl_ms) with
     # a generous SLO. As the staggered cohort's sequences grow, a TIGHT budget
     # caps how many CPU-tier requests run concurrently; a LOOSE budget admits more.
-    print("=== TIGHT budget (itl_ms=2) — roofline should cap CPU concurrency ===",
+    print("=== TIGHT budget (itl_ms=0.2) — roofline should cap CPU concurrency ===",
           flush=True)
-    tight = run(9961, slo_ms=5000.0, itl_ms=2.0)
+    tight = run(9961, slo_ms=5000.0, itl_ms=0.2)
     print(f"  {tight}", flush=True)
     print("=== LOOSE budget (itl_ms=40) — roofline admits many CPU-tier ===",
           flush=True)
