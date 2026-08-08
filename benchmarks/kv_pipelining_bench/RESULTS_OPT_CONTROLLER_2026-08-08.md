@@ -10,6 +10,12 @@ Qwen2.5-0.5B, all env-gated.
 |---|---|---|---|
 | 1 | Vectorize `write_token` (batched `index_copy_`, no per-row loop) | done | correct (standalone bitwise + real-KV == vanilla) |
 | 2 | Async double-buffered host→rolling stream (side stream + per-layer pinned staging + events) | done, **opt-in** (`VLLM_KVPIPE_RUNGD_ASYNC=1`) | correct; on A100+0.5B+small cohort it did **not** help (wall 18.4s vs 16.4s sync) |
+| 5 | Skip the wasted standard-pass attention over CPU rows (mask their `seqused_k` to 1; the pool override recomputes them) | done | correct (real-KV == vanilla); **A100 serve-more wall 16.4s → 12.8s (~22% faster)**, gap to baseline 2.8×→2.25× |
+
+**Opt #5 is the effective A100 win:** before it, each CPU decode row was attended
+twice (full standard pass + full override). Masking the standard pass's CPU rows
+removed that redundant full attention (their expensive KV reads), cutting the
+rung-d wall ~22% while keeping serve-more 2.67× and token-identical output.
 
 **Honest finding on #2:** async streaming hides the transfer, which only helps in
 the **transfer-bound** regime (large cohort / many layers / high-BW C2C). On A100
