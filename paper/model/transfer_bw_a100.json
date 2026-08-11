@@ -1,0 +1,40 @@
+{
+  "config": {
+    "riders": 5,
+    "ctx": 8192,
+    "layers": 80,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "block_size": 16,
+    "iters": 12,
+    "out": "paper/model/transfer_bw_a100.json"
+  },
+  "results": {
+    "per-layer bulk": {
+      "chunk_bytes": 167772160,
+      "gbs": 24.9492039906051,
+      "ms_per_layer": 6.724549611409505
+    },
+    "per-block": {
+      "chunk_bytes": 327680,
+      "gbs": 18.467781743630454,
+      "ms_per_layer": 9.084586461385092
+    },
+    "per-rider-block": {
+      "chunk_bytes": 65536,
+      "gbs": 8.209972162871082,
+      "ms_per_layer": 20.43516794840495
+    },
+    "per-row (4KB)": {
+      "chunk_bytes": 4096,
+      "gbs": 0.5171836608504248,
+      "ms_per_layer": 324.39570833333335
+    },
+    "overlap": {
+      "compute_ms": 27.785130818684895,
+      "overlapped_ms": 28.04693349202474,
+      "copy_ms": 6.724549611409505,
+      "hidden_pct": 96.10676270577817
+    }
+  }
+}

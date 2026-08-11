@@ -1,0 +1,157 @@
+{
+  "config": {
+    "q_heads": 64,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "page_size": 16,
+    "batches": "4,8,13,16,24,32,48,64",
+    "contexts": "4096,8192",
+    "out": "paper/model/backend_compare_70b.json"
+  },
+  "results": [
+    {
+      "ctx": 4096,
+      "batch": 4,
+      "fa2_ms": 0.072652800877889,
+      "fi_ms": null,
+      "kv_bytes": 67108864,
+      "fa2_eff": 0.4773605840857158,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 8,
+      "fa2_ms": 0.11516586939493816,
+      "fi_ms": null,
+      "kv_bytes": 134217728,
+      "fa2_eff": 0.6022892658170936,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 13,
+      "fa2_ms": 0.1665877342224121,
+      "fi_ms": null,
+      "kv_bytes": 218103808,
+      "fa2_eff": 0.6766113170297605,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 16,
+      "fa2_ms": 0.2049023946126302,
+      "fi_ms": null,
+      "kv_bytes": 268435456,
+      "fa2_eff": 0.6770361767240083,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 24,
+      "fa2_ms": 0.2847573280334473,
+      "fi_ms": null,
+      "kv_bytes": 402653184,
+      "fa2_eff": 0.7307608278679728,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 32,
+      "fa2_ms": 0.4505429267883301,
+      "fi_ms": null,
+      "kv_bytes": 536870912,
+      "fa2_eff": 0.6158184963152439,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 48,
+      "fa2_ms": 0.5385898590087891,
+      "fi_ms": null,
+      "kv_bytes": 805306368,
+      "fa2_eff": 0.7727197135057756,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 4096,
+      "batch": 64,
+      "fa2_ms": 0.7564287821451823,
+      "fi_ms": null,
+      "kv_bytes": 1073741824,
+      "fa2_eff": 0.7335856970260198,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 4,
+      "fa2_ms": 0.12404053211212158,
+      "fi_ms": null,
+      "kv_bytes": 134217728,
+      "fa2_eff": 0.5591975924641027,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 8,
+      "fa2_ms": 0.21473280588785806,
+      "fi_ms": null,
+      "kv_bytes": 268435456,
+      "fa2_eff": 0.6460416389407102,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 13,
+      "fa2_ms": 0.3238911946614583,
+      "fi_ms": null,
+      "kv_bytes": 436207616,
+      "fa2_eff": 0.6960062398179335,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 16,
+      "fa2_ms": 0.3839146614074707,
+      "fi_ms": null,
+      "kv_bytes": 536870912,
+      "fa2_eff": 0.7226935972778125,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 24,
+      "fa2_ms": 0.5427541097005208,
+      "fi_ms": null,
+      "kv_bytes": 805306368,
+      "fa2_eff": 0.7667910645209588,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 32,
+      "fa2_ms": 0.881066640218099,
+      "fi_ms": null,
+      "kv_bytes": 1073741824,
+      "fa2_eff": 0.6298108566034865,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 48,
+      "fa2_ms": 1.0525866826375325,
+      "fi_ms": null,
+      "kv_bytes": 1610612736,
+      "fa2_eff": 0.7907738306313011,
+      "fi_eff": NaN
+    },
+    {
+      "ctx": 8192,
+      "batch": 64,
+      "fa2_ms": 1.5011669158935548,
+      "fi_ms": null,
+      "kv_bytes": 2147483648,
+      "fa2_eff": 0.7392986476393465,
+      "fi_eff": NaN
+    }
+  ]
+}
