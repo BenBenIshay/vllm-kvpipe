@@ -73,10 +73,18 @@ Copy on a side stream concurrent with GEMM work: compute alone 27.79 ms,
 compute+copy 28.05 ms, copy alone 6.72 ms ⇒ **96% of the transfer is hidden.**
 The roofline's overlap assumption holds.
 
-## Gate 4 — measured-grounded end-to-end estimate
+## Gate 4 — end-to-end estimate  ⚠️ COMPOSITION, NOT A MEASUREMENT
+
+**Read this gate carefully — it mixes measured and modelled inputs.**
+
+- **Measured:** the attention times at B=8 and B=13 (Gate 1).
+- **Modelled, NOT measured:** that the mixture serves 13 where all-HBM serves 8.
+  `B_cap=8` comes from HBM capacity (22 GB / 2.68 GB per req); `riders=5` from
+  the transfer budget (31.9 ms x 450 GB/s / 2.68 GB). **The batch increase is
+  still an assumption.** No experiment here has shown the batch actually rises.
 
 Combining Gate 1's measured attention times with the weight-read term, scaled
-to GH200 by the HBM bandwidth ratio:
+to GH200 by the HBM bandwidth ratio (itself a crude approximation):
 
 | Llama-70B fp8, GH200-96, S=8192 | attention | + weights | step | requests | rate |
 |---|---|---|---|---|---|
@@ -136,10 +144,17 @@ the *magnitude* of A needs GH200 while the *structural* gates above do not.
 
 ## Standing on the verdict
 
-Gates 1–4 pass. The mixture's structural premise survives contact with hardware:
+Gates 1–5 pass. The mixture's structural premise survives contact with hardware:
 the two-source tax is small (+4.7% on the decision metric), the transfer
 bandwidth assumption is 99% accurate at the right granularity, transfers hide
-at 96%, and the measured-grounded gain is ×1.39.
+at 96%, and the composed estimate is ×1.39 on the right kernel for this regime.
+
+**What the gates establish:** nothing structural blocks the mixture.
+**What they do NOT establish:** that the batch actually increases 8→13. That is
+still the capacity model. Converting it into a measurement requires running the
+real mixture in-engine and counting **requests served at a fixed SLO** —
+all-HBM vs all-host vs mixture. On A100 that experiment is uninformative
+(0.47 riders); it is exactly what the GH200 week should buy.
 
 **Recommendation pending Gate 5:** proceed to a short GH200 rental for the
 endpoint comparison (all-HBM vs all-host vs mixture) — a week and a few hundred
