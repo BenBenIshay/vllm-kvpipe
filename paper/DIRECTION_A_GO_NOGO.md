@@ -61,11 +61,31 @@ The roofline assumes 25.1 GB/s on A100/PCIe4. What do real access patterns give?
 **The roofline's X_eff assumption is sound — but only at per-layer
 granularity.** A 48× spread between the design we want and the code we have.
 
-**This diagnoses our known slowness.** rung-d measured 2.25× slower than
-baseline on A100 and we attributed it vaguely to "per-row Python loops." It is
-now quantified: per-row copies get 0.52 GB/s against 24.95 GB/s for batched
-per-layer copies. That is an **implementation defect with a known cheap fix**,
-not a property of the approach.
+**CORRECTION 2026-08-12.** An earlier version of this gate claimed our code
+"does per-row copies at 0.52 GB/s". **That was wrong** — `hybrid_rungd_pool.py`
+already issues bulk copies on both paths (`_sync_stream_into` and
+`_launch_prefetch`). The 0.52 GB/s row above describes a granularity we do not
+actually use. Re-measuring the real code path gives a different, better
+diagnosis:
+
+| what the current code actually does | measured |
+|---|---|
+| pinned H2D (async path, opt-in) | **25.08 GB/s** |
+| **pageable H2D (default sync path)** | **11.17 GB/s — 2.25× slower** |
+| **CPU-side `index_select` gather (both paths, on the critical path)** | **2.9 GB/s** |
+
+Two real defects, neither of them per-row copies:
+1. `_sync_stream_into` does `gathered.to(device)` where `gathered` is the output
+   of `index_select` — **not pinned**, so the default path pays a pageable copy.
+   (Note the pageable penalty is 2.25×, numerically identical to rung-d's
+   measured 2.25× A100 slowdown. Suggestive, not proven.)
+2. **The host-side gather is the real bottleneck at 2.9 GB/s** — ~8× slower than
+   even the pageable copy, and it sits on the critical path.
+
+**Design lesson from DirectKV:** their pool is *"contiguous per-request, no
+scatter/gather"*, which eliminates this gather entirely. Our block-scattered
+host mirror forces it. Adopting per-request contiguous host layout is the fix,
+and it is worth more than any copy-granularity change.
 
 ## Gate 3 — does the transfer hide under compute?  ✅ PASS
 
