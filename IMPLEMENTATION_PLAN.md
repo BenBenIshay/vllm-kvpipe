@@ -189,11 +189,35 @@ request's *current* resident blocks, and the scheduler's cap prevents block
 seed is exact. `migration_correctness.py` **PASS**: output is token-identical to
 vanilla across a forced mid-flight demotion on all 3 prompts.
 
-**Promotion (host → HBM): NOT IMPLEMENTED.** The controller plans it, and the
-scheduler **explicitly refuses and logs it** rather than flipping the tier —
-because flipping without a host→resident copy would serve the request from
-stale resident blocks and produce wrong tokens. Building that copy path, plus
-its token-identical gate, is the remaining work on Item 3.
+**Promotion (host → HBM): mechanism DONE, wiring NOT DONE.** The controller
+plans it, and the scheduler **explicitly refuses and logs it** rather than
+flipping the tier — flipping without a host→resident copy would serve stale
+resident blocks and produce wrong tokens.
+
+*Done:* `RungdHostPool.restore_layer/restore_req`, the exact inverse of
+`seed_layer/seed_req`. `restore_roundtrip_test.py` **PASS**, bitwise:
+resident→host→resident is exact even when restoring into *different* resident
+blocks than it was seeded from, it does not bleed into another request's
+blocks, and it clears `req_seeded` so a later demotion re-seeds.
+
+*Remaining, and the specific hazard.* While a request is host-tier the
+scheduler caps it (`_rungd_cap_run` → `new_blocks = empty_kv_cache_blocks`) and
+the runner skips its resident write (`RUNGD_NOWRITE`). So after N host-tier
+decode steps its resident block table has a **hole**: no blocks were ever
+allocated for tokens `[prompt, prompt+N)`. Promotion therefore cannot simply
+un-cap and let `allocate_slots` grow the request — it must first allocate
+blocks covering the *whole* current sequence, then restore into the full set,
+and only then flip the tier.
+
+That makes promotion a **two-phase commit**:
+  1. scheduler allocates blocks for the full sequence; **if allocation fails,
+     abort and leave the request host-tier** (never flip on a partial alloc);
+  2. only on success, signal the runner to `restore_req` and flip the tier,
+     ordered *before* any attention reads those blocks.
+
+This was not attempted because a bug here corrupts output silently rather than
+failing loudly, and `allocate_slots` semantics for a block-table hole need to be
+verified empirically first. It is the single remaining piece of Item 3.
 
 **Not done for either direction:** the burst-recovery scenario (ITL returns to
 SLO after a burst, which gate-new-only cannot do) is asserted by the unit test's
