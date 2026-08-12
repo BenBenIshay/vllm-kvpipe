@@ -84,6 +84,44 @@ Every item here is free and removes rental risk.
       FlashInfer arm and all of 4.5.
 - [ ] **Decide the SLO grid** in advance (§4.1) so we are not tuning live.
 
+## 2b. KNOWN OPEN ISSUE — the `all_host` arm stalls at scale (2026-08-12)
+
+Found during pre-flight, **not yet resolved**. Must be fixed or scoped before
+4.1 is trusted, because `all_host` is one of the three decisive arms.
+
+**Symptom.** Qwen-32B, 20 requests x 1024 ctx on A100: `all_hbm` completes in
+**45 s**; `all_host` does not finish in **900 s** at ~0% GPU utilisation. At
+Qwen-0.5B the same arm completes in 1.6 s, so it is scale-dependent, not a
+logic error in the arm's configuration.
+
+**First hypothesis, tested and WRONG.** With `hybrid_b_hbm_max=0` every request
+must be host-tier, and B1's transfer budget admitted only ~5 of 20 (268 MB each
+against a 1.5 GB budget) with no fallback tier — so the rest would queue
+forever. Disabling B1 and B2 for this arm (correct modelling anyway: DirectKV
+does not gate admission) **did not fix it**.
+
+**Remaining suspects, in order:**
+1. **Seeding cost.** `seed_req` does a D2H `index_select(...).to("cpu")` per
+   layer per request. For 20 requests x 64 layers that is ~5.4 GB of *unpinned*
+   D2H, one time — minutes, not seconds.
+2. **Per-step transfer volume.** The rolling window streams the whole active set
+   every layer: ~84 MB/layer x 64 layers = **5.4 GB per decode step** over
+   ~24 GB/s PCIe = ~224 ms/step *at best*. That is the A100 physics, and it is
+   precisely why this arm is only meaningful on C2C (18x faster).
+3. Pinned-host allocation of the 5.8 GB mirror at engine build.
+
+**So it may not be a hang at all — it may be honest slowness that 900 s did not
+cover.** A smaller probe (6 requests, 512 ctx) is running to separate the two.
+
+**Mitigation regardless:** `--arm-timeout-s` (default 3600) now fails a stalled
+arm fast instead of silently burning metered hours. That watchdog worked.
+
+**If unresolved at bring-up:** run 4.1 as `all_hbm` vs `mixture` only, and
+report `all_host` from the model plus DirectKV's published behaviour rather than
+from a broken measurement. The `mixture` vs `all_hbm` comparison is the one that
+carries the paper; `all_host` mainly establishes that DirectKV leaves HBM idle,
+which their own design makes true by construction.
+
 ## 3. Phase 0 — bring-up  (time-box: 8 GPU-hours, HARD)
 
 1. Record ground truth: HBM size, achieved HBM bandwidth, **measured** C2C H2D
