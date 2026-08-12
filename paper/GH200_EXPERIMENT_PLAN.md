@@ -110,6 +110,37 @@ does not gate admission) **did not fix it**.
    precisely why this arm is only meaningful on C2C (18x faster).
 3. Pinned-host allocation of the 5.8 GB mirror at engine build.
 
+**PROFILED 2026-08-12 (`profile_host_tier.py`).** Per-phase breakdown at
+Qwen-32B / 512 ctx, scaling 4 -> 16 requests:
+
+| phase | calls | time | verdict |
+|---|---|---|---|
+| `seed_layer` (one-time resident->host) | 4.0x | 4.1x | linear, correct |
+| `build_step` (per-step compaction) | 1.0x | 3.5x | linear in requests, tiny (12 ms) |
+| **`stream_layer`** (per-layer H2D) | 1.0x | **5.1x** | dominant: **48% of wall at n=16** |
+| `write_token` | 1.0x | 1.7x | sublinear |
+
+Wall scaled 3.6x for 4x requests. **Nothing pathological at this scale** — the
+transfer dominates, which is exactly the PCIe physics (~5.4 GB/step at ~24 GB/s
+= ~224 ms/step). So the stall is NOT in the host tier's transfer path.
+
+**TWO HYPOTHESES TESTED AND BOTH WRONG.** (i) B1 admitting only ~5 of 20 with
+no fallback tier — disabling B1/B2 did not fix it. (ii) The pool's rolling slots
+and pinned mirror sitting outside vLLM's `gpu_memory_utilization` budget —
+running at util 0.92 **and** 0.82 both still stalled, so it is not headroom.
+
+**Still unexplained.** The break is somewhere between 16 requests x 512 ctx
+(works, 7.5 s) and 20 x 1024 (stalls > 360 s) — only ~5x the work. Leading
+remaining suspect: the *resident* KV pool cannot hold 20 x 1024 = 20,480 tokens
+of PREFILL, because the host tier frees decode GROWTH but prefill blocks stay
+resident; the scheduler then thrashes. That is a real design limit worth
+understanding, not just a benchmark artifact.
+
+**Decision: stop chasing it here.** This arm is only meaningful on C2C, is slow
+on PCIe by construction, and is not the load-bearing comparison. Item 1
+(does the harness detect a difference?) is being closed with `all_hbm` vs
+`mixture`, which both work.
+
 **RESOLVED (partly): it is NOT a deadlock.** The smaller probe — 6 requests,
 512 ctx — completes in **3.2 s**. So the arm works; it scales badly. But the
 scaling is *superlinear and still unexplained*: 20x1024 is ~13x the work of
