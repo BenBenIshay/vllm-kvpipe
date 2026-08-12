@@ -41,9 +41,27 @@ Rejected alternatives, with reasons:
 
 Every item here is free and removes rental risk.
 
-- [ ] **Verify the fp8 70B checkpoint loads in our fork.** Cannot be fully
-      validated on A100 (SM80 has no fp8 compute; vLLM may fall back to Marlin),
-      so treat this as the top bring-up risk and have the TP=2 fallback ready.
+- [x] **fp8 70B checkpoint checked (2026-08-12) — largely de-risked.**
+      `RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8`: 80 layers, 8 kv-heads,
+      64 q-heads, hidden 8192 — exactly the shape our projections assumed.
+      `quant_method=compressed-tensors`, and **our fork recognises it**
+      (`CompressedTensorsConfig`). Checked without downloading weights.
+      *Still unverifiable here:* whether the fp8 **kernels** run on SM90 — needs
+      Hopper. Keep the TP=2 fp16 fallback ready.
+      *Note* `format=naive-quantized` (not `float-quantized`) — confirm at
+      bring-up that it takes the fp8 path rather than a dequant path.
+- [x] **Weight size measured: 72.7 GB across 15 shards**, not the ~70 GB
+      assumed. Consequences, worth knowing before we interpret anything:
+
+      | | plan assumed | actual |
+      |---|---|---|
+      | C (KV space on GH200-96) | 22 GB | **19.3 GB** |
+      | B_cap @8K | 8 | **7.2** |
+      | HBM/C | 4.4 | **4.96** |
+
+      A smaller C makes the effect **larger** (gain tracks `HBM/C`), so the
+      prediction moves slightly in our favour — but the arithmetic in §4.1
+      should be restated as **7 / 5 / 12**, not 8 / 5 / 13.
 - [ ] **Pre-stage the checkpoint** (~70 GB). Downloading it on a metered rented
       box is wasted money; stage to object storage or plan the download into
       hour 0 explicitly.
@@ -88,9 +106,12 @@ mechanism comparison.
 
 | arm | configuration | model predicts (70B@8K) |
 |---|---|---|
-| A | all-HBM (tiers off, stock vLLM) | 8 requests |
-| B | all-host (every request CPU-tier) | 5 |
-| C | **mixture** (our policy) | **13** |
+| A | all-HBM (tiers off, stock vLLM) | ~7 requests |
+| B | all-host (every request CPU-tier) | ~5 |
+| C | **mixture** (our policy) | **~12** |
+
+(Updated from 8/5/13 after measuring the real fp8 checkpoint at 72.7 GB, which
+leaves C = 19.3 GB rather than the assumed 22 GB.)
 
 - Primary metric: **requests served at a fixed ITL SLO**. Secondary: tokens/s,
   p99 ITL, achieved C2C bandwidth (to confirm the transfer actually hides).
