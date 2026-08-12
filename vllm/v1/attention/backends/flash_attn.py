@@ -596,32 +596,48 @@ class FlashAttentionImpl(AttentionImpl):
             return
         ln = getattr(layer, "layer_name", None)
         lidx = (split.rungd_layer_index or {}).get(ln, 0)
-        slot = pool.stream_layer(lidx)
+        # Item 4: go through the KVTierBackend boundary so policy code never
+        # touches the mechanism. `split.tier_backend` is a StagedHostBackend
+        # wrapping this pool; DirectKVBackend slots in here on Hopper.
+        backend = getattr(split, "tier_backend", None)
+        if backend is None:
+            from vllm.v1.kv_tier_backend import StagedHostBackend
+            backend = StagedHostBackend(pool, 0)
+            split.tier_backend = backend
+        handle = backend.prepare_layer(lidx)
         if key is not None and value is not None and split.cpu_cur_compact:
-            pool.write_token(
+            backend.write_token(
                 lidx, split.cpu_cur_compact, split.cpu_cur_offset,
                 split.cpu_cur_hostblock,
                 key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
             )
-        k_slot, v_slot = slot.unbind(0)
         m = cpu_idx.numel()
         out = output[:num_actual_tokens]
         q_sub = query[:num_actual_tokens].index_select(0, cpu_idx)
+        # Allocate EXACTLY as the pre-refactor code did: from the model's own
+        # output tensor, not from q_sub. A backend must not be able to change
+        # the result's shape/dtype.
         out_sub = torch.empty(
             (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
         )
-        cu = torch.arange(0, m + 1, device=query.device, dtype=torch.int32)
         descale_shape = (m, self.num_kv_heads)
-        flash_attn_varlen_func(
-            q=q_sub, k=k_slot, v=v_slot, out=out_sub, cu_seqlens_q=cu,
-            max_seqlen_q=1, seqused_k=split.rolling_seqused_k,
-            max_seqlen_k=int(split.rolling_seqused_k.max()),
-            softmax_scale=self.scale, causal=True, alibi_slopes=self.alibi_slopes,
-            window_size=sliding_window_size, block_table=split.rolling_block_table,
-            softcap=self.logits_soft_cap, fa_version=self.vllm_flash_attn_version,
-            q_descale=layer._q_scale.expand(descale_shape),
-            k_descale=layer._k_scale.expand(descale_shape),
-            v_descale=layer._v_scale.expand(descale_shape), s_aux=self.sinks,
+        from vllm.v1.kv_tier_backend import TierAttendCtx
+        backend.attend(
+            lidx, handle, q_sub,
+            TierAttendCtx(
+                block_table=split.rolling_block_table,
+                seqused_k=split.rolling_seqused_k,
+                scale=self.scale,
+                sliding_window=sliding_window_size,
+                softcap=self.logits_soft_cap,
+                fa_version=self.vllm_flash_attn_version,
+                alibi_slopes=self.alibi_slopes,
+                q_descale=layer._q_scale.expand(descale_shape),
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                sinks=self.sinks,
+            ),
+            out_sub,
         )
         out.index_copy_(0, cpu_idx, out_sub)
 
