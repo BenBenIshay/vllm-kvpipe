@@ -169,6 +169,40 @@ class RungdHostPool:
         dst = torch.tensor(hblks[:n], dtype=torch.long)
         self.host[layer_name].index_copy_(1, dst, gathered)
 
+    # -- restore (host -> resident, for PROMOTION host-tier -> HBM-tier) -----
+    def restore_layer(
+        self,
+        req_id: str,
+        layer_name: str,
+        resident_kv: torch.Tensor,        # [2, nblk, bs, nkv, hd] resident tensor
+        resident_block_ids: list[int],    # logical i -> resident block id
+    ) -> None:
+        """Inverse of `seed_layer`: copy this request's host history back into
+        resident blocks so it can be served from HBM again.
+
+        Promotion is only correct if the resident blocks hold the FULL history
+        afterwards, so the caller must have allocated `resident_block_ids` for
+        the request's whole sequence before calling this.
+        """
+        hblks = self.req_blocks.get(req_id, [])
+        n = min(len(hblks), len(resident_block_ids))
+        if n == 0:
+            return
+        src = torch.tensor(hblks[:n], dtype=torch.long)
+        gathered = self.host[layer_name].index_select(1, src)   # CPU [2, n, ...]
+        res_idx = torch.tensor(resident_block_ids[:n], dtype=torch.long,
+                               device=resident_kv.device)
+        resident_kv.index_copy_(1, res_idx, gathered.to(resident_kv.device))
+
+    def restore_req(self, req_id: str, resident_block_ids: list[int]) -> None:
+        """Restore all layers' KV from host into resident blocks."""
+        if not self.resident:
+            raise RuntimeError("pool has no resident tensors registered")
+        for ln in self.layers:
+            self.restore_layer(req_id, ln, self.resident[ln], resident_block_ids)
+        # It is no longer host-authoritative; a later demotion must re-seed.
+        self.req_seeded.discard(req_id)
+
     def mark_seeded(self, req_id: str) -> None:
         self.req_seeded.add(req_id)
 
