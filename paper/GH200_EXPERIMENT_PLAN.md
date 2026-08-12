@@ -110,8 +110,17 @@ does not gate admission) **did not fix it**.
    precisely why this arm is only meaningful on C2C (18x faster).
 3. Pinned-host allocation of the 5.8 GB mirror at engine build.
 
-**So it may not be a hang at all — it may be honest slowness that 900 s did not
-cover.** A smaller probe (6 requests, 512 ctx) is running to separate the two.
+**RESOLVED (partly): it is NOT a deadlock.** The smaller probe — 6 requests,
+512 ctx — completes in **3.2 s**. So the arm works; it scales badly. But the
+scaling is *superlinear and still unexplained*: 20x1024 is ~13x the work of
+6x512, which should be ~40 s, yet it exceeded 900 s. Suspect #1 (one-time
+seeding: 1280 separate unpinned D2H copies, each an implicit sync) and #2
+(per-step volume) do not obviously produce a >20x superlinear factor. **This
+needs one focused profiling pass before 4.1 is trusted.**
+
+Note the arm is *expected* to be slow on PCIe — 5.4 GB/step over ~24 GB/s is
+~224 ms/step at best. On C2C that same step is ~12 ms, so the regime that makes
+this arm painful here is exactly the one the rental removes.
 
 **Mitigation regardless:** `--arm-timeout-s` (default 3600) now fails a stalled
 arm fast instead of silently burning metered hours. That watchdog worked.

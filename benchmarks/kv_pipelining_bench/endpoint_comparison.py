@@ -332,8 +332,14 @@ def main() -> int:
             if arm == "all_hbm":
                 ref[slo] = r["token_ids"]
                 ok = "ref"
+            elif slo not in ref:
+                # No all_hbm reference in this run (e.g. --arms all_host alone).
+                # Reporting DIVERGED here would be a FALSE correctness alarm,
+                # and a false alarm is worse than no check: it teaches you to
+                # distrust the checker.
+                ok = "no-ref"
             else:
-                ok = "OK" if r["token_ids"] == ref.get(slo) else "**DIVERGED**"
+                ok = "OK" if r["token_ids"] == ref[slo] else "**DIVERGED**"
             r["token_check"] = ok
             r.pop("token_ids")
             results.append(r)
