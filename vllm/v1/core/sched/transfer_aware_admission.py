@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -49,6 +50,12 @@ class TransferAwareAdmissionController:
         # B2 closed-loop ITL guardrail state.
         "_resident_step_ms_ema",
         "_itl_throttled_state",
+        # Item 2: request-level tier assignment.
+        "_tier_policy",
+        "_last_active",
+        "_idle_saturation_s",
+        "_remaining_saturation",
+        "_w_idle",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig") -> None:
@@ -64,12 +71,25 @@ class TransferAwareAdmissionController:
         # B2: EMA of the measured resident decode step time (ms); 0 = no data.
         self._resident_step_ms_ema: float = 0.0
         self._itl_throttled_state: bool = False
+        # Item 2: {"arrival", "scored"}. "arrival" reproduces pre-Item-2
+        # behaviour exactly and is the ablation baseline for the paper.
+        self._tier_policy: str = (
+            os.environ.get("VLLM_KVPIPE_TIER_POLICY", "arrival").strip() or "arrival"
+        )
+        self._last_active: dict[str, float] = {}
+        self._idle_saturation_s: float = float(
+            os.environ.get("VLLM_KVPIPE_TIER_IDLE_SAT_S", "2.0") or 2.0)
+        self._remaining_saturation: int = int(
+            os.environ.get("VLLM_KVPIPE_TIER_REMAIN_SAT", "512") or 512)
+        self._w_idle: float = float(
+            os.environ.get("VLLM_KVPIPE_TIER_W_IDLE", "0.7") or 0.7)
 
     def get_req_tier(self, req_id: str) -> str | None:
         return self._req_tier.get(req_id)
 
     def release_req_tier(self, req_id: str) -> None:
         self._req_tier.pop(req_id, None)
+        self._last_active.pop(req_id, None)
 
     def release_finished(self, finished_req_ids: list[str]) -> None:
         for req_id in finished_req_ids:
@@ -106,6 +126,59 @@ class TransferAwareAdmissionController:
                 self._itl_throttled_state = False
         elif ema > slo * 0.95:            # high watermark -> stop admitting
             self._itl_throttled_state = True
+
+    # --------------------------------------------- Item 2: tier assignment
+    def _host_affinity_threshold(self) -> float:
+        raw = os.environ.get("VLLM_KVPIPE_TIER_THRESHOLD", "").strip()
+        if raw:
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+        return 0.5
+
+    def note_active(self, req_id: str, now: float | None = None) -> None:
+        """Record that `req_id` produced a token (drives the idle signal)."""
+        self._last_active[req_id] = time.monotonic() if now is None else now
+
+    def host_affinity(self, request: "Request", now: float | None = None) -> float:
+        """How good a host-tier candidate is this request?  [0, 1], higher=better.
+
+        The analysis behind this matters, because it is *not* what one first
+        expects. Moving a request to the host tier frees ``S*k`` bytes of HBM and
+        costs ``S*k`` bytes of interconnect **per decoding step**. Both scale
+        identically with context length, and the k-window discount ``(1-f)`` is
+        independent of ``S`` -- so **context length does not discriminate
+        between tiers at all** (the same cancellation as design rule (a), which
+        we validated on hardware in P4).
+
+        What does discriminate is TEMPORAL: how many steps a request spends
+        *holding* HBM versus *consuming* bandwidth.
+          * an idle request (multi-turn / agentic gap) holds HBM but decodes
+            nothing -> costs no bandwidth while idle -> ideal host-tier tenant
+          * a long-remaining request will hold HBM for many steps -> worth
+            displacing
+          * a nearly-finished request will release its HBM shortly anyway ->
+            migrating it is wasted work
+        """
+        t = time.monotonic() if now is None else now
+        # idle signal: seconds since this request last produced a token
+        last = self._last_active.get(request.request_id)
+        idle_s = 0.0 if last is None else max(0.0, t - last)
+        idle_score = min(1.0, idle_s / max(1e-6, self._idle_saturation_s))
+
+        # remaining-work signal: long-remaining -> better host tenant
+        max_toks = 0
+        sp = getattr(request, "sampling_params", None)
+        if sp is not None:
+            max_toks = int(getattr(sp, "max_tokens", 0) or 0)
+        done = int(getattr(request, "num_output_tokens", 0) or 0)
+        remaining = max(0, max_toks - done) if max_toks > 0 else 0
+        rem_score = (
+            min(1.0, remaining / float(self._remaining_saturation))
+            if remaining > 0 else 0.5      # unknown horizon -> neutral
+        )
+        return self._w_idle * idle_score + (1.0 - self._w_idle) * rem_score
 
     def _budget_margin(self) -> float:
         raw = os.environ.get("VLLM_KVPIPE_HYBRID_BUDGET_MARGIN", "").strip()
@@ -212,7 +285,16 @@ class TransferAwareAdmissionController:
         )
         cpu_count += untagged
 
-        if hbm_max > 0 and hbm_count < hbm_max:
+        # Item 2: WHICH tier this request should occupy. Default policy is
+        # "arrival" (first hbm_max requests get HBM) -- the pre-Item-2
+        # behaviour, kept as the ablation baseline. Under "scored" a request
+        # with high host-affinity yields its HBM slot even when one is free.
+        prefer_host = (
+            self._tier_policy == "scored"
+            and hbm_max > 0
+            and self.host_affinity(request) >= self._host_affinity_threshold()
+        )
+        if hbm_max > 0 and hbm_count < hbm_max and not prefer_host:
             self._req_tier[request.request_id] = "hbm"
             return True, "hybrid_hbm"
 

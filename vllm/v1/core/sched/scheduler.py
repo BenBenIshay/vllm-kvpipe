@@ -1268,6 +1268,11 @@ class Scheduler(SchedulerInterface):
 
             # Check for stop and update request status.
             if new_token_ids:
+                # Item 2: drives the tier scorer's idle signal. A request that
+                # stops producing tokens (multi-turn gap, agentic pause) is the
+                # strongest host-tier candidate, since it holds HBM while
+                # consuming no interconnect bandwidth.
+                self.transfer_aware_admission.note_active(request.request_id)
                 new_token_ids, stopped = self._update_request_with_output(
                     request, new_token_ids
                 )
