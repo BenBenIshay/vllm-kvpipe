@@ -45,8 +45,15 @@ class _Cfg:
     enable_hybrid_kv_tiers = True
 
 
-def drive(c, ms, n=12):
+def drive(c, ms, n=30):
+    """Advance the controller: n scheduling steps at the given step time.
+
+    Advancing the STEP COUNTER matters, not just the ITL: the controller
+    refuses to migrate on a cold EMA (VLLM_KVPIPE_MIGRATE_WARMUP, default 24),
+    because acting before a steady state exists gives the probe a garbage
+    baseline -- which is exactly what we measured in-server."""
     for _ in range(n):
+        c.begin_schedule_step()
         c.observe_step_time(ms, True)
 
 
@@ -128,6 +135,62 @@ def main() -> int:
     print(f"    stats={c.migration_stats()}")
     if not ok:
         fails.append(f"thrash: {rate:.3f} migrations/step exceeds the cooldown bound")
+
+    # ---- 5b. ADAPTIVE PROBE: revert when the demotion made ITL worse ------
+    os.environ["VLLM_KVPIPE_PROBE_STEPS"] = "4"
+    c = C(_Cfg())
+    reqs = [_Req(f"p{i}", max_tokens=100000) for i in range(3)]
+    for r in reqs:
+        c._req_tier[r.request_id] = "hbm"
+    drive(c, 30.0)                       # over SLO -> should demote
+    c.begin_schedule_step()
+    acts = c.plan_migrations(reqs, now=1.0)
+    demoted = [a for a in acts if a[1] == "demote"]
+    for rid, _ in demoted:
+        c.note_migrated(rid, "cpu")
+    # ITL gets WORSE after the demotion (what we measured on A100)
+    for _ in range(6):
+        c.begin_schedule_step()
+        c.observe_step_time(60.0, True)
+    acts2 = c.plan_migrations(reqs, now=2.0)
+    reverted = [a for a in acts2 if a[1] == "promote"]
+    ok = bool(demoted) and len(reverted) == len(demoted)
+    print(f"[5b] probe reverts a harmful demotion: demoted={len(demoted)} "
+          f"reverted={len(reverted)} -> {'PASS' if ok else 'FAIL'}")
+    if not ok:
+        fails.append(f"probe did not revert: demoted={demoted} acts2={acts2}")
+    # and further demotions are suppressed
+    for rid, _ in reverted:
+        c.note_migrated(rid, "hbm")
+    for _ in range(6):
+        c.begin_schedule_step()
+        c.observe_step_time(60.0, True)
+    acts3 = c.plan_migrations(reqs, now=3.0)
+    ok2 = not any(a[1] == "demote" for a in acts3)
+    print(f"[5c] after harm, demotion is suppressed: {acts3} -> "
+          f"{'PASS' if ok2 else 'FAIL'}")
+    if not ok2:
+        fails.append("kept demoting after learning it was harmful")
+
+    # ---- 5d. probe KEEPS a demotion that helped --------------------------
+    c = C(_Cfg())
+    reqs = [_Req(f"g{i}", max_tokens=100000) for i in range(3)]
+    for r in reqs:
+        c._req_tier[r.request_id] = "hbm"
+    drive(c, 30.0)
+    c.begin_schedule_step()
+    acts = c.plan_migrations(reqs, now=1.0)
+    for rid, _ in [a for a in acts if a[1] == "demote"]:
+        c.note_migrated(rid, "cpu")
+    for _ in range(6):                    # ITL IMPROVES after the demotion
+        c.begin_schedule_step()
+        c.observe_step_time(8.0, True)
+    acts4 = c.plan_migrations(reqs, now=2.0)
+    ok3 = not any(a[1] == "promote" for a in acts4)
+    print(f"[5d] probe keeps a helpful demotion (no revert): {acts4} -> "
+          f"{'PASS' if ok3 else 'FAIL'}")
+    if not ok3:
+        fails.append(f"reverted a demotion that helped: {acts4}")
 
     # ---- 6. disabled by default (arrival policy) -------------------------
     os.environ["VLLM_KVPIPE_TIER_POLICY"] = "arrival"

@@ -259,10 +259,45 @@ A first fix was added and is retained — demotion is now refused when the extra
 transfer would not fit the hide budget (`_demotion_helps`) — but it is not
 enough, because here the bytes *did* fit.
 
-**The proper fix needs a design decision:** close the loop empirically — demote,
-measure, and **promote back if ITL got worse**. The promotion path now exists to
-do exactly that. Not implemented; it changes the controller from open-loop
-(trust the model) to adaptive (trust the measurement), which is a scope call.
+### ADAPTIVE LOOP — implemented, and burst recovery now PASSES (2026-08-12)
+
+The controller is now closed-loop: a demotion is treated as a **probe**.
+
+1. record the best recent steady-state ITL as the baseline;
+2. demote, then wait `probe_steps` for the EMA to settle;
+3. if ITL regressed beyond `probe_margin`, **promote the requests back** and
+   suppress further demotion with an **exponential backoff**;
+4. if it improved, keep the demotion and allow more.
+
+Two subtleties that had to be fixed by measurement, both instructive:
+
+- **The baseline must be a recent MINIMUM, not the instantaneous EMA.** Taking
+  the EMA at demotion time picked up startup/prefill transients: baseline 25.5 →
+  21.8 read as an *improvement* while the true steady state was ~8 ms, so a
+  harmful demotion was scored beneficial.
+- **A warmup is required.** The first demotion fired at step 2, before any
+  steady state existed. `VLLM_KVPIPE_MIGRATE_WARMUP` (default 24 steps) blocks
+  migration on a cold EMA.
+
+`burst_recovery.py` **PASS**, in-server on A100:
+
+| | measured |
+|---|---|
+| clean baseline before probe | **8.3 ms** |
+| after demoting 2 requests | **21.7 ms** |
+| probe verdict | **worse = True** |
+| promoted back | **2 / 2** |
+| ITL peak → final | **26.9 → 7.9 ms** |
+
+So on PCIe the loop probes once, learns from measurement that demotion hurts,
+reverts, and backs off — converging to the correct action (do nothing) that the
+B1 roofline could not reach, because B1 sees transfer **bytes** and cannot see
+the host path's fixed per-step overhead.
+
+**Caveat:** the probe is a single-variable attribution in a noisy system —
+requests finish and arrive during the settling window, so it can mis-attribute.
+The margin and backoff bound the damage, but on GH200 this needs re-validation
+where the expected verdict flips to *beneficial*.
 
 ## Item 4 — Narrow mechanism interface (DirectKV swap-in)
 

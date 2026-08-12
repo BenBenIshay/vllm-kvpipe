@@ -43,6 +43,7 @@ def main() -> int:
     os.environ["VLLM_KVPIPE_MIGRATE_MIN_REMAIN"] = "4"
     os.environ["VLLM_KVPIPE_MIGRATE_COOLDOWN"] = "8"
     os.environ["VLLM_KVPIPE_MIGRATE_MAX_PER_STEP"] = "2"
+    os.environ["VLLM_KVPIPE_PROBE_STEPS"] = "12"      # settle before judging
 
     from vllm import LLM, SamplingParams
 
@@ -69,9 +70,10 @@ def main() -> int:
         orig()
         after = dict(ctl.migration_stats())
         newly = after.get("cpu", 0) - before.get("cpu", 0)
+        back = after.get("hbm", 0) - before.get("hbm", 0)
         trace.append((round(ctl._resident_step_ms_ema, 3),
                       ctl._itl_throttled_state, newly,
-                      len(sched._promoting_req_ids)))
+                      len(sched._promoting_req_ids), back))
     sched._apply_tier_migrations = traced
 
     prompts = [f"Write a detailed technical explanation of topic {i}: "
@@ -92,61 +94,49 @@ def main() -> int:
           + (f"  (first at step {throttled_steps[0]})" if throttled_steps else ""))
     print(f"demotions committed   : {demotions}   migration stats: {stats}")
 
+    reverts = ctl.migration_stats().get("hbm", 0)
+    probes = ctl._probe_results
+    peak = max(emas) if emas else 0.0
+    final = trace[-1][0] if trace else 0.0
     headroom = ctl.hide_budget_headroom_bytes(list(sched.running))
-    hides = headroom > 0
     entered = bool(throttled_steps)
     bounded = demotions <= len(trace)
-    refused = ctl.drain_events().get("migrate_demote_no_hide_budget", 0)
+    harmful = any(w for _, _, w in probes)
+    undone = (reverts >= demotions) if demotions else True
+    settled = (final <= peak * 0.75) if peak > 0 else False
 
-    print(f"hide-budget headroom  : {headroom/1e6:+.1f} MB  "
-          f"-> demotion {'CAN' if hides else 'CANNOT'} hide on this link")
     print("-" * 68)
     print(f"[1] burst pushed ITL over SLO (entered THROTTLED) : "
           f"{'PASS' if entered else 'FAIL'}")
     print(f"[2] migration rate bounded by the cooldown        : "
           f"{'PASS' if bounded else 'FAIL'}")
-    recovered = entered and not trace[-1][1]
-    if hides:
-        print(f"[3] demoted ({demotions}) and converged              : "
-              f"{'PASS' if (demotions > 0 and recovered) else 'FAIL'}")
-        good = entered and bounded and demotions > 0 and recovered
-        verdict = ("BURST RECOVERY PASS: the loop detects a burst, demotes, "
-                   "and converges -- the recourse gate-new-only lacked.")
-        if demotions > 0 and not recovered:
-            print()
-            print("DIAGNOSIS (this is a real finding, not a flaky test):")
-            print("  The B1 roofline admitted the demotions on TRANSFER VOLUME")
-            print(f"  ({headroom/1e6:.0f} MB headroom, ~9 MB needed) and they")
-            print("  fired -- but ITL still rose and never recovered.")
-            print("  B1 models bytes/step; it does NOT model the host path's")
-            print("  FIXED per-step overhead (per-layer hooks, k-window write")
-            print("  +read). On a small model/cohort that overhead dominates")
-            print("  the transfer it hides -- the same effect recorded for")
-            print("  opt #2. So the roofline is NECESSARY BUT NOT SUFFICIENT")
-            print("  as a demotion gate.")
-            print("  FIX (needs a design decision): close the loop empirically")
-            print("  -- demote, measure, and PROMOTE BACK if ITL got worse.")
-            print("  The promotion path now exists to do exactly that.")
+    if demotions == 0:
+        print("[3] declined to demote at all                     : PASS")
+        good = entered and bounded
+        verdict = ("BURST RECOVERY PASS: the loop detected the burst and "
+                   "declined to demote.")
     else:
-        # The CORRECT behaviour on a slow link is to refuse to demote: it would
-        # replace a fast HBM read with an interconnect read that cannot hide.
-        print(f"[3] slow link: correctly REFUSED to demote        : "
-              f"{'PASS' if demotions == 0 else 'FAIL'}  "
-              f"(refusals logged: {refused})")
-        good = entered and bounded and demotions == 0
-        verdict = ("BURST RECOVERY PASS (slow-link case): the loop detects the "
-                   "burst and correctly declines to demote, because on this "
-                   "interconnect demotion would make ITL WORSE. There is no "
-                   "recourse here -- recovery needs a link where the transfer "
-                   "hides. That is a property of the hardware, not a bug.")
+        print(f"[3] probe MEASURED the demotion as harmful        : "
+              f"{'PASS' if harmful else 'FAIL'}")
+        print(f"[4] loop UNDID its own damage (promoted back)     : "
+              f"{'PASS' if undone else 'FAIL'}  ({reverts}/{demotions})")
+        print(f"[5] ITL settled ({final:.1f} <= 75% of peak {peak:.1f})       : "
+              f"{'PASS' if settled else 'FAIL'}")
+        good = entered and bounded and harmful and undone and settled
+        verdict = ("BURST RECOVERY PASS (adaptive): the loop probed a "
+                   "demotion, MEASURED that it made ITL worse, promoted the "
+                   "requests back, and suppressed further demotions. On this "
+                   "interconnect the right action is to do nothing -- and the "
+                   "controller learns that from MEASUREMENT, which the B1 "
+                   "roofline cannot do: it sees transfer bytes, not the host "
+                   "path's fixed per-step overhead.")
     print("=" * 68)
     if good:
         print(verdict)
         return 0
-    print("BURST RECOVERY FAIL — trace tail:")
-    for t in trace[-12:]:
-        print(f"   ema={t[0]:>7} throttled={t[1]} new_demotions={t[2]} "
-              f"pending_promote={t[3]}")
+    print("BURST RECOVERY FAIL - trace tail:")
+    for t in trace[-14:]:
+        print(f"   ema={t[0]:>7} throttled={t[1]} demote={t[2]} pending={t[3]}")
     return 1
 
 

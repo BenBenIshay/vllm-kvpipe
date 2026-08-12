@@ -62,6 +62,15 @@ class TransferAwareAdmissionController:
         "_migrate_cooldown_steps",
         "_migrate_min_remaining",
         "_max_migrations_per_step",
+        # Item 3b: adaptive demotion probe.
+        "_probe",
+        "_probe_steps",
+        "_probe_margin",
+        "_demote_suppressed_until",
+        "_demote_backoff",
+        "_probe_results",
+        "_ema_window",
+        "_migrate_warmup_steps",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig") -> None:
@@ -98,6 +107,32 @@ class TransferAwareAdmissionController:
             os.environ.get("VLLM_KVPIPE_MIGRATE_MIN_REMAIN", "32") or 32)
         self._max_migrations_per_step: int = int(
             os.environ.get("VLLM_KVPIPE_MIGRATE_MAX_PER_STEP", "1") or 1)
+        # Item 3b: adaptive demotion. A demotion is treated as a PROBE whose
+        # effect on measured ITL is checked after a settling window; if it made
+        # things worse we promote back and back off. This exists because the B1
+        # roofline gates on transfer BYTES and cannot see the host path's fixed
+        # per-step overhead -- measured on A100, where a byte-legal demotion
+        # drove ITL from ~6 to ~24 ms.
+        self._probe: dict | None = None
+        self._probe_steps: int = int(
+            os.environ.get("VLLM_KVPIPE_PROBE_STEPS", "16") or 16)
+        self._probe_margin: float = float(
+            os.environ.get("VLLM_KVPIPE_PROBE_MARGIN", "0.05") or 0.05)
+        self._demote_suppressed_until: int = 0
+        self._demote_backoff: int = int(
+            os.environ.get("VLLM_KVPIPE_DEMOTE_BACKOFF", "256") or 256)
+        self._probe_results: list[tuple[float, float, bool]] = []
+        # Recent EMA history. The probe baseline must be a CLEAN steady-state
+        # reference: taking the instantaneous EMA at demotion time picked up
+        # startup/prefill transients, which made a harmful demotion look like an
+        # improvement (measured: baseline 25.5 -> 21.8 "better", while the true
+        # steady state was ~6 ms). Using the recent MINIMUM fixes that.
+        self._ema_window: list[float] = []
+        # Do not migrate on a cold EMA. Without this the first demotion fired at
+        # step 2, before any steady state existed, so the probe baseline was a
+        # startup transient and a harmful demotion looked beneficial.
+        self._migrate_warmup_steps: int = int(
+            os.environ.get("VLLM_KVPIPE_MIGRATE_WARMUP", "24") or 24)
 
     def get_req_tier(self, req_id: str) -> str | None:
         return self._req_tier.get(req_id)
@@ -137,6 +172,9 @@ class TransferAwareAdmissionController:
             self._itl_throttled_state = False
             return
         ema = self._resident_step_ms_ema
+        self._ema_window.append(ema)
+        if len(self._ema_window) > 64:
+            self._ema_window.pop(0)
         if self._itl_throttled_state:
             if ema < slo * 0.85:          # low watermark -> resume admitting
                 self._itl_throttled_state = False
@@ -232,6 +270,32 @@ class TransferAwareAdmissionController:
         t = time.monotonic() if now is None else now
         step = self._schedule_step_index
         out: list[tuple[str, str]] = []
+        if step < self._migrate_warmup_steps and self._probe is None:
+            return []                      # cold EMA -> no baseline to judge by
+
+        # --- adaptive probe: did the last demotion actually help? ----------
+        if self._probe is not None:
+            if step - self._probe["step"] < self._probe_steps:
+                return []                      # settling; do not stack changes
+            base = self._probe["baseline_ema"]
+            worse = ema > base * (1.0 + self._probe_margin)
+            live = [r for r in running_requests
+                    if r.request_id in self._probe["req_ids"]
+                    and self._req_tier.get(r.request_id) == "cpu"]
+            self._probe_results.append((base, ema, worse))
+            self._probe = None
+            if worse:
+                # REVERT. The model said the bytes fit; the measurement says the
+                # step still got slower (fixed per-step overhead the roofline
+                # cannot see). Undo, and back off exponentially so we do not
+                # re-learn the same thing every few steps.
+                self._demote_suppressed_until = step + self._demote_backoff
+                self._demote_backoff = min(self._demote_backoff * 2, 100000)
+                self.record_skip("probe_demotion_harmful")
+                for r in live:
+                    out.append((r.request_id, "promote"))
+                return out
+            self.record_skip("probe_demotion_helpful")
 
         def eligible(r) -> bool:
             last = self._migrated_at_step.get(r.request_id)
@@ -240,6 +304,10 @@ class TransferAwareAdmissionController:
             return self._amortises(r)
 
         if self._itl_throttled_state:
+            if step < self._demote_suppressed_until:
+                # Learned (by measurement) that demotion hurts in this regime.
+                self.record_skip("migrate_demote_suppressed")
+                return []
             # Over the SLO: demote the best host-tier candidates from HBM.
             cands = [
                 r for r in running_requests
@@ -256,6 +324,16 @@ class TransferAwareAdmissionController:
                     self.record_skip("migrate_demote_no_hide_budget")
                     continue
                 out.append((r.request_id, "demote"))
+            if out:
+                # Open a probe: remember the pre-demotion ITL so we can tell
+                # whether this actually helped.
+                self._probe = {
+                    "step": step,
+                    # best recent steady state, not the instantaneous EMA
+                    "baseline_ema": min(self._ema_window) if self._ema_window
+                    else ema,
+                    "req_ids": {rid for rid, _ in out},
+                }
         elif ema < slo * 0.70:
             # Comfortably under the SLO: pull back the worst host-tier tenants.
             cands = [
