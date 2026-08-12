@@ -166,6 +166,21 @@ Only now possible (SM90a). Two things worth knowing:
   takedown** — the artifact has constraints (no radix cache, head_dim 128, bf16)
   that make a naive head-to-head unfair and unpublishable.
 
+### Model-load accounting (matters at 72.7 GB)
+
+Loading the fp8 70B checkpoint is a first-class cost: on this cluster's shared
+FS we measured Llama-8B (15 GB) at 237 s -- ~63 MB/s -- which extrapolates to
+**~19 min per load**. On local NVMe expect 2-5 min, but plan for the worst.
+
+- `endpoint_comparison.py` sweeps SLOs **inside one engine per arm** (the SLO is
+  only a scheduler setting), so 5 SLOs x 3 arms costs **3 loads, not 15**. That
+  is the difference between ~1 h and ~5 h of a 24 h phase.
+- `policy_ablation.py` cannot do this: its arms differ in ENGINE config
+  (`hybrid_b_hbm_max`, tier policy), so **5 loads** are unavoidable (~1.6 h).
+- Subprocess isolation is kept **between arms**, where it is genuinely needed --
+  vLLM does not release the CUDA context in-process, and at 70B the next
+  engine's memory profiling then fails.
+
 ## 5. Budget
 
 | phase | GPU-h |
