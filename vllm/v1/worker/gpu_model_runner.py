@@ -819,6 +819,55 @@ class GPUModelRunner(
                 decode_threshold=self.reorder_batch_threshold,
             )
 
+    def _maybe_restore_promoted(self, scheduler_output, attn_metadata) -> None:
+        """Copy a promoted request's KV from the host pool back into its
+        resident blocks, before anything reads them.
+
+        The scheduler only commits a promotion after verifying the request has
+        resident blocks covering its WHOLE sequence (the hole left by its
+        host-tier steps is filled by that step's allocate_slots). Here we fill
+        those blocks with the authoritative host copy.
+        """
+        ids = getattr(scheduler_output, "promote_req_ids", None)
+        if not ids:
+            return
+        pool = getattr(self, "_rungd_pool", None)
+        if pool is None:
+            return
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        seq_lens = getattr(meta0, "seq_lens", None)
+        if bt is None or seq_lens is None:
+            logger.warning(
+                "hybrid-kv tiers: cannot restore promoted requests %s "
+                "(no block table this step); they will be re-promoted.", ids)
+            return
+        import math
+        bt_cpu = bt.cpu()
+        seq_cpu = seq_lens.cpu()
+        bs = self.cache_config.block_size
+        for i in range(min(len(self.input_batch._req_ids), bt_cpu.shape[0])):
+            rid = self.input_batch._req_ids[i]
+            if rid not in ids:
+                continue
+            nb = max(1, math.ceil(int(seq_cpu[i]) / bs))
+            if nb > bt_cpu.shape[1]:
+                logger.warning(
+                    "hybrid-kv tiers: promoted %s needs %d blocks but the "
+                    "block table has %d; skipping restore.",
+                    rid, nb, bt_cpu.shape[1])
+                continue
+            resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
+            pool.restore_req(rid, resident_ids)
+            # Its HBM copy is authoritative again; release the host extent.
+            pool.free_req(rid)
+
     def _maybe_set_hybrid_decode_split(
         self,
         num_reqs: int,
@@ -3736,6 +3785,11 @@ class GPUModelRunner(
         # attention impl can run a two-pass (dual-region) decode. No-op unless
         # VLLM_KVPIPE_HYBRID_TWOPASS=1 and the step is a genuinely mixed pure
         # decode; leaves the standard single-pass path untouched otherwise.
+        # Promotion phase 2 (runner half): restore host->resident BEFORE the
+        # split is computed and before attention runs. These requests' tier
+        # already reads "hbm", so their resident blocks must be correct now.
+        self._maybe_restore_promoted(scheduler_output, attn_metadata)
+
         self._maybe_set_hybrid_decode_split(
             num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers,
             attn_metadata,

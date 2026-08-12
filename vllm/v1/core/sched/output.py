@@ -241,6 +241,11 @@ class SchedulerOutput:
     # Hybrid tiered KV: req_id -> "hbm" | "cpu" (empty when hybrid tiers off).
     req_kv_tiers: dict[str, str] | None = None
 
+    # Hybrid tiered KV: requests promoted host->HBM this step. The runner must
+    # restore their KV from the host pool into resident blocks BEFORE attention
+    # runs, because their tier already reads "hbm" in req_kv_tiers above.
+    promote_req_ids: set[str] | None = None
+
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

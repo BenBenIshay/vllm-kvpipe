@@ -219,9 +219,50 @@ This was not attempted because a bug here corrupts output silently rather than
 failing loudly, and `allocate_slots` semantics for a block-table hole need to be
 verified empirically first. It is the single remaining piece of Item 3.
 
-**Not done for either direction:** the burst-recovery scenario (ITL returns to
-SLO after a burst, which gate-new-only cannot do) is asserted by the unit test's
-signal but has not been demonstrated end-to-end in-server.
+### Promotion COMPLETED (2026-08-12)
+
+Two-phase commit, wired end to end. Phase 1 lifts the block cap so
+`allocate_slots` (which is **total**-based: `num_tokens_need_slot =
+total_computed + new`) fills the hole; phase 2 verifies the request now has
+blocks for its WHOLE sequence and only then flips the tier, with bounded retry
+(<=8 steps) while allocation catches up and an ABORT that leaves it host-tier
+otherwise. The runner restores host->resident before attention reads.
+
+`migration_correctness.py --roundtrip` **PASS**: token-identical to vanilla
+across a full HBM->host->HBM round trip, `committed={'cpu': 3, 'hbm': 3}`.
+
+**A vacuous-test bug was caught and fixed here.** The first version of this test
+used the in-process `LLM()` API *without* `enable_hybrid_kv_tiers`, so the whole
+tier path was inert and the earlier "token-identical across demotion" PASS
+proved nothing. The test now enables the feature and **fails loudly if no
+migration is observed**. The demotion result has been re-established properly.
+
+### Burst recovery: MEASURED, AND IT DOES NOT RECOVER (2026-08-12)
+
+`burst_recovery.py` drives a real burst (8 requests, SLO 6 ms). Result:
+
+| | |
+|---|---|
+| burst pushed ITL over SLO, entered THROTTLED at step 2 | PASS |
+| migration rate bounded by the cooldown | PASS |
+| 8 demotions committed | fired |
+| **ITL recovered** | **NO — ended at ~24 ms, throttled for 63 of 65 steps** |
+
+**Root cause, and it is a real design finding.** B1's roofline gates demotion on
+**transfer volume** (361 MB headroom vs ~9 MB needed, so it said yes) but does
+**not** model the host path's **fixed per-step overhead** — per-layer hooks, the
+k-window write+read. On a small model/cohort that overhead dominates the
+transfer it hides, exactly as recorded for opt #2. **The roofline is necessary
+but not sufficient as a demotion gate.**
+
+A first fix was added and is retained — demotion is now refused when the extra
+transfer would not fit the hide budget (`_demotion_helps`) — but it is not
+enough, because here the bytes *did* fit.
+
+**The proper fix needs a design decision:** close the loop empirically — demote,
+measure, and **promote back if ITL got worse**. The promotion path now exists to
+do exactly that. Not implemented; it changes the controller from open-loop
+(trust the model) to adaptive (trust the measurement), which is a scope call.
 
 ## Item 4 — Narrow mechanism interface (DirectKV swap-in)
 

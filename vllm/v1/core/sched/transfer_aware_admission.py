@@ -247,6 +247,14 @@ class TransferAwareAdmissionController:
             ]
             cands.sort(key=lambda r: self.host_affinity(r, now=t), reverse=True)
             for r in cands[: self._max_migrations_per_step]:
+                # Only demote if the extra transfer still HIDES. Otherwise
+                # demotion trades a fast HBM read for an interconnect read that
+                # cannot hide and makes ITL worse -- measured on A100/PCIe,
+                # where the burst-recovery loop demoted 8 requests and drove ITL
+                # from ~6 to ~24 ms without ever converging.
+                if not self._demotion_helps(r, running_requests):
+                    self.record_skip("migrate_demote_no_hide_budget")
+                    continue
                 out.append((r.request_id, "demote"))
         elif ema < slo * 0.70:
             # Comfortably under the SLO: pull back the worst host-tier tenants.
@@ -258,6 +266,41 @@ class TransferAwareAdmissionController:
             for r in cands[: self._max_migrations_per_step]:
                 out.append((r.request_id, "promote"))
         return out
+
+    def hide_budget_headroom_bytes(self, running_requests: "list[Request]") -> float:
+        """Bytes of per-step transfer still available under the B1 hide budget.
+
+        Demotion is only *beneficial* while the extra transfer it creates can
+        hide inside the step. Above that, moving a request to the host tier
+        replaces a fast HBM read with an interconnect read that cannot hide,
+        which makes ITL WORSE. On PCIe the budget is tiny, so this is usually
+        <= 0 and demotion is correctly refused.
+        """
+        from vllm.v1.hybrid_kv_roofline import bytes_per_token, effective_pcie_gbps
+
+        cfg = self.scheduler_config
+        itl_ms = float(cfg.hybrid_itl_ms or 0.0) or 16.0
+        b_tok = int(cfg.hybrid_b_tok or 0) or bytes_per_token(
+            num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2)
+        x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
+        budget = (itl_ms / 1000.0) * x_eff * 1e9 * (1.0 - self._budget_margin())
+        used = float(b_tok) * sum(
+            int(getattr(r, "num_computed_tokens", 0) or 0)
+            for r in running_requests
+            if self._req_tier.get(r.request_id) == "cpu"
+        )
+        return budget - used
+
+    def _demotion_helps(self, request: "Request",
+                        running_requests: "list[Request]") -> bool:
+        """Would demoting this request actually relieve the step, or add to it?"""
+        from vllm.v1.hybrid_kv_roofline import bytes_per_token
+
+        cfg = self.scheduler_config
+        b_tok = int(cfg.hybrid_b_tok or 0) or bytes_per_token(
+            num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2)
+        need = float(b_tok) * int(getattr(request, "num_computed_tokens", 0) or 0)
+        return need <= self.hide_budget_headroom_bytes(running_requests)
 
     def _amortises(self, request: "Request") -> bool:
         """Cost model: is there enough decoding left to pay for the move?"""

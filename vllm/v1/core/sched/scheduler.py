@@ -38,6 +38,7 @@ from vllm.v1.core.encoder_cache_manager import (
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.sched.interface import SchedulerInterface
+from vllm.utils.math_utils import cdiv
 from vllm.v1.core.sched.output import (
     CachedRequestData,
     GrammarOutput,
@@ -82,6 +83,9 @@ class Scheduler(SchedulerInterface):
         self.kv_events_config = vllm_config.kv_events_config
         self.parallel_config = vllm_config.parallel_config
         self.log_stats = log_stats
+        self._promoting_req_ids: set[str] = set()
+        self._promote_attempts: dict[str, int] = {}
+        self._promote_max_attempts: int = 8
         self.transfer_aware_admission = TransferAwareAdmissionController(
             self.scheduler_config
         )
@@ -376,6 +380,11 @@ class Scheduler(SchedulerInterface):
                 and self.transfer_aware_admission.get_req_tier(request.request_id)
                 == "cpu"
                 and request.num_computed_tokens >= request.num_prompt_tokens
+                # Promotion phase 1: a request being promoted must NOT be capped,
+                # so allocate_slots runs and fills the block-table hole left by
+                # its host-tier steps (allocation is total-based:
+                # num_tokens_need_slot = total_computed + new).
+                and request.request_id not in self._promoting_req_ids
             )
             with record_function_or_nullcontext("schedule: allocate_slots"):
                 while True:
@@ -840,6 +849,7 @@ class Scheduler(SchedulerInterface):
             # Item 3: apply migrations BEFORE publishing tiers, so a demoted
             # request is seen as CPU-tier by the runner on this very step.
             self._apply_tier_migrations()
+            promoted_now = self._commit_promotions(req_to_new_blocks)
             req_kv_tiers = {}
             for req_id in num_scheduled_tokens:
                 tier = self.transfer_aware_admission.get_req_tier(req_id)
@@ -862,6 +872,7 @@ class Scheduler(SchedulerInterface):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             req_kv_tiers=req_kv_tiers,
+            promote_req_ids=promoted_now if req_kv_tiers is not None else None,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -1177,6 +1188,64 @@ class Scheduler(SchedulerInterface):
         )
         return GrammarOutput(structured_output_request_ids, bitmask)
 
+    def _commit_promotions(self, req_to_new_blocks) -> set[str]:
+        """Promotion PHASE 2: verify, then commit — or abort.
+
+        A request that spent N steps host-tier has a HOLE in its resident block
+        table: while capped, no blocks were allocated for tokens
+        [prompt, prompt+N), and the runner skipped their resident write. Phase 1
+        lifted the cap so this step's allocate_slots could fill it.
+
+        We only commit if the request now has enough blocks for its WHOLE
+        sequence. Otherwise we abort and leave it host-tier — flipping on a
+        partial allocation would serve garbage for the missing range, silently.
+        """
+        if not self._promoting_req_ids:
+            return set()
+        ctl = self.transfer_aware_admission
+        bs = self.cache_config.block_size
+        committed: set[str] = set()
+        for req_id in list(self._promoting_req_ids):
+            request = self.requests.get(req_id)
+            if request is None:                      # finished meanwhile
+                self._promoting_req_ids.discard(req_id)
+                continue
+            if req_id not in req_to_new_blocks:      # not scheduled this step
+                continue
+            need = cdiv(request.num_computed_tokens + 1, bs)
+            try:
+                have = len(
+                    self.kv_cache_manager.get_block_ids(req_id)[0]
+                )
+            except Exception:
+                have = 0
+            if have < need:
+                # Not enough blocks YET. allocate_slots fills the hole over a
+                # few steps, so keep the cap lifted and re-check next step,
+                # bounded so a request can never get stuck pending forever.
+                n = self._promote_attempts.get(req_id, 0) + 1
+                self._promote_attempts[req_id] = n
+                if n <= self._promote_max_attempts:
+                    ctl.record_skip("migrate_promote_wait_blocks")
+                    continue
+                logger.warning(
+                    "hybrid-kv tiers: aborting promotion of %s after %d steps "
+                    "-- resident blocks %d < %d needed for the full sequence.",
+                    req_id, n, have, need,
+                )
+                ctl.record_skip("migrate_promote_abort_blocks")
+                self._promoting_req_ids.discard(req_id)
+                self._promote_attempts.pop(req_id, None)
+                continue
+            # COMMIT: flip the tier. The runner restores host->resident for
+            # these ids BEFORE attention (see promote_req_ids in SchedulerOutput).
+            ctl.note_migrated(req_id, "hbm")
+            ctl.record_skip("migrate_promote_commit")
+            self._promoting_req_ids.discard(req_id)
+            self._promote_attempts.pop(req_id, None)
+            committed.add(req_id)
+        return committed
+
     def _apply_tier_migrations(self) -> None:
         """Item 3: execute the migrations the controller planned.
 
@@ -1202,15 +1271,13 @@ class Scheduler(SchedulerInterface):
                 ctl.note_migrated(req_id, "cpu")
                 ctl.record_skip("migrate_demote")
             else:
-                # Refuse: no host->resident data path yet.
-                ctl.record_skip("migrate_promote_unimplemented")
-                if not getattr(self, "_promote_warned", False):
-                    logger.warning(
-                        "hybrid-kv tiers: promotion (host->HBM) is planned by "
-                        "the controller but NOT implemented; ignoring. The "
-                        "host->resident copy path is required first."
-                    )
-                    self._promote_warned = True
+                # Promotion PHASE 1: mark only. The request stays host-tier and
+                # keeps being served from the pool this step; marking merely
+                # lifts the block cap so the next allocate_slots fills its hole.
+                # Phase 2 (verify blocks cover the full sequence, then commit)
+                # runs in _commit_promotions() after scheduling.
+                self._promoting_req_ids.add(req_id)
+                ctl.record_skip("migrate_promote_phase1")
 
     def update_from_output(
         self,
