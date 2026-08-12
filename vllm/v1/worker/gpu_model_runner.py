@@ -1151,6 +1151,9 @@ class GPUModelRunner(
                 layer_names=ordered, kv_shape=tuple(t0.shape), block_size=bs,
                 k_window=k_window, h_max_blocks=h_max, w_max_blocks=h_max,
                 device=dev, dtype=t0.dtype,
+                # Item 1b: contiguous per-request host extents so the per-step
+                # refresh is a few big memcpys, not a block-granular gather.
+                blocks_per_req=max_bpr,
             )
             pool.resident = kv_dict
             self._rungd_pool = pool

@@ -39,6 +39,7 @@ class RungdHostPool:
         w_max_blocks: int,
         device: torch.device | str,
         dtype: torch.dtype,
+        blocks_per_req: int = 0,
     ) -> None:
         self.layers = list(layer_names)
         self.layer_index = {ln: i for i, ln in enumerate(self.layers)}
@@ -79,9 +80,32 @@ class RungdHostPool:
             torch.empty(rshape, dtype=dtype, device="cpu", pin_memory=True)
             for _ in range(len(self.layers))
         ] if self._async else []
+        # Item 1a: the SYNC path used to do `index_select(...).to(device)`, and
+        # index_select's output is NOT pinned -> a pageable H2D. Measured on
+        # A100: pageable 11.17 GB/s vs pinned 25.08 GB/s (2.25x). Gather
+        # straight into this always-present pinned buffer instead, so the
+        # default path gets a pinned copy too.
+        self._sync_stage: torch.Tensor = torch.empty(
+            rshape, dtype=dtype, device="cpu", pin_memory=True)
         self._events: dict[int, torch.cuda.Event] = {}
         self._active_host_cpu: torch.Tensor | None = None
         self.free_list: list[int] = list(range(self.h_max))
+        # Item 1b: per-request CONTIGUOUS host extents (DirectKV's pool is
+        # "contiguous per-request, no scatter/gather" for exactly this reason).
+        # With scattered block ids the per-step refresh needs an index_select,
+        # measured at 6.4 GB/s on A100 -- 3.9x the cost of the pinned H2D it
+        # feeds, and the binding constraint on the whole path. Allocating each
+        # request a contiguous extent makes its blocks one ascending run, so
+        # the refresh becomes a handful of contiguous slice copies.
+        self._bpr = int(blocks_per_req)
+        self._extent_free: list[int] = (
+            list(range(self.h_max // self._bpr)) if self._bpr > 0 else []
+        )
+        self._req_extent: dict[str, int] = {}
+        # Maximal contiguous runs of the active set: (host_start, compact_start,
+        # length). Correct for ANY allocation pattern -- contiguity only makes
+        # the runs longer.
+        self._runs: list[tuple[int, int, int]] = []
         self.req_blocks: dict[str, list[int]] = {}   # req_id -> [host_block_id]
         self.req_seeded: set[str] = set()            # prefill seeded
         # Resident tensors (layer_name -> [2, nblk, bs, nkv, hd]) for seeding.
@@ -94,6 +118,22 @@ class RungdHostPool:
     # -- allocation ---------------------------------------------------------
     def ensure_req(self, req_id: str, num_logical_blocks: int) -> list[int]:
         blks = self.req_blocks.setdefault(req_id, [])
+        if self._bpr > 0:
+            # Contiguous extent per request: block ids are base..base+n-1, so a
+            # request's active blocks always form ONE ascending run.
+            if req_id not in self._req_extent:
+                if not self._extent_free:
+                    raise RuntimeError("RungdHostPool exhausted host extents")
+                self._req_extent[req_id] = self._extent_free.pop()
+            if num_logical_blocks > self._bpr:
+                raise RuntimeError(
+                    f"request needs {num_logical_blocks} blocks > extent "
+                    f"{self._bpr}"
+                )
+            base = self._req_extent[req_id] * self._bpr
+            while len(blks) < num_logical_blocks:
+                blks.append(base + len(blks))
+            return blks
         while len(blks) < num_logical_blocks:
             if not self.free_list:
                 raise RuntimeError("RungdHostPool exhausted host blocks")
@@ -101,8 +141,14 @@ class RungdHostPool:
         return blks
 
     def free_req(self, req_id: str) -> None:
-        for b in self.req_blocks.pop(req_id, []):
-            self.free_list.append(b)
+        if self._bpr > 0:
+            ext = self._req_extent.pop(req_id, None)
+            if ext is not None:
+                self._extent_free.append(ext)
+            self.req_blocks.pop(req_id, None)
+        else:
+            for b in self.req_blocks.pop(req_id, []):
+                self.free_list.append(b)
         self.req_seeded.discard(req_id)
 
     # -- seeding (resident prefill -> host, once per request) ---------------
@@ -149,6 +195,18 @@ class RungdHostPool:
         # Fresh per-step: the compact host-block set + a clean prefetch chain.
         self._active_host_cpu = torch.tensor(self._active_host, dtype=torch.long)
         self._events = {}
+        # Maximal contiguous runs -> contiguous slice copies replace the gather.
+        runs: list[tuple[int, int, int]] = []
+        if self._active_host:
+            start = prev = self._active_host[0]
+            cstart = 0
+            for i, hb in enumerate(self._active_host[1:], 1):
+                if hb != prev + 1:
+                    runs.append((start, cstart, prev - start + 1))
+                    start, cstart = hb, i
+                prev = hb
+            runs.append((start, cstart, prev - start + 1))
+        self._runs = runs
         if self._w_cur > self.w_max:
             raise RuntimeError(
                 f"rolling region W={self._w_cur} exceeds w_max={self.w_max}"
@@ -169,10 +227,32 @@ class RungdHostPool:
 
     # -- per-layer streaming + write ---------------------------------------
     def _sync_stream_into(self, layer_idx: int, slot: torch.Tensor) -> None:
-        """Blocking host->rolling refresh (fallback / first layer of a step)."""
-        gathered = self.host[self.layers[layer_idx]].index_select(
-            1, self._active_host_cpu)
-        slot.narrow(1, 0, self._w_cur).copy_(gathered.to(slot.device))
+        """Blocking host->rolling refresh (fallback / first layer of a step).
+
+        Gathers directly into a PINNED staging buffer (`out=`), then does a
+        pinned H2D. The previous form built an unpinned intermediate via
+        `index_select(...).to(device)`, costing a pageable copy (2.25x slower
+        on A100). Same stream as the consumer, so ordering is preserved.
+        """
+        w = self._w_cur
+        stage = self._sync_stage.narrow(1, 0, w)
+        self._gather_into(layer_idx, stage)
+        slot.narrow(1, 0, w).copy_(stage, non_blocking=True)
+
+    def _gather_into(self, layer_idx: int, stage: torch.Tensor) -> None:
+        """Fill `stage` (pinned, compact order) from this layer's host mirror.
+
+        Uses maximal contiguous runs, so with per-request extents this is a few
+        big memcpys instead of a block-granular index_select. Falls back to
+        index_select if the active set is badly fragmented (legacy scattered
+        allocation), where run-by-run would be slower than one gather.
+        """
+        src = self.host[self.layers[layer_idx]]
+        if self._runs and len(self._runs) * 8 <= self._w_cur:
+            for hs, cs, ln in self._runs:
+                stage.narrow(1, cs, ln).copy_(src.narrow(1, hs, ln))
+        else:
+            torch.index_select(src, 1, self._active_host_cpu, out=stage)
 
     def _launch_prefetch(self, layer_idx: int) -> None:
         """Issue layer_idx's host->rolling H2D on the side stream (overlaps the
@@ -182,8 +262,7 @@ class RungdHostPool:
         slot = self.rolling[layer_idx % self.k]
         stage_v = self._stage[layer_idx].narrow(1, 0, self._w_cur)
         # Gather the cohort's host blocks into this layer's pinned stage (CPU).
-        stage_v.copy_(self.host[self.layers[layer_idx]].index_select(
-            1, self._active_host_cpu))
+        self._gather_into(layer_idx, stage_v)
         # Don't overwrite the slot until its previous (main-stream) read is done.
         self._copy_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self._copy_stream):

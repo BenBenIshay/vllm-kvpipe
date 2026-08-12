@@ -69,6 +69,37 @@ blocks.
 bitwise + token-identical harness is the gate; no performance number is taken
 until both pass.
 
+### RESULT — Item 1 DONE (2026-08-12)
+
+Correctness gates passed **before** any measurement, and again after each change:
+`rungd_host_pool_test.py` bitwise-clean; `hybrid_rungd_real.py` token-identical
+to vanilla on all 3 prompts.
+
+Per-layer host→rolling refresh, 5 riders x 8192 tok, 168 MB/layer, A100:
+
+| path | time | bandwidth |
+|---|---|---|
+| OLD: `index_select` + pageable H2D | 72.57 ms | 2.31 GB/s |
+| **NEW: run-based slice copy + pinned H2D** | **7.20 ms** | **23.29 GB/s** |
+
+**10.1x** — well above the >=20 GB/s acceptance bar, and far more than the ~4x
+projected. Root cause was worse than the corrected Gate 2 diagnosis suggested:
+`index_select` is slow *even when its indices are contiguous* (6.4 GB/s in
+isolation), and it fed a pageable copy on top.
+
+**Honest negative result on 1b's allocator change.** Contiguous per-request
+extents produced **no measurable benefit**. The legacy free-list is LIFO, so a
+steady-state cohort keeps a clustered block set: `runs=1` both with and without
+extents, including after 40 rounds of arrival/completion churn. **The entire
+10.1x comes from replacing `index_select` with run-based slice copies and
+staging through pinned memory** (1a + the copy half of 1b).
+
+The extent allocator is kept as *insurance*, not a measured win: it guarantees
+one run per request by construction rather than relying on allocator behaviour,
+and it mirrors DirectKV's per-request contiguous pool, which eases the eventual
+mechanism swap. Fragmentation that would justify it needs varying request sizes,
+which we have not exercised.
+
 ## Item 2 — Request-level tier assignment
 
 **Gap:** today "which requests are host-tier" is effectively arrival order; the
