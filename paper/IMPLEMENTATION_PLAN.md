@@ -163,6 +163,42 @@ moments rather than pages chasing shifting token importance.
 **Risk:** high — correctness during migration is where the bugs live. Gate every
 performance number behind the bitwise/token-identical harness.
 
+### RESULT — Item 3 PARTIAL (2026-08-12): demotion done, promotion NOT done
+
+**Decision logic: complete and tested.** `plan_migrations()` with all three
+anti-thrash guards. `migration_unit.py` PASS 6/6:
+
+| check | result |
+|---|---|
+| over SLO → demote | PASS |
+| headroom → promote planned | PASS |
+| hysteresis dead-band quiet (between 0.70 and 0.95 SLO) | PASS |
+| cost model refuses a request with 4 tokens left | PASS |
+| **adversarial oscillation, 400 steps** | **37 migrations = 0.0925/step vs 0.0938 bound — PASS** |
+| arrival policy → migration off | PASS |
+
+The oscillation test is the one that matters: it lands right at the cooldown
+bound, confirming the cooldown (not luck) is what bounds the rate. This is the
+evidence for our disagreement with the IEEE CAL letter, which reports
+token-level migration thrashing below ~60% attention sparsity.
+
+**Demotion (HBM → host): DONE and correct.** It turned out to be nearly free:
+`gpu_model_runner` already seeds any CPU-tier request it has not seen from that
+request's *current* resident blocks, and the scheduler's cap prevents block
+*growth* without reclaiming history — so flipping the tier is sufficient and the
+seed is exact. `migration_correctness.py` **PASS**: output is token-identical to
+vanilla across a forced mid-flight demotion on all 3 prompts.
+
+**Promotion (host → HBM): NOT IMPLEMENTED.** The controller plans it, and the
+scheduler **explicitly refuses and logs it** rather than flipping the tier —
+because flipping without a host→resident copy would serve the request from
+stale resident blocks and produce wrong tokens. Building that copy path, plus
+its token-identical gate, is the remaining work on Item 3.
+
+**Not done for either direction:** the burst-recovery scenario (ITL returns to
+SLO after a burst, which gate-new-only cannot do) is asserted by the unit test's
+signal but has not been demonstrated end-to-end in-server.
+
 ## Item 4 — Narrow mechanism interface (DirectKV swap-in)
 
 **Purpose:** make the mechanism replaceable so the GH200 trip is a swap, not a

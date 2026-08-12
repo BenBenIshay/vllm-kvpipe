@@ -56,6 +56,12 @@ class TransferAwareAdmissionController:
         "_idle_saturation_s",
         "_remaining_saturation",
         "_w_idle",
+        # Item 3: migration state.
+        "_migrated_at_step",
+        "_migration_counts",
+        "_migrate_cooldown_steps",
+        "_migrate_min_remaining",
+        "_max_migrations_per_step",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig") -> None:
@@ -83,6 +89,15 @@ class TransferAwareAdmissionController:
             os.environ.get("VLLM_KVPIPE_TIER_REMAIN_SAT", "512") or 512)
         self._w_idle: float = float(
             os.environ.get("VLLM_KVPIPE_TIER_W_IDLE", "0.7") or 0.7)
+        # Item 3: migration.
+        self._migrated_at_step: dict[str, int] = {}
+        self._migration_counts: dict[str, int] = {}
+        self._migrate_cooldown_steps: int = int(
+            os.environ.get("VLLM_KVPIPE_MIGRATE_COOLDOWN", "64") or 64)
+        self._migrate_min_remaining: int = int(
+            os.environ.get("VLLM_KVPIPE_MIGRATE_MIN_REMAIN", "32") or 32)
+        self._max_migrations_per_step: int = int(
+            os.environ.get("VLLM_KVPIPE_MIGRATE_MAX_PER_STEP", "1") or 1)
 
     def get_req_tier(self, req_id: str) -> str | None:
         return self._req_tier.get(req_id)
@@ -90,6 +105,7 @@ class TransferAwareAdmissionController:
     def release_req_tier(self, req_id: str) -> None:
         self._req_tier.pop(req_id, None)
         self._last_active.pop(req_id, None)
+        self._migrated_at_step.pop(req_id, None)
 
     def release_finished(self, finished_req_ids: list[str]) -> None:
         for req_id in finished_req_ids:
@@ -179,6 +195,89 @@ class TransferAwareAdmissionController:
             if remaining > 0 else 0.5      # unknown horizon -> neutral
         )
         return self._w_idle * idle_score + (1.0 - self._w_idle) * rem_score
+
+    # ------------------------------------------------- Item 3: migration
+    def plan_migrations(
+        self, running_requests: "list[Request]", now: float | None = None
+    ) -> list[tuple[str, str]]:
+        """Decide tier moves for already-running requests.
+
+        Closes the *gate-new-only* limitation: previously a burst admitted
+        everyone before the ITL loop engaged, and a long-running cohort could
+        drift over SLO with no recourse but to finish.
+
+        Returns [(req_id, "demote"|"promote")].
+
+        Three guards, all necessary to avoid thrash:
+          1. **Hysteresis** — reuses B2's OK/THROTTLED watermarks, so demotion
+             starts only above the high watermark and promotion only below the
+             low one. A request cannot be demoted and promoted in the same
+             neighbourhood of the SLO.
+          2. **Cost model** — a migration moves S*k bytes once. Refuse it unless
+             the request has enough decoding left to amortise that move.
+          3. **Cooldown** — a request that just migrated is ineligible for
+             `_migrate_cooldown_steps`, which bounds migrations/second even if
+             the ITL signal oscillates.
+        """
+        if self._tier_policy != "scored":
+            return []
+        cfg = self.scheduler_config
+        if not getattr(cfg, "enable_hybrid_kv_tiers", False):
+            return []
+        slo = float(cfg.transfer_aware_slo_p99_itl_ms or 0.0)
+        ema = self._resident_step_ms_ema
+        if slo <= 0 or ema <= 0:
+            return []
+
+        t = time.monotonic() if now is None else now
+        step = self._schedule_step_index
+        out: list[tuple[str, str]] = []
+
+        def eligible(r) -> bool:
+            last = self._migrated_at_step.get(r.request_id)
+            if last is not None and (step - last) < self._migrate_cooldown_steps:
+                return False
+            return self._amortises(r)
+
+        if self._itl_throttled_state:
+            # Over the SLO: demote the best host-tier candidates from HBM.
+            cands = [
+                r for r in running_requests
+                if self._req_tier.get(r.request_id) == "hbm" and eligible(r)
+            ]
+            cands.sort(key=lambda r: self.host_affinity(r, now=t), reverse=True)
+            for r in cands[: self._max_migrations_per_step]:
+                out.append((r.request_id, "demote"))
+        elif ema < slo * 0.70:
+            # Comfortably under the SLO: pull back the worst host-tier tenants.
+            cands = [
+                r for r in running_requests
+                if self._req_tier.get(r.request_id) == "cpu" and eligible(r)
+            ]
+            cands.sort(key=lambda r: self.host_affinity(r, now=t))
+            for r in cands[: self._max_migrations_per_step]:
+                out.append((r.request_id, "promote"))
+        return out
+
+    def _amortises(self, request: "Request") -> bool:
+        """Cost model: is there enough decoding left to pay for the move?"""
+        sp = getattr(request, "sampling_params", None)
+        max_toks = int(getattr(sp, "max_tokens", 0) or 0) if sp else 0
+        if max_toks <= 0:
+            return True            # unknown horizon -> allow, cooldown bounds it
+        done = int(getattr(request, "num_output_tokens", 0) or 0)
+        return (max_toks - done) >= self._migrate_min_remaining
+
+    def note_migrated(self, req_id: str, new_tier: str) -> None:
+        """Record a completed migration (sets the tier and starts the cooldown)."""
+        self._req_tier[req_id] = new_tier
+        self._migrated_at_step[req_id] = self._schedule_step_index
+        self._migration_counts[new_tier] = (
+            self._migration_counts.get(new_tier, 0) + 1
+        )
+
+    def migration_stats(self) -> dict[str, int]:
+        return dict(self._migration_counts)
 
     def _budget_margin(self) -> float:
         raw = os.environ.get("VLLM_KVPIPE_HYBRID_BUDGET_MARGIN", "").strip()

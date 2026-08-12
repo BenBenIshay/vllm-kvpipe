@@ -837,6 +837,9 @@ class Scheduler(SchedulerInterface):
 
         req_kv_tiers: dict[str, str] | None = None
         if self.scheduler_config.enable_hybrid_kv_tiers:
+            # Item 3: apply migrations BEFORE publishing tiers, so a demoted
+            # request is seen as CPU-tier by the runner on this very step.
+            self._apply_tier_migrations()
             req_kv_tiers = {}
             for req_id in num_scheduled_tokens:
                 tier = self.transfer_aware_admission.get_req_tier(req_id)
@@ -1173,6 +1176,41 @@ class Scheduler(SchedulerInterface):
             scheduler_output.scheduled_spec_decode_tokens,
         )
         return GrammarOutput(structured_output_request_ids, bitmask)
+
+    def _apply_tier_migrations(self) -> None:
+        """Item 3: execute the migrations the controller planned.
+
+        DEMOTE (hbm -> host) is nearly free here: the runner already seeds any
+        CPU-tier request it has not seen from that request's CURRENT resident
+        blocks (`gpu_model_runner`: `if rid not in pool.req_seeded: seed_req`).
+        The blocks still hold the full history at that point -- the scheduler's
+        cap prevents block *growth* for CPU-tier requests, it does not reclaim
+        history -- so flipping the tier is sufficient and the seed is exact.
+
+        PROMOTE (host -> hbm) is NOT executed. It needs a host->resident copy
+        path that does not exist yet, and silently flipping the tier without
+        moving the data would serve a request from stale resident blocks, i.e.
+        produce wrong tokens. We therefore refuse it loudly rather than risk
+        that. See paper/IMPLEMENTATION_PLAN.md Item 3.
+        """
+        ctl = self.transfer_aware_admission
+        plan = ctl.plan_migrations(self.running)
+        if not plan:
+            return
+        for req_id, action in plan:
+            if action == "demote":
+                ctl.note_migrated(req_id, "cpu")
+                ctl.record_skip("migrate_demote")
+            else:
+                # Refuse: no host->resident data path yet.
+                ctl.record_skip("migrate_promote_unimplemented")
+                if not getattr(self, "_promote_warned", False):
+                    logger.warning(
+                        "hybrid-kv tiers: promotion (host->HBM) is planned by "
+                        "the controller but NOT implemented; ignoring. The "
+                        "host->resident copy path is required first."
+                    )
+                    self._promote_warned = True
 
     def update_from_output(
         self,
