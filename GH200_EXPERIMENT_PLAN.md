@@ -54,9 +54,16 @@ Every item here is free and removes rental risk.
       `run_suite.sh`.
 - [ ] **Pin the environment**: exact torch/vLLM/CUDA versions, and a build
       script that runs unattended.
-- [ ] **Confirm nvcc exists on the target image** — our A100 cluster has none,
-      which is why FlashInfer and DirectKV were unmeasurable. Without it we lose
-      two of five phases.
+- [ ] **Confirm `nvcc` exists on the target image.** `nvcc` is the CUDA
+      compiler; vLLM itself ships precompiled kernels and does not need it, but
+      **FlashInfer JIT-compiles its attention kernels at runtime** and
+      **DirectKV is CUDA source (SM90a CUTLASS/CuTe) that must be compiled**.
+      Our A100 cluster has only `ptxas` (a later stage, shipped via pip) and no
+      `nvcc`, which is exactly why those two were unmeasurable there.
+      **Ask for a CUDA `devel` image, not a `runtime` image**
+      (`nvidia/cuda:12.x-devel-*` has it; `*-runtime-*` does not).
+      Verify in minute one: `nvcc --version`. Without it we lose 4.2's
+      FlashInfer arm and all of 4.5.
 - [ ] **Decide the SLO grid** in advance (§4.1) so we are not tuning live.
 
 ## 3. Phase 0 — bring-up  (time-box: 8 GPU-hours, HARD)
@@ -170,11 +177,15 @@ essential one.
 - Not chasing the eff_kv inefficiency — it turned out to be a backend-selection
   artifact, not headroom.
 
-## 8. Open decisions (need Ben)
+## 8. Decisions
 
-1. **Provider and timing** — and whether an image with `nvcc` is available
-   (without it we lose 4.2's FlashInfer arm and all of 4.5).
-2. **1× GH200-96 fp8 vs 2× TP=2 fp16** — recommendation is 1×fp8; TP=2 is the
-   fallback if the fp8 checkpoint misbehaves.
-3. **Is 15% the right kill threshold** for 4.1, or would you accept less given
-   the modest ceiling (measured-grounded estimate ×1.39, model ×1.59)?
+**AGREED 2026-08-12:**
+2. **1× GH200-96 with Llama-70B FP8.** TP=2 fp16 is the fallback only if the
+   fp8 checkpoint misbehaves.
+3. **15% is the kill threshold** for 4.1. Mixture must beat both endpoints by
+   >=15% at matched SLO, or we fall back to the characterization paper.
+
+**STILL OPEN:**
+1. **Provider and timing.** Requirement fixed by the above: a CUDA **devel**
+   image (must have `nvcc` — see §2), 1× GH200-96, ~5-7 days, and enough disk
+   for a ~70 GB fp8 checkpoint plus the host-tier pinned pool.
