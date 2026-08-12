@@ -30,9 +30,14 @@ overhead that survives the interconnect -- important either way.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import time
+
+# A multi-hour phase that block-buffers stdout is indistinguishable
+# from a hang. Make every print line-flushed.
+print = functools.partial(print, flush=True)  # noqa: A001
 
 os.environ.setdefault("VLLM_USE_V1", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -154,6 +159,12 @@ def run_arm(arm: str, args, slo_ms: float) -> dict:
 def _run_arm_subprocess(arm: str, slo: float, args) -> dict:
     """Run one arm in a FRESH process.
 
+    NOTE on cost: unlike endpoint_comparison.py -- which sweeps SLOs INSIDE a
+    single engine because the SLO is only a scheduler setting -- the arms here
+    differ in ENGINE configuration (hybrid_b_hbm_max, tier policy), so one model
+    load per arm is unavoidable. 5 arms x ~19 min at 70B is ~1.6 h; budget for
+    it rather than being surprised by it.
+
     In-process teardown is not sufficient: vLLM keeps the CUDA context (and the
     weights + KV pool) alive after the engine is dropped, so the next arm's
     memory profiling sees a nearly-full GPU and refuses to start. Harmless at
@@ -176,7 +187,12 @@ def _run_arm_subprocess(arm: str, slo: float, args) -> dict:
                 cmd.append(flag)
         else:
             cmd += [flag, str(v)]
+    import time as _t
+    print(f"  [launch] arm={arm} ...")
+    _t0 = _t.time()
+    cmd.insert(1, "-u")   # child must not block-buffer either
     r = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"  [done  ] arm={arm} in {_t.time()-_t0:.0f}s rc={r.returncode}")
     if r.returncode != 0:
         tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
         raise RuntimeError(f"arm {arm} failed:\n  " + "\n  ".join(tail))

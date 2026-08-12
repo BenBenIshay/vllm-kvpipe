@@ -33,9 +33,14 @@ Dry-run on A100 with a small model; on GH200 only --model/--contexts change.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import time
+
+# A multi-hour phase that block-buffers stdout is indistinguishable
+# from a hang. Make every print line-flushed.
+print = functools.partial(print, flush=True)  # noqa: A001
 
 os.environ.setdefault("VLLM_USE_V1", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -72,6 +77,15 @@ def build_llm(arm: str, args, slo_ms: float):
             # mixture : let the policy + B1/B2 decide the split.
             hybrid_b_hbm_max=0 if arm == "all_host" else args.b_hbm_max,
         )
+        if arm == "all_host":
+            # DirectKV does NOT gate admission -- it puts every request's KV on
+            # the host and runs. Leaving B1's transfer budget active with zero
+            # HBM-tier slots means requests beyond the budget have NO fallback
+            # tier and queue forever (observed: this arm hung indefinitely at 0%
+            # GPU). Model the real system: admit everything and let the measured
+            # performance be whatever it is.
+            extra["hybrid_itl_ms"] = 1e9                   # unlimited B1 budget
+            extra["transfer_aware_slo_p99_itl_ms"] = 0.0   # disables B2
     return LLM(model=args.model, dtype=args.dtype,
                enable_prefix_caching=False,
                gpu_memory_utilization=args.gpu_mem_util,
@@ -110,13 +124,58 @@ def _teardown(llm) -> None:
     gc.collect()
 
 
-def run_arm(arm: str, args, slo_ms: float):
+def run_arm_sweep(arm: str, args, slos: list) -> list:
+    """Build ONE engine for this arm, then measure every SLO point in-process.
+
+    The SLO is only a scheduler setting -- it does not change the model or the
+    KV pool -- so rebuilding the engine per SLO would reload 72.7 GB of weights
+    for nothing (~19 min/load measured on this cluster's FS; 15 loads would be
+    ~5 h of a 24 h budget). Subprocess isolation is kept BETWEEN arms, which is
+    where it is actually needed, since arms differ in memory layout.
+    """
+    llm = build_llm(arm, args, slos[0] if slos else 50.0)
+    out = []
+    for slo in slos:
+        _set_slo(llm, slo)
+        out.append(_measure(arm, args, llm, slo))
+    _teardown(llm)
+    return out
+
+
+def _set_slo(llm, slo_ms: float) -> None:
+    """Retune the running scheduler to a new SLO and clear adaptive state.
+
+    Controller state (ITL EMA, throttled flag, migration probe, counters) is
+    reset so each SLO point is an independent measurement rather than
+    inheriting the previous point's history.
+    """
+    core = llm.llm_engine.engine_core
+    sched = getattr(getattr(core, "engine_core", core), "scheduler", None)
+    if sched is None:
+        return
+    cfg = sched.scheduler_config
+    cfg.transfer_aware_slo_p99_itl_ms = slo_ms
+    cfg.hybrid_itl_ms = slo_ms
+    ctl = getattr(sched, "transfer_aware_admission", None)
+    if ctl is not None:
+        ctl._resident_step_ms_ema = 0.0
+        ctl._itl_throttled_state = False
+        ctl._ema_window = []
+        ctl._probe = None
+        ctl._probe_results = []
+        ctl._migration_counts = {}
+        ctl._migrated_at_step = {}
+        ctl._demote_suppressed_until = 0
+    if hasattr(sched, "_promoting_req_ids"):
+        sched._promoting_req_ids.clear()
+
+
+def _measure(arm: str, args, llm, slo_ms: float):
     """Closed-loop: offer a large burst, measure what is actually served."""
     import numpy as np
     from vllm import SamplingParams
     from vllm.inputs import TokensPrompt
 
-    llm = build_llm(arm, args, slo_ms)
     core = llm.llm_engine.engine_core
     sched = getattr(getattr(core, "engine_core", core), "scheduler", None)
 
@@ -133,6 +192,7 @@ def run_arm(arm: str, args, slo_ms: float):
     # steady-state concurrency sampler
     conc: list[int] = []
     tiers_seen: dict[str, int] = {}
+    orig = None
     if sched is not None:
         orig = sched.schedule
 
@@ -148,23 +208,27 @@ def run_arm(arm: str, args, slo_ms: float):
         sched.schedule = sampled
 
     t0 = time.perf_counter()
-    outs = llm.generate(prompts, sp, use_tqdm=False)
+    try:
+        outs = llm.generate(prompts, sp, use_tqdm=False)
+    finally:
+        # restore: _measure is called once per SLO point on the SAME engine, and
+        # re-wrapping an already-wrapped schedule() would nest the samplers.
+        if sched is not None:
+            sched.schedule = orig
     wall = time.perf_counter() - t0
 
     toks = sum(len(o.outputs[0].token_ids) for o in outs)
     warm = conc[len(conc) // 4:] if len(conc) > 8 else conc   # drop ramp-up
     steady = (sum(warm) / len(warm)) if warm else 0.0
     itl_ms = wall / max(1, args.out_len) * 1000.0
-    res = dict(arm=arm, slo_ms=slo_ms, wall_s=wall,
-               steady_concurrency=steady, peak_concurrency=max(conc or [0]),
-               tokens=toks, tokens_per_s=toks / wall,
-               itl_proxy_ms=itl_ms, tier_samples=tiers_seen,
-               token_ids=[tuple(o.outputs[0].token_ids) for o in outs])
-    _teardown(llm)
-    return res
+    return dict(arm=arm, slo_ms=slo_ms, wall_s=wall,
+                steady_concurrency=steady, peak_concurrency=max(conc or [0]),
+                tokens=toks, tokens_per_s=toks / wall,
+                itl_proxy_ms=itl_ms, tier_samples=tiers_seen,
+                token_ids=[tuple(o.outputs[0].token_ids) for o in outs])
 
 
-def _run_arm_subprocess(arm: str, slo: float, args) -> dict:
+def _run_arm_subprocess(arm: str, slos: list, args) -> list:
     """Run one arm in a FRESH process.
 
     In-process teardown is not sufficient: vLLM keeps the CUDA context (and the
@@ -179,9 +243,10 @@ def _run_arm_subprocess(arm: str, slo: float, args) -> dict:
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
     cmd = [sys.executable, os.path.abspath(__file__),
-           "--single-arm", arm, "--arm-slo", str(slo), "--out", tmp]
+           "--single-arm", arm,
+           "--arm-slos", ",".join(str(x) for x in slos), "--out", tmp]
     for k, v in vars(args).items():
-        if k in ("single_arm", "arm_slo", "out", "arms", "slos", "slo"):
+        if k in ("single_arm", "arm_slos", "out", "arms", "slos", "slo"):
             continue
         flag = "--" + k.replace("_", "-")
         if isinstance(v, bool):
@@ -189,7 +254,20 @@ def _run_arm_subprocess(arm: str, slo: float, args) -> dict:
                 cmd.append(flag)
         else:
             cmd += [flag, str(v)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    import time as _t
+    print(f"  [launch] arm={arm} ...")
+    _t0 = _t.time()
+    cmd.insert(1, "-u")   # child must not block-buffer either
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=args.arm_timeout_s)
+    except subprocess.TimeoutExpired:
+        # A hung arm must fail FAST. On a metered box a silent hang is the most
+        # expensive failure mode available.
+        raise RuntimeError(
+            f"arm {arm} exceeded --arm-timeout-s={args.arm_timeout_s}s; "
+            "treating as a hang (check admission gating / queueing)") from None
+    print(f"  [done  ] arm={arm} in {_t.time()-_t0:.0f}s rc={r.returncode}")
     if r.returncode != 0:
         tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
         raise RuntimeError(f"arm {arm} failed:\n  " + "\n  ".join(tail))
@@ -213,19 +291,26 @@ def main() -> int:
     p.add_argument("--slos", default="30,40,50,75,100")
     p.add_argument("--eager", action="store_true", default=True)
     p.add_argument("--arms", default=",".join(ARMS))
+    p.add_argument("--arm-timeout-s", type=int, default=3600,
+                   help="watchdog: fail an arm rather than let it hang")
     p.add_argument("--single-arm", default="",
                    help="internal: run ONE arm and dump json "
                         "(each arm runs in its own process so the "
                         "CUDA context is fully released)")
-    p.add_argument("--arm-slo", type=float, default=0.0,
-                   help="internal: SLO for --single-arm")
+    p.add_argument("--arm-slos", default="",
+                   help="internal: comma-separated SLOs for --single-arm. The "
+                        "arm builds ONE engine and sweeps them in-process; the "
+                        "SLO is only a scheduler setting, so reloading 72.7 GB "
+                        "of weights per SLO point would be pure waste "
+                        "(~19 min/load measured on this cluster).")
     p.add_argument("--out", default="endpoint_comparison.json")
     args = p.parse_args()
 
     if args.single_arm:
-        r = run_arm(args.single_arm, args, args.arm_slo)
+        slo_list = [float(x) for x in args.arm_slos.split(",") if x]
+        rs = run_arm_sweep(args.single_arm, args, slo_list)
         with open(args.out, "w") as f:
-            json.dump(r, f)
+            json.dump(rs, f)
         return 0
 
     slos = [float(x) for x in args.slos.split(",")]
@@ -236,12 +321,14 @@ def main() -> int:
           f"link={args.link_gbps} GB/s")
     print(f"{'SLO':>6} {'arm':<10} {'steady conc':>12} {'tok/s':>9} "
           f"{'wall':>8}  tiers")
+    # ARM-major: one subprocess (=> one model load) per arm, SLOs swept inside.
     ref: dict = {}
+    by_arm: dict = {}
+    for arm in arms:
+        by_arm[arm] = _run_arm_subprocess(arm, slos, args)
     for slo in slos:
         for arm in arms:
-            r = _run_arm_subprocess(arm, slo, args)
-            key = arm if arm != "mixture" else "mixture"
-            # correctness: every arm must match the all-HBM reference exactly
+            r = next(x for x in by_arm[arm] if x["slo_ms"] == slo)
             if arm == "all_hbm":
                 ref[slo] = r["token_ids"]
                 ok = "ref"
