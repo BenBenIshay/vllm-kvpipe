@@ -1,8 +1,18 @@
 # BLOCKER: the host tier never frees prefill blocks
 
-> **STATUS 2026-08-13: FIXED, correctness re-established, capacity effect
-> being re-measured.** See "Resolution" at the bottom. The analysis below is
-> the original diagnosis and is kept as written.
+> **STATUS 2026-08-13: the blocker is FIXED and validated. The mixture still
+> does not beat all-HBM on PCIe, for two reasons that are now MEASURED rather
+> than argued — the link hides only ~2 riders, and riders are purchasable only
+> by surrendering resident slots (transient prefill residency). A separate,
+> larger defect was found and fixed on the way: the host tier was running 19x
+> below link speed because of our own CPU memcpy, a cost C2C would NOT have
+> removed.**
+>
+> An intermediate result in this file's history claimed +12% concurrency for
+> the mixture. **That is retracted** — see "A/B of the block-major fix" at the
+> bottom. Commit 56589dab9's title carries the retracted claim.
+>
+> The analysis below is the original diagnosis and is kept as written.
 
 Found 2026-08-12 while validating that the endpoint-comparison harness can
 detect a difference. **This invalidates the current implementation's ability to
