@@ -269,15 +269,25 @@ def _run_arm_subprocess(arm: str, slos: list, args) -> list:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=args.arm_timeout_s)
     except subprocess.TimeoutExpired:
-        # A hung arm must fail FAST. On a metered box a silent hang is the most
-        # expensive failure mode available.
-        raise RuntimeError(
-            f"arm {arm} exceeded --arm-timeout-s={args.arm_timeout_s}s; "
-            "treating as a hang (check admission gating / queueing)") from None
+        # A hung arm must fail FAST -- on a metered box a silent hang is the
+        # most expensive failure mode available -- but it must NOT take the
+        # arms that already succeeded with it. Raising here discarded a
+        # completed all_hbm and mixture because all_host timed out, i.e. it
+        # threw away the entire comparison over the one arm we already know is
+        # slow on PCIe by construction. Report the timeout as this arm's result
+        # and let the caller decide.
+        print(f"  [TIMEOUT] arm={arm} exceeded --arm-timeout-s="
+              f"{args.arm_timeout_s}s; recording as unfinished and continuing "
+              "(check admission gating / queueing)")
+        return {"arm": arm, "failed": "timeout",
+                "timeout_s": args.arm_timeout_s}
     print(f"  [done  ] arm={arm} in {_t.time()-_t0:.0f}s rc={r.returncode}")
     if r.returncode != 0:
         tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
-        raise RuntimeError(f"arm {arm} failed:\n  " + "\n  ".join(tail))
+        print(f"  [FAILED ] arm={arm} rc={r.returncode}:\n    "
+              + "\n    ".join(tail))
+        return {"arm": arm, "failed": f"rc={r.returncode}",
+                "tail": tail}
     with open(tmp) as fh:
         return json.load(fh)
 
@@ -337,6 +347,11 @@ def main() -> int:
     by_arm: dict = {}
     for arm in arms:
         by_arm[arm] = _run_arm_subprocess(arm, slos, args)
+    # An arm that timed out or crashed returns a dict, not the per-SLO list.
+    # Drop it from the table (it is reported above) rather than losing the
+    # arms that did finish.
+    unfinished = {a: r for a, r in by_arm.items() if isinstance(r, dict)}
+    arms = [a for a in arms if a not in unfinished]
     for slo in slos:
         for arm in arms:
             r = next(x for x in by_arm[arm] if x["slo_ms"] == slo)
@@ -358,8 +373,14 @@ def main() -> int:
                   f"{r['tokens_per_s']:>9.1f} {r['wall_s']:>7.1f}s  "
                   f"{r['tier_samples']}  {ok}")
 
+    if unfinished:
+        for a, r in unfinished.items():
+            print(f"{'':>6} {a:<10} {'--':>12} {'--':>9} {'--':>8}  "
+                  f"DID NOT FINISH ({r.get('failed')})")
+
     with open(args.out, "w") as f:
-        json.dump({"config": vars(args), "results": results}, f, indent=2)
+        json.dump({"config": vars(args), "results": results,
+                   "unfinished": unfinished}, f, indent=2)
 
     # VACUITY GUARD. If the all-HBM arm already sustains everything offered,
     # HBM capacity was never the binding constraint and NO arm can differ --
@@ -384,17 +405,27 @@ def main() -> int:
     print("\n" + "=" * 72)
     for slo in slos:
         by = {r["arm"]: r for r in results if r["slo_ms"] == slo}
-        if len(by) < 3:
+        if "all_hbm" not in by or "mixture" not in by:
+            print(f"SLO {slo:>5.0f} ms: cannot compare -- missing "
+                  f"{sorted({'all_hbm', 'mixture'} - set(by))}")
             continue
         a = by["all_hbm"]["steady_concurrency"]
-        b = by["all_host"]["steady_concurrency"]
         c = by["mixture"]["steady_concurrency"]
-        best_end = max(a, b)
+        # A missing all_host must NOT be silently read as an endpoint of 0 --
+        # that would flatter the mixture. Compare against the endpoints we
+        # actually measured, and say which those are.
+        if "all_host" in by:
+            b = by["all_host"]["steady_concurrency"]
+            best_end, against = max(a, b), "best endpoint"
+            host_col = f"{b:5.1f}"
+        else:
+            best_end, against = a, "all-HBM only (all-host DID NOT FINISH)"
+            host_col = "  n/a"
         gain = (c / best_end - 1) * 100 if best_end else 0.0
         verdict = ("MIXTURE WINS" if gain >= 15 else
                    "marginal (<15%)" if gain > 0 else "MIXTURE LOSES")
-        print(f"SLO {slo:>5.0f} ms: all-HBM {a:5.1f} | all-host {b:5.1f} | "
-              f"mixture {c:5.1f}  -> {gain:+6.1f}% vs best endpoint  [{verdict}]")
+        print(f"SLO {slo:>5.0f} ms: all-HBM {a:5.1f} | all-host {host_col} | "
+              f"mixture {c:5.1f}  -> {gain:+6.1f}% vs {against}  [{verdict}]")
     print("=" * 72)
     print("Kill criteria (agreed): mixture must beat BOTH endpoints by >=15% "
           "at matched SLO, else fall back to the characterization paper.")

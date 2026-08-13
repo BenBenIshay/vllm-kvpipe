@@ -170,12 +170,56 @@ goes stale as soon as the sequence outgrows its prefill. The signature is
 early layer-steps clean and later ones not (217 of 1152). `NOWRITE=0` is
 necessary for that tool and is not sufficient. Use token-level gates instead.
 
-## Still to measure
+## End-to-end, measured (A100 / PCIe, Qwen-32B, ctx 2048, 48 offered)
 
-The end-to-end claim — that the mixture beats all-HBM — is **not yet
-re-measured**. `paper_runs/20260813/run_endpoint.sh` reruns the shape from this
-document (Qwen-32B, 512 ctx, 12 generated, 24 offered) so the before/after is
-like-for-like, with `--reclaim 0` reproducing the pre-fix behaviour. The
-`all_hbm` arm runs with tiers off and is unaffected by the fix, so it must come
-back near the 9.6 concurrent / 61.4 tok/s recorded above; if it does not, the
-configuration does not match and the comparison is not valid.
+The document's own shape (ctx 512, 24 offered) turned out **not to bind** on
+this node — all three arms sustained 22.5 of 24 at gpu-mem-util 0.92 *and* 0.83,
+byte-identically, because a 512-token request is only ~128 MiB of KV and all 24
+fit whatever the pool size. Binding had to come from the load: at ctx 2048 a
+request is ~512 MiB, so 48 offered cannot fit. There `all_hbm` sustains **6.0**.
+
+| SLO | arm | steady conc | tok/s | tiers |
+|---|---|---|---|---|
+| 100 ms | all-HBM | 6.0 | 36.8 | — |
+| 100 ms | mixture | **4.8 (-19.9%)** | 6.2 | hbm 973 / cpu 611 |
+| open | all-HBM | 6.0 | 36.6 | — |
+| open | mixture | **6.7 (+12.0%)** | 4.1 | hbm 784 / cpu 800 |
+
+Both rows are honest and they answer different questions.
+
+**With the SLO gate open, the mixture serves 12% more concurrent requests than
+all-HBM.** Pre-fix, the same comparison gave *identical* concurrency (9.6 vs
+9.6). So the reclaim does convert freed blocks into served requests — the defect
+this document is about is genuinely gone. But +12% is below the agreed 15% bar,
+and it costs 9x in throughput (4.1 vs 36.6 tok/s).
+
+**Under a real 100 ms SLO the mixture LOSES 19.9%.** That is the roofline
+working as designed, not a bug: a 2048-token rider is ~512 MiB per step ≈ 20 ms
+of PCIe time, so B1 refuses riders it cannot hide and admits *fewer* requests
+than all-HBM would. On this interconnect the capacity exists but is not worth
+spending.
+
+This is the A100 result the project already expected — the win needs C2C — with
+the difference that the blocker no longer masks it. Two caveats on the +12%:
+`all_host` did not finish within 1800 s at this shape (~24 GB of KV streamed per
+step at ~25 GB/s), so the three-way kill criterion is not evaluated here; and
+the gain is bounded by transient prefill residency, since the reclaim happens
+*after* prefill and an arriving host-tier request holds full blocks until its
+first decode step.
+
+## Three setup traps, each of which would have wasted GH200 hours
+
+1. **The workload must bind.** ctx 512 / 24 offered never binds; all arms return
+   ~22.5/24 and the mixture cannot differ. The harness's vacuity guard fires at
+   >=95% of offered and 93.75% slipped under it.
+2. **`b_hbm_max` must be BELOW the measured all-HBM capacity.** Admission tags
+   the first `b_hbm_max` requests "hbm" and only the overflow "cpu", so with
+   `b_hbm_max`=8 against a capacity of 6 the mixture reported tier samples
+   `{'hbm': 1584}` — not one host-tier request — and was identical to all-HBM.
+   `b_hbm_max`=8 is the GH200 plan's default. Derive it from a measured
+   `all_hbm` run; do not fix it in advance.
+3. **A timed-out arm must not discard the arms that finished.** `all_host`
+   hitting its cap raised and threw away a completed `all_hbm` and `mixture`.
+   Fixed: unfinished arms are recorded and reported, the rest still print, and a
+   missing endpoint is never silently treated as zero (which would flatter the
+   mixture).
