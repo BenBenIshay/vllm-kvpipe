@@ -223,3 +223,39 @@ first decode step.
    Fixed: unfinished arms are recorded and reported, the rest still print, and a
    missing endpoint is never silently treated as zero (which would flatter the
    mixture).
+
+---
+
+## 2026-08-13 (late): why the mixture cannot win in a combined prefill+decode engine
+
+After the transfer path was fixed (block-major mirrors, ~138x on `stream_layer`),
+the endpoint comparison was re-run at `b_hbm_max` = the MEASURED all-HBM
+capacity (6). Result: `{'hbm': 1584}` -- **zero host-tier requests**, both arms
+6.0 concurrent, +0.0%.
+
+Both settings of `b_hbm_max` fail, for opposite reasons:
+
+| `b_hbm_max` | outcome |
+|---|---|
+| 3 (< capacity) | riders exist, but the resident cohort is capped below what all-HBM gets -- close to zero-sum; measured 6.7 vs 6.0 |
+| 6, 8 (>= capacity) | NO riders at all; mixture is all-HBM wearing a label |
+
+The cause is structural and has nothing to do with the interconnect. **A
+host-tier request must materialise its full prefill in HBM before the worker can
+seed it to host and the scheduler can reclaim.** Once HBM holds `capacity`
+resident requests, the next request cannot prefill, so it is never admitted and
+never becomes a rider. Riders can only be bought by giving up resident slots.
+
+This is transient prefill residency, and it is not a second-order caveat: it is
+the binding constraint on the whole design in this configuration.
+
+**It dissolves in the P/D architecture the project has targeted throughout.** On
+a decode node, KV arrives from the prefill node into host memory; a rider needs
+NO HBM at any point, so concurrency becomes `B_hbm(full) + riders` -- the actual
+claim. `decode_only_bench.py` already has the right shape (stage KV to CPU, free
+the GPU tensors, THEN measure decode) but has no `mixture` mode, so the policy
+arm cannot be run there yet. Adding it is now the load-bearing next step, not a
+refinement.
+
+NOTE for whoever runs the endpoint comparison next: `b_hbm_max` has no good
+value in a combined engine. Do not spend GH200 hours looking for one.
