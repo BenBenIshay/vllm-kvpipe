@@ -1299,9 +1299,14 @@ class Scheduler(SchedulerInterface):
             freed = self.kv_cache_manager.reclaim_tier_blocks(req_id)
             self._rungd_reclaimed.add(req_id)
             self._rungd_blocks_reclaimed += freed
-            logger.debug(
-                "hybrid-kv tiers: reclaimed %d main-pool blocks from host-tier "
-                "request %s (%d total)", freed, req_id, self._rungd_blocks_reclaimed
+            # At INFO, every time: "did the reclaim actually fire, and for how
+            # much" is the question every run of this feature has to answer,
+            # and it is once per request, not per step.
+            logger.info(
+                "hybrid-kv tiers: RECLAIMED %d main-pool blocks from host-tier "
+                "request %s (%d blocks total, %d free)",
+                freed, req_id, self._rungd_blocks_reclaimed,
+                self.kv_cache_manager.block_pool.get_num_free_blocks(),
             )
 
     def _take_rungd_block_rewrites(self) -> dict[str, list[int]] | None:

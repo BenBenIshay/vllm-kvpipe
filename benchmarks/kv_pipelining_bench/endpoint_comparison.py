@@ -54,7 +54,7 @@ def build_llm(arm: str, args, slo_ms: float):
     from vllm import LLM
 
     for k in ("VLLM_KVPIPE_HYBRID_RUNGD", "VLLM_KVPIPE_HYBRID_RUNGD_FREE",
-              "VLLM_KVPIPE_HYBRID_TWOPASS"):
+              "VLLM_KVPIPE_HYBRID_TWOPASS", "VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM"):
         os.environ.pop(k, None)
 
     extra: dict = {}
@@ -65,6 +65,13 @@ def build_llm(arm: str, args, slo_ms: float):
         os.environ["VLLM_KVPIPE_HYBRID_RUNGD"] = "1"
         os.environ["VLLM_KVPIPE_HYBRID_RUNGD_FREE"] = "1"
         os.environ["VLLM_KVPIPE_HYBRID_TWOPASS"] = "1"
+        # Reclaim a host-tier request's prefill blocks once they are seeded to
+        # host. Without it the request keeps its whole prefill resident, frees
+        # only what it would have grown during decode, and still pays S*k of
+        # interconnect every step -- strictly worse than leaving it in HBM.
+        # `--reclaim 0` reproduces that (paper/BLOCKER_PREFILL_RESIDENCY.md).
+        if args.reclaim:
+            os.environ["VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM"] = "1"
         os.environ["VLLM_KVPIPE_TIER_POLICY"] = (
             "scored" if arm == "mixture" else "arrival")
         extra = dict(
@@ -303,6 +310,10 @@ def main() -> int:
                         "SLO is only a scheduler setting, so reloading 72.7 GB "
                         "of weights per SLO point would be pure waste "
                         "(~19 min/load measured on this cluster).")
+    p.add_argument("--reclaim", type=int, default=1,
+                   help="free a host-tier request's prefill blocks once seeded "
+                        "to host (default on). 0 reproduces the pre-fix "
+                        "behaviour, where offloading frees almost nothing.")
     p.add_argument("--out", default="endpoint_comparison.json")
     args = p.parse_args()
 

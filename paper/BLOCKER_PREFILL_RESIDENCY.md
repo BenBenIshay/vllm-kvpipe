@@ -1,5 +1,9 @@
 # BLOCKER: the host tier never frees prefill blocks
 
+> **STATUS 2026-08-13: FIXED, correctness re-established, capacity effect
+> being re-measured.** See "Resolution" at the bottom. The analysis below is
+> the original diagnosis and is kept as written.
+
 Found 2026-08-12 while validating that the endpoint-comparison harness can
 detect a difference. **This invalidates the current implementation's ability to
 demonstrate the paper's central claim, and it must be fixed before the GH200
