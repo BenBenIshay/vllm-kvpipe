@@ -102,3 +102,80 @@ this finding saves.
   implementation.**
 - The gain law itself is unaffected: it describes what a *correct* offload
   achieves. The implementation does not yet meet it.
+
+---
+
+# Resolution (2026-08-13)
+
+## The fix
+
+A host-tier request now releases **all** its main-pool blocks once the worker
+has copied its history to host. Four parts, and the first alone is not enough:
+
+1. `KVCacheManager.reclaim_tier_blocks` — nulls and frees the request's whole
+   block list. Same primitive sliding-window attention already uses
+   (`remove_skipped_blocks`), applied to the entire sequence instead of a
+   window's tail.
+2. **The worker acknowledges the seed.** Only the worker knows the D2H copy
+   happened; the scheduler reclaims strictly on that ack
+   (`ModelRunnerOutput.kv_tier_seeded_req_ids`). Guessing would destroy a
+   request's history whenever pool setup failed.
+3. **Promotion had to be repaired.** `get_num_blocks_to_allocate` is
+   length-based, so an in-place null counts as a present block:
+   `allocate_slots` would never refill it, and — worse — the phase-2 promotion
+   gate ("blocks cover the whole sequence") would have *passed on an all-null
+   table* and served garbage. Added `refill_tier_blocks` (all-or-nothing),
+   `num_real_blocks` (the gate now counts non-null), and a `rewrite_block_ids`
+   channel, since refilled ids replace positions the runner already holds and
+   `new_block_ids` only appends.
+4. Two corruption paths closed while the blocks are gone: a preempted request
+   drops its now-stale pool entry, and a pool-managed request scheduled with a
+   non-decode query shape has its resident write suppressed.
+
+Gated `VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM=1`, default off.
+
+## What is now established
+
+| claim | evidence |
+|---|---|
+| The prefill is actually released | 6 host-tier requests, ~326-token prompts, 192-block pool: **133 blocks returned, free 79 → 191**, all six still decoding |
+| It converts to capacity | `rungd_reclaim_unit.py`: pool exactly full at two requests → reclaim one → **a third is admitted** |
+| It is correct | token-identical to vanilla, serially at long prefill and under concurrency with the freed blocks recycled |
+| Promotion still works | refill is all-or-nothing; the null-table gate is closed |
+
+## One false alarm, worth recording
+
+The first long-prefill run showed 1 of 6 prompts diverging from vanilla, with a
+vanilla-vs-vanilla control clean at the same concurrency. It was **not** a
+defect:
+
+- with the reclaim OFF the divergence is byte-identical, so the reclaim does
+  not cause it;
+- a **single** request on the failing prompt is token-identical to vanilla,
+  with the reclaim firing;
+- **stock vLLM, no tiers at all, gives different text for that prompt at
+  concurrency 6 than at concurrency 1**, while being byte-reproducible at each.
+
+The prompt sits on a near-tie; bf16 attention reductions depend on batch
+composition. Half the prompts in this set behave that way. A control that holds
+concurrency fixed cannot screen for it, and any arm that changes the batching —
+which the host tier necessarily does — will trip it. The gate now runs vanilla
+concurrent **and** serial, excludes prompts that move, and compares serially as
+well so every prompt is gateable.
+
+**The `=2` self-verify cannot gate the host tier at long sequences.** Its
+reference is a flash pass over the *resident* blocks, but the block cap means a
+host-tier request gets no new resident blocks during decode, so the reference
+goes stale as soon as the sequence outgrows its prefill. The signature is
+early layer-steps clean and later ones not (217 of 1152). `NOWRITE=0` is
+necessary for that tool and is not sufficient. Use token-level gates instead.
+
+## Still to measure
+
+The end-to-end claim — that the mixture beats all-HBM — is **not yet
+re-measured**. `paper_runs/20260813/run_endpoint.sh` reruns the shape from this
+document (Qwen-32B, 512 ctx, 12 generated, 24 offered) so the before/after is
+like-for-like, with `--reclaim 0` reproducing the pre-fix behaviour. The
+`all_hbm` arm runs with tiers off and is unaffected by the fix, so it must come
+back near the 9.6 concurrent / 61.4 tok/s recorded above; if it does not, the
+configuration does not match and the comparison is not valid.
