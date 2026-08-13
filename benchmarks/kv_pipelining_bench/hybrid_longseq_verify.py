@@ -24,8 +24,17 @@ so batching nondeterminism cannot contaminate it.
                      order in a separate kernel call, inherent to two-pass.
   max|diff| >> eps -> (a): the pool is losing KV. Fix before anything else.
 
-The reclaim MUST be off here: it frees the resident blocks, and the reference
-pass reads them.
+TWO SETTINGS ARE LOAD-BEARING, and getting either wrong fakes a failure:
+
+  * the reclaim MUST be off -- it frees the resident blocks the reference pass
+    reads;
+  * `VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE=0` MUST be set. By default the host tier
+    SKIPS the resident write for its decode tokens (their KV lives in the pool),
+    so resident holds prefill only and the reference would attend a sequence
+    missing every generated token. A first run of this script left it at the
+    default and reported max|diff|=9.6 on 1152/1152 layer-steps -- which cannot
+    be right, since 5 of 6 prompts are token-identical to vanilla. The resident
+    write must stay on for resident to be a valid reference.
 """
 
 from __future__ import annotations
@@ -71,6 +80,7 @@ def main() -> int:
     env["VLLM_KVPIPE_HYBRID_RUNGD_FREE"] = "1"
     env["VLLM_KVPIPE_HYBRID_TWOPASS"] = "2"          # self-verify
     env.pop("VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM", None)  # reference needs resident
+    env["VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE"] = "0"      # ...and needs it COMPLETE
 
     cmd = [
         PY, "-m", "vllm.entrypoints.openai.api_server", "--model", MODEL,

@@ -120,7 +120,24 @@ def complete(port: int, prompt: str) -> str:
         return json.loads(r.read())["choices"][0]["text"]
 
 
-def run(port: int, reclaim: bool) -> list[str]:
+def run(port: int, reclaim: bool, serial: bool = False) -> list[str]:
+    """serial=True sends the prompts one at a time, so each is generated in a
+    batch of one. That is the only way to compare token-for-token across
+    configurations that change the batching."""
+    if serial:
+        proc = launch(port, reclaim)
+        try:
+            if not wait_ready(port):
+                return ["<no-start>"] * len(PROMPTS)
+            return [complete(port, p) for p in PROMPTS]
+        except Exception as e:                               # noqa: BLE001
+            return [f"<err: {e}>"] * len(PROMPTS)
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                pass
+            time.sleep(4)
     proc = launch(port, reclaim)
     try:
         if not wait_ready(port):
@@ -163,24 +180,32 @@ def first_diff(a: str, b: str) -> str:
 def main() -> int:
     print(f"prompts: {len(PROMPTS)}, ~{len(PROMPTS[0].split())} words each, "
           f"pool = {NUM_BLOCKS} blocks", flush=True)
-    # CONTROL. At this pool size vanilla itself runs near capacity, so its
-    # batching (chunked prefill boundaries, preemption) can differ run to run,
-    # and bf16 reductions are batch-order sensitive. Without this control a
-    # divergence cannot be attributed to the reclaim: run vanilla TWICE first
-    # and see whether it even agrees with itself.
-    print("=== VANILLA run A (no tiers) ===", flush=True)
+    # NEAR-TIE SCREEN. Greedy decoding is only reproducible for a fixed batch
+    # composition: bf16 attention reductions depend on batch order, and a
+    # prompt whose top-2 logits are close will flip on that alone. Stock vLLM
+    # with no tiers at all was measured giving DIFFERENT text for prompt 1 at
+    # concurrency 6 vs concurrency 1, while being perfectly reproducible at
+    # each. Since the host tier necessarily changes the batching, comparing it
+    # to vanilla-at-concurrency-6 is not a valid identity test for such a
+    # prompt -- an earlier version of this script did exactly that and called a
+    # near-tie a defect.
+    #
+    # So: screen each prompt by running vanilla at BOTH concurrencies. Prompts
+    # that disagree with themselves are batching-sensitive and are excluded
+    # from the identity gate (and reported, not hidden). The rest are compared
+    # at full concurrency, which is what exercises the reclaim under load.
+    print("=== VANILLA concurrent (no tiers) ===", flush=True)
     van_a = run(9941, reclaim=False)
-    print("=== VANILLA run B (control: same config, different process) ===",
-          flush=True)
-    van_b = run(9943, reclaim=False)
-    print("=== HOST TIER + PREFILL RECLAIM ===", flush=True)
+    print("=== VANILLA serial (near-tie screen: batch of one) ===", flush=True)
+    van_b = run(9943, reclaim=False, serial=True)
+    print("=== HOST TIER + PREFILL RECLAIM (concurrent) ===", flush=True)
     rec = run(9942, reclaim=True)
 
     events, blocks = reclaim_stats(9942)
     with open(f"{LOGDIR}/reclaim_correctness_outputs.json", "w") as f:
-        json.dump({"vanilla_a": van_a, "vanilla_b": van_b, "reclaim": rec,
-                   "reclaim_events": events, "blocks_reclaimed": blocks}, f,
-                  indent=2)
+        json.dump({"vanilla_concurrent": van_a, "vanilla_serial": van_b,
+                   "reclaim": rec, "reclaim_events": events,
+                   "blocks_reclaimed": blocks}, f, indent=2)
 
     print("=" * 70)
     bad = [t for t in van_a + van_b + rec if t.startswith("<")]
@@ -188,19 +213,23 @@ def main() -> int:
         print(f"INCONCLUSIVE: {bad[0]}")
         return 2
 
-    self_mism = [i for i in range(len(PROMPTS)) if van_a[i] != van_b[i]]
+    # Batching-sensitive = vanilla's own answer changes with concurrency.
+    sensitive = [i for i in range(len(PROMPTS)) if van_a[i] != van_b[i]]
     mism = [i for i in range(len(PROMPTS)) if van_a[i] != rec[i]]
     for i in range(len(PROMPTS)):
+        if i in sensitive:
+            print(f"[SKIP] prompt {i}: batching-sensitive in VANILLA itself "
+                  "(concurrent != serial) -- cannot gate token identity on it")
+            continue
         tag = "OK  " if van_a[i] == rec[i] else "DIFF"
-        ctl = "" if van_a[i] == van_b[i] else "  (vanilla disagrees with ITSELF here)"
-        print(f"[{tag}] prompt {i}{ctl}")
+        print(f"[{tag}] prompt {i}")
         if van_a[i] != rec[i]:
             print(f"       {first_diff(van_a[i], rec[i])}")
     print("=" * 70)
     print(f"reclaim events: {events}, blocks reclaimed: {blocks} "
           f"(pool is {NUM_BLOCKS} blocks)")
-    print(f"control: vanilla-vs-vanilla disagreed on {len(self_mism)}/"
-          f"{len(PROMPTS)} prompts")
+    print(f"near-tie screen: {len(sensitive)}/{len(PROMPTS)} prompts are "
+          f"batching-sensitive in vanilla {sensitive}")
 
     if events == 0:
         print("VACUOUS: the reclaim never fired, so this run proves nothing "
@@ -210,20 +239,18 @@ def main() -> int:
         print(f"WARNING: only {events} of {len(PROMPTS)} requests were "
               "reclaimed; the rest never reached the host tier.")
 
-    # Only prompts where vanilla is self-consistent can indict the reclaim.
-    real = [i for i in mism if i not in self_mism]
+    gated = [i for i in range(len(PROMPTS)) if i not in sensitive]
+    if not gated:
+        print("VACUOUS: every prompt is batching-sensitive; nothing was gated.")
+        return 2
+    real = [i for i in mism if i not in sensitive]
     if real:
-        print(f"RECLAIM CORRECTNESS FAIL: {len(real)}/{len(PROMPTS)} diverged "
-              "on prompts where vanilla IS deterministic -- a genuine defect.")
+        print(f"RECLAIM CORRECTNESS FAIL: {len(real)}/{len(gated)} gateable "
+              "prompts diverged -- a genuine defect.")
         return 1
-    if mism:
-        print(f"RECLAIM CORRECTNESS PASS (with noise): {len(mism)} prompt(s) "
-              "differ, but vanilla disagrees with itself on exactly those, so "
-              "the difference is this configuration's batching nondeterminism, "
-              "not the reclaim. Every deterministic prompt matches.")
-        return 0
-    print("RECLAIM CORRECTNESS PASS: with long prefills, a small pool, and the "
-          "freed blocks recycled under load, every host-tier request generates "
+    print(f"RECLAIM CORRECTNESS PASS: {len(gated)}/{len(PROMPTS)} prompts are "
+          "batching-stable, and on every one of them the host tier -- long "
+          "prefills, small pool, freed blocks recycled under load -- generates "
           "tokens IDENTICAL to vanilla vLLM.")
     return 0
 
