@@ -137,13 +137,34 @@ def main() -> int:
             slot_bm.narrow(0, cs, l).copy_(h.narrow(0, hs, l),
                                            non_blocking=True)
 
+    # SPLIT K/V, block-major -- the layout we could actually ship. Attention
+    # needs key_cache and value_cache as CONTIGUOUS [blocks, bs, nkv, hd]
+    # tensors, which a [W, 2, ...] slot cannot provide by slicing (dim-0 index
+    # of a block-major tensor is strided). Two separate mirrors give both
+    # contiguous runs AND a tensor flash can consume directly.
+    hosts_k = [torch.empty((H, bs, nkv, hd), dtype=dt, device="cpu",
+                           pin_memory=True) for _ in range(args.n_layers)]
+    hosts_v = [torch.empty((H, bs, nkv, hd), dtype=dt, device="cpu",
+                           pin_memory=True) for _ in range(args.n_layers)]
+    slot_k = torch.empty((W, bs, nkv, hd), dtype=dt, device=dev)
+    slot_v = torch.empty((W, bs, nkv, hd), dtype=dt, device=dev)
+
+    def direct_split_kv():
+        i = (_cycle["i"] + 1) % len(hosts_k)
+        _cycle["i"] = i
+        hk, hv = hosts_k[i], hosts_v[i]
+        for hs, cs, l in runs:
+            slot_k.narrow(0, cs, l).copy_(hk.narrow(0, hs, l), non_blocking=True)
+            slot_v.narrow(0, cs, l).copy_(hv.narrow(0, hs, l), non_blocking=True)
+
     results = {}
     for name, fn in (("gather+copy (today)", gather_plus_copy),
                      ("  gather only (CPU)", gather_into),
                      ("  h2d only", h2d),
                      ("  index_select gather", gather_index_select),
                      ("direct H2D (proposed)", direct),
-                     ("direct H2D block-major", direct_block_major)):
+                     ("direct H2D block-major", direct_block_major),
+                     ("direct split K/V (ship)", direct_split_kv)):
         ms = timed(fn, args.iters)
         gbps = total / (ms / 1e3) / 1e9
         results[name.strip()] = (ms, gbps)

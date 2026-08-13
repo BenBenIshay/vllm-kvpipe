@@ -763,14 +763,15 @@ class FlashAttentionImpl(AttentionImpl):
             _pool = split.rungd_pool
             _ln = getattr(layer, "layer_name", None)
             _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
-            _slot = _pool.stream_layer(_lidx)
+            # (key_slot, value_slot): separate contiguous tensors, because the
+            # mirrors are block-major so their runs DMA without a CPU gather.
+            _k_slot, _v_slot = _pool.stream_layer(_lidx)
             if key is not None and value is not None and split.cpu_cur_compact:
                 _pool.write_token(
                     _lidx, split.cpu_cur_compact, split.cpu_cur_offset,
                     split.cpu_cur_hostblock,
                     key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
                 )
-            _k_slot, _v_slot = _slot.unbind(0)
             _tier_pass(
                 cpu_idx, _k_slot, _v_slot,
                 split.rolling_block_table, split.rolling_seqused_k,

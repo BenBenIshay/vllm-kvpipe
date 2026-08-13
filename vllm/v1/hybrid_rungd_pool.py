@@ -48,45 +48,58 @@ class RungdHostPool:
         self.h_max = int(h_max_blocks)
         self.w_max = int(w_max_blocks)
         self.device = device
-        # Per-layer pinned host mirror indexed by host block id.
+        # BLOCK-MAJOR, SPLIT K/V. The mirror used to be one [2, H, bs, nkv, hd]
+        # tensor per layer, which forced a CPU staging copy on every layer: a
+        # run of blocks is `narrow(1, ...)`, i.e. two chunks strided by a whole
+        # K/V plane, and a strided H2D cannot be a plain pinned DMA. Measured on
+        # A100 at Qwen-32B/ctx-2048 that gather was 22 ms per layer -- 98% of
+        # `stream_layer` and 72% of the engine's wall -- while the H2D itself
+        # ran at full link speed.
+        #
+        # With the block dimension first, and K and V in separate mirrors, a run
+        # is ONE contiguous byte range on both sides. `stream_layer` becomes a
+        # handful of `cudaMemcpyAsync`s straight from pinned host memory into
+        # the right offsets of the device slot: the DMA engine performs the
+        # compaction, and no CPU staging buffer exists at all. Microbenchmarked
+        # (cold, 32 mirrors): 6.89 ms -> 1.38 ms per layer, 4.87 -> 24.38 GB/s.
+        #
+        # K and V must be SEPARATE tensors, not one [W, 2, ...]: attention needs
+        # key_cache/value_cache as contiguous [blocks, bs, nkv, hd], and dim-0
+        # indexing a block-major tensor yields a strided view flash cannot take.
         _, _, bs, nkv, hd = kv_shape
-        hshape = (2, self.h_max, bs, nkv, hd)
-        self.host: dict[str, torch.Tensor] = {
+        hshape = (self.h_max, bs, nkv, hd)
+        self.host_k: dict[str, torch.Tensor] = {
+            ln: torch.empty(hshape, dtype=dtype, device="cpu", pin_memory=True)
+            for ln in self.layers
+        }
+        self.host_v: dict[str, torch.Tensor] = {
             ln: torch.empty(hshape, dtype=dtype, device="cpu", pin_memory=True)
             for ln in self.layers
         }
         # k_window GPU rolling slots, sized to the compact region.
-        rshape = (2, self.w_max, bs, nkv, hd)
-        self.rolling: list[torch.Tensor] = [
+        rshape = (self.w_max, bs, nkv, hd)
+        self.rolling_k: list[torch.Tensor] = [
             torch.empty(rshape, dtype=dtype, device=device) for _ in range(self.k)
         ]
-        # Async double-buffering (opt #2): a side copy stream + one pinned
-        # staging buffer per layer (per-layer avoids a stage-reuse race), so
-        # layer L+1's host->rolling H2D overlaps layer L's attention compute.
-        # Requires k_window >= 2 so consecutive layers use distinct slots.
-        # Async double-buffering hides the host->rolling transfer under compute.
-        # It pays off in the TRANSFER-bound regime (large cohort / many layers /
-        # high-BW C2C); on a small model + small cohort over PCIe its per-layer
-        # bookkeeping can exceed the tiny transfer it hides, so it is OPT-IN
-        # (VLLM_KVPIPE_RUNGD_ASYNC=1). Default sync path is unchanged.
+        self.rolling_v: list[torch.Tensor] = [
+            torch.empty(rshape, dtype=dtype, device=device) for _ in range(self.k)
+        ]
+        # Async double-buffering (opt #2): a side copy stream so layer L+1's
+        # host->rolling H2D overlaps layer L's attention. Requires k_window >= 2
+        # so consecutive layers use distinct slots. It was previously OPT-IN and
+        # measured worthless -- correctly, but for a reason that has now been
+        # removed: it hid the 1.3 ms H2D while the 22 ms CPU gather was the
+        # cost. With the gather gone there is nothing left but the transfer, so
+        # this is the regime it was written for. Still opt-in
+        # (VLLM_KVPIPE_RUNGD_ASYNC=1) until re-measured on the new layout.
+        # No staging buffers: the copies now come straight from the pinned
+        # mirrors, so there is nothing to double-buffer but the stream itself.
         import os as _os
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
         )
-        self._async_min_w = 0
         self._copy_stream = torch.cuda.Stream() if self._async else None
-        self._stage: list[torch.Tensor] = [
-            torch.empty(rshape, dtype=dtype, device="cpu", pin_memory=True)
-            for _ in range(len(self.layers))
-        ] if self._async else []
-        # Item 1a: the SYNC path used to do `index_select(...).to(device)`, and
-        # index_select's output is NOT pinned -> a pageable H2D. Measured on
-        # A100: pageable 11.17 GB/s vs pinned 25.08 GB/s (2.25x). Gather
-        # straight into this always-present pinned buffer instead, so the
-        # default path gets a pinned copy too.
-        self._sync_stage: torch.Tensor = torch.empty(
-            rshape, dtype=dtype, device="cpu", pin_memory=True)
         self._events: dict[int, torch.cuda.Event] = {}
         self._active_host_cpu: torch.Tensor | None = None
         self.free_list: list[int] = list(range(self.h_max))
@@ -167,7 +180,8 @@ class RungdHostPool:
                                device=resident_kv.device)
         gathered = resident_kv.index_select(1, res_idx).to("cpu")  # [2, n, ...]
         dst = torch.tensor(hblks[:n], dtype=torch.long)
-        self.host[layer_name].index_copy_(1, dst, gathered)
+        self.host_k[layer_name].index_copy_(0, dst, gathered[0])
+        self.host_v[layer_name].index_copy_(0, dst, gathered[1])
 
     # -- restore (host -> resident, for PROMOTION host-tier -> HBM-tier) -----
     def restore_layer(
@@ -189,10 +203,13 @@ class RungdHostPool:
         if n == 0:
             return
         src = torch.tensor(hblks[:n], dtype=torch.long)
-        gathered = self.host[layer_name].index_select(1, src)   # CPU [2, n, ...]
+        gk = self.host_k[layer_name].index_select(0, src)        # CPU [n, ...]
+        gv = self.host_v[layer_name].index_select(0, src)
         res_idx = torch.tensor(resident_block_ids[:n], dtype=torch.long,
                                device=resident_kv.device)
-        resident_kv.index_copy_(1, res_idx, gathered.to(resident_kv.device))
+        dev = resident_kv.device
+        resident_kv[0].index_copy_(0, res_idx, gk.to(dev))
+        resident_kv[1].index_copy_(0, res_idx, gv.to(dev))
 
     def restore_req(self, req_id: str, resident_block_ids: list[int]) -> None:
         """Restore all layers' KV from host into resident blocks."""
@@ -213,6 +230,18 @@ class RungdHostPool:
         for ln in self.layers:
             self.seed_layer(req_id, ln, self.resident[ln], resident_block_ids)
         self.req_seeded.add(req_id)
+
+    # -- back-compat view ---------------------------------------------------
+    @property
+    def host(self) -> dict[str, torch.Tensor]:
+        """The old single-tensor [2, H, ...] mirror, as a STACKED COPY.
+
+        Kept only so external readers do not silently break. It materialises a
+        copy, so it must never be used on the hot path -- the whole point of the
+        split layout is that no such tensor is ever formed.
+        """
+        return {ln: torch.stack((self.host_k[ln], self.host_v[ln]))
+                for ln in self.layers}
 
     # -- per-step compaction ------------------------------------------------
     def build_step(
@@ -260,68 +289,65 @@ class RungdHostPool:
         return self._compact[hb], position % self.block_size
 
     # -- per-layer streaming + write ---------------------------------------
-    def _sync_stream_into(self, layer_idx: int, slot: torch.Tensor) -> None:
-        """Blocking host->rolling refresh (fallback / first layer of a step).
+    def _issue_runs(self, layer_idx: int) -> None:
+        """Copy this layer's cohort KV from the pinned mirrors into the rolling
+        slot, one contiguous `cudaMemcpyAsync` per run per tensor.
 
-        Gathers directly into a PINNED staging buffer (`out=`), then does a
-        pinned H2D. The previous form built an unpinned intermediate via
-        `index_select(...).to(device)`, costing a pageable copy (2.25x slower
-        on A100). Same stream as the consumer, so ordering is preserved.
+        This is the whole of the old `_gather_into` + H2D. There is no CPU
+        staging step: because the mirrors are block-major, a run of host blocks
+        [hs, hs+ln) is a single contiguous byte range, and so is its destination
+        [cs, cs+ln) in the compact slot. The DMA engine does the compaction.
+
+        With per-request extents the run count is just the number of active
+        requests, so this is a handful of large copies. A badly fragmented
+        active set degrades to more, smaller copies -- still correct, and still
+        without touching the data on the CPU.
         """
-        w = self._w_cur
-        stage = self._sync_stage.narrow(1, 0, w)
-        self._gather_into(layer_idx, stage)
-        slot.narrow(1, 0, w).copy_(stage, non_blocking=True)
-
-    def _gather_into(self, layer_idx: int, stage: torch.Tensor) -> None:
-        """Fill `stage` (pinned, compact order) from this layer's host mirror.
-
-        Uses maximal contiguous runs, so with per-request extents this is a few
-        big memcpys instead of a block-granular index_select. Falls back to
-        index_select if the active set is badly fragmented (legacy scattered
-        allocation), where run-by-run would be slower than one gather.
-        """
-        src = self.host[self.layers[layer_idx]]
-        if self._runs and len(self._runs) * 8 <= self._w_cur:
-            for hs, cs, ln in self._runs:
-                stage.narrow(1, cs, ln).copy_(src.narrow(1, hs, ln))
-        else:
-            torch.index_select(src, 1, self._active_host_cpu, out=stage)
+        ln_name = self.layers[layer_idx]
+        hk, hv = self.host_k[ln_name], self.host_v[ln_name]
+        kslot = self.rolling_k[layer_idx % self.k]
+        vslot = self.rolling_v[layer_idx % self.k]
+        for hs, cs, n in self._runs:
+            kslot.narrow(0, cs, n).copy_(hk.narrow(0, hs, n), non_blocking=True)
+            vslot.narrow(0, cs, n).copy_(hv.narrow(0, hs, n), non_blocking=True)
 
     def _launch_prefetch(self, layer_idx: int) -> None:
-        """Issue layer_idx's host->rolling H2D on the side stream (overlaps the
-        current layer's attention). Uses layer_idx's own pinned stage buffer."""
+        """Issue layer_idx's host->rolling copies on the side stream, so they
+        overlap the current layer's attention."""
         if self._w_cur == 0 or not self._async:
             return
-        slot = self.rolling[layer_idx % self.k]
-        stage_v = self._stage[layer_idx].narrow(1, 0, self._w_cur)
-        # Gather the cohort's host blocks into this layer's pinned stage (CPU).
-        self._gather_into(layer_idx, stage_v)
         # Don't overwrite the slot until its previous (main-stream) read is done.
         self._copy_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self._copy_stream):
-            slot.narrow(1, 0, self._w_cur).copy_(stage_v, non_blocking=True)
+            self._issue_runs(layer_idx)
         ev = torch.cuda.Event()
         ev.record(self._copy_stream)
         self._events[layer_idx] = ev
 
-    def stream_layer(self, layer_idx: int) -> torch.Tensor:
-        """Refresh this layer's rolling slot from the host mirror and prefetch the
-        next layer. With double-buffering the H2D overlaps compute."""
-        slot = self.rolling[layer_idx % self.k]
+    def stream_layer(
+        self, layer_idx: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Refresh this layer's rolling slot from the host mirrors.
+
+        Returns (key_slot, value_slot), each a contiguous
+        [w_max, block_size, nkv, head_dim] tensor that attention can consume
+        directly.
+        """
+        kslot = self.rolling_k[layer_idx % self.k]
+        vslot = self.rolling_v[layer_idx % self.k]
         if self._w_cur == 0:
-            return slot
-        if not self._async or self._w_cur < self._async_min_w:
-            self._sync_stream_into(layer_idx, slot)         # tiny transfer / off
+            return kslot, vslot
+        if not self._async:
+            self._issue_runs(layer_idx)
         else:
             ev = self._events.pop(layer_idx, None)
             if ev is not None:
-                torch.cuda.current_stream().wait_event(ev)  # prefetched H2D done
+                torch.cuda.current_stream().wait_event(ev)  # prefetched copies
             else:
-                self._sync_stream_into(layer_idx, slot)     # first layer / miss
+                self._issue_runs(layer_idx)                 # first layer / miss
             if layer_idx + 1 < len(self.layers):
                 self._launch_prefetch(layer_idx + 1)
-        return slot
+        return kslot, vslot
 
     def write_token(
         self,
@@ -339,20 +365,22 @@ class RungdHostPool:
         n = keys.shape[0]
         if n == 0:
             return
-        slot = self.rolling[layer_idx % self.k]
+        kslot = self.rolling_k[layer_idx % self.k]
+        vslot = self.rolling_v[layer_idx % self.k]
         ln = self.layers[layer_idx]
-        host = self.host[ln]
-        bs = slot.shape[2]
-        dev = slot.device
+        hk, hv = self.host_k[ln], self.host_v[ln]
+        bs = kslot.shape[1]
+        dev = kslot.device
         offs_l = torch.as_tensor(offsets, dtype=torch.long)
-        # slot: [2, W, bs, nkv, hd] -> [2, W*bs, nkv, hd]; pos = compact*bs+off
+        # slot: [W, bs, nkv, hd] -> [W*bs, nkv, hd]; pos = compact*bs + off
         slot_pos = (torch.as_tensor(compact_ids, dtype=torch.long) * bs
                     + offs_l).to(dev)
-        slot_flat = slot.view(2, slot.shape[1] * bs, *slot.shape[3:])
-        slot_flat[0].index_copy_(0, slot_pos, keys)
-        slot_flat[1].index_copy_(0, slot_pos, values)
-        # host mirror (pinned CPU): pos = host_block*bs+off
+        kslot.view(kslot.shape[0] * bs, *kslot.shape[2:]).index_copy_(
+            0, slot_pos, keys)
+        vslot.view(vslot.shape[0] * bs, *vslot.shape[2:]).index_copy_(
+            0, slot_pos, values)
+        # host mirrors (pinned CPU): pos = host_block*bs + off
         host_pos = torch.as_tensor(host_blocks, dtype=torch.long) * bs + offs_l
-        host_flat = host.view(2, host.shape[1] * bs, *host.shape[3:])
-        host_flat[0].index_copy_(0, host_pos, keys.to("cpu"))
-        host_flat[1].index_copy_(0, host_pos, values.to("cpu"))
+        k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
+        hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(0, host_pos, k_cpu)
+        hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(0, host_pos, v_cpu)

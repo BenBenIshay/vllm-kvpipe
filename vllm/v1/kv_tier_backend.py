@@ -130,7 +130,11 @@ class StagedHostBackend:
     ) -> None:
         from vllm.vllm_flash_attn import flash_attn_varlen_func
 
-        k_slot, v_slot = handle.unbind(0)
+        # `prepare_layer` returns the pool's (key_slot, value_slot). They are
+        # separate contiguous tensors rather than one [2, W, ...] to unbind:
+        # the mirrors are block-major so their runs DMA contiguously, and a
+        # block-major slot cannot be sliced into what flash needs.
+        k_slot, v_slot = handle
         m = q_sub.shape[0]
         cu = torch.arange(0, m + 1, device=q_sub.device, dtype=torch.int32)
         flash_attn_varlen_func(

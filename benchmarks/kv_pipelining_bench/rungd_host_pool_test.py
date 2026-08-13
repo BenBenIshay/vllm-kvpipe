@@ -112,7 +112,7 @@ def main() -> None:
                 truth[r][L] = torch.cat([truth[r][L], col], dim=1)
             pool.write_token(L, comp, offs, hbs, new_k, new_v)
 
-            kslot, vslot = slot.unbind(0)
+            kslot, vslot = slot   # (key_slot, value_slot) from the split mirrors
             # (1) content check
             for ri, r in enumerate(active):
                 for pos in range(seq[r] + 1):
