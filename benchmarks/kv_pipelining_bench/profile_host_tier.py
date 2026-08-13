@@ -47,17 +47,45 @@ def instrument(pool, stats):
         def make(orig=orig, name=name):
             @functools.wraps(orig)
             def wrapper(*a, **kw):
+                # CUDA events, NOT torch.cuda.synchronize().
+                #
+                # This used to sync inside the wrapper "so the attribution is
+                # real". It did the opposite, twice over. A synchronize waits
+                # for ALL outstanding GPU work, so the phase absorbed compute
+                # queued before it -- stream_layer measured 24.4 ms/call when a
+                # clean microbenchmark of everything it does totals 6.4 ms. And
+                # a full sync after every call makes double-buffered prefetch
+                # impossible BY CONSTRUCTION, so the profile "showed" that
+                # VLLM_KVPIPE_RUNGD_ASYNC=1 bought nothing -- it could not have.
+                #
+                # A pair of events brackets only the work queued between them,
+                # and needs no sync until the end of the run.
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
                 t0 = time.perf_counter()
                 out = orig(*a, **kw)
-                # these phases end in GPU work; sync so the attribution is real
-                torch.cuda.synchronize()
-                dt = time.perf_counter() - t0
-                s = stats.setdefault(name, [0, 0.0])
+                cpu_dt = time.perf_counter() - t0
+                end.record()
+                s = stats.setdefault(name, [0, 0.0, 0.0, []])
                 s[0] += 1
-                s[1] += dt
+                s[2] += cpu_dt          # CPU time in the call (gather, python)
+                s[3].append((start, end))
                 return out
             return wrapper
         setattr(pool, name, make())
+
+
+def resolve(stats):
+    """Turn the recorded event pairs into GPU milliseconds. One sync, at the
+    end, so nothing above was serialized while measuring."""
+    import torch
+    torch.cuda.synchronize()
+    for name, s in stats.items():
+        if len(s) < 4:
+            continue
+        s[1] = sum(a.elapsed_time(b) / 1000.0 for a, b in s[3])
+        s[3] = []
 
 
 def run(args, n_req: int) -> dict:
@@ -101,6 +129,7 @@ def run(args, n_req: int) -> dict:
     t0 = time.perf_counter()
     llm.generate(prompts, sp, use_tqdm=False)
     wall = time.perf_counter() - t0
+    resolve(stats)          # single sync; converts event pairs to GPU seconds
     del llm
     return dict(n_req=n_req, wall_s=wall, stats=stats)
 
@@ -147,14 +176,17 @@ def main() -> int:
     print("\n" + "=" * 78)
     print(f"{'n_req':>6} {'wall':>9} | " +
           " | ".join(f"{ph:>12}" for ph in PHASES))
+    # CPU time is broken out because it is the number that matters here: the
+    # host->staging gather is a CPU memcpy, and no interconnect makes it faster.
     print(f"{'':>6} {'':>9} | " +
-          " | ".join(f"{'calls/ms':>12}" for _ in PHASES))
+          " | ".join(f"{'calls gpu/cpu':>12}" for _ in PHASES))
     for r in rows:
         st = r["stats"]
         cells = []
         for ph in PHASES:
-            c, t = st.get(ph, [0, 0.0])
-            cells.append(f"{c:>5}/{t*1000:>6.0f}")
+            v = st.get(ph, [0, 0.0, 0.0])
+            c, t, cpu = v[0], v[1], (v[2] if len(v) > 2 else 0.0)
+            cells.append(f"{c:>4}/{t*1000:>4.0f}/{cpu*1000:>4.0f}")
         print(f"{r['n_req']:>6} {r['wall_s']:>8.1f}s | " +
               " | ".join(f"{c:>12}" for c in cells))
 
@@ -165,8 +197,10 @@ def main() -> int:
               f"({ratio_n:.1f}x the requests):")
         print(f"  wall            {b['wall_s']/max(a['wall_s'],1e-9):>7.1f}x")
         for ph in PHASES:
-            ca, ta = a["stats"].get(ph, [0, 0.0])
-            cb, tb = b["stats"].get(ph, [0, 0.0])
+            va = a["stats"].get(ph, [0, 0.0, 0.0])
+            vb = b["stats"].get(ph, [0, 0.0, 0.0])
+            ca, ta = va[0], va[1] + (va[2] if len(va) > 2 else 0.0)
+            cb, tb = vb[0], vb[1] + (vb[2] if len(vb) > 2 else 0.0)
             if ta > 0:
                 print(f"  {ph:<14} calls {cb/max(ca,1):>5.1f}x   "
                       f"time {tb/ta:>7.1f}x"
