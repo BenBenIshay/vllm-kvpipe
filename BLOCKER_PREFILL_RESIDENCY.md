@@ -259,3 +259,37 @@ refinement.
 
 NOTE for whoever runs the endpoint comparison next: `b_hbm_max` has no good
 value in a combined engine. Do not spend GH200 hours looking for one.
+
+### A/B of the block-major fix, and a retraction
+
+Same config as the +12% run (ctx 2048, 48 offered, b_hbm_max 3), differing only
+by the block-major transfer path and ASYNC=1:
+
+| SLO | arm | conc | tok/s | before |
+|---|---|---|---|---|
+| 100 ms | all-HBM | 6.0 | 36.4 | 6.0 / 36.8 |
+| 100 ms | mixture | 5.7 | **18.9** | 4.8 / 6.2 |
+| open | all-HBM | 6.0 | 36.0 | 6.0 / 36.2 |
+| open | mixture | 5.3 | **27.0** | 6.7 / 4.1 |
+
+Throughput 3.0x (100 ms) and 6.6x (open) -- the CPU gather removal, end to end.
+
+**RETRACTION: the earlier "+12% concurrency" does not hold.** At open SLO the
+mixture is now 5.3 vs 6.0, i.e. -11.8%. `steady_concurrency` is a mean over
+sampled steps, so a SLOWER arm holds requests longer and scores higher on it;
+part of that +12% was the mixture being slow. Do not use steady_concurrency to
+compare arms with very different service rates.
+
+The corrected numbers agree with the roofline, which is the reassuring part.
+PCIe hides ~2 riders at ctx 2048, so the mixture gets `3 resident + ~2 riders
+= 5` against all-HBM's full pool of 6. **Buying 2 rider slots costs 3 resident
+slots: a net loss.** The only configuration that could win is b_hbm_max at FULL
+capacity with riders on top (6 + 2 = 8) -- which is precisely what transient
+prefill residency forbids.
+
+Both limits are now measured rather than argued:
+1. LINK -- ~2 riders hide on PCIe; ~75 on C2C (32 MiB/layer at 900 GB/s).
+2. STRUCTURE -- riders are only purchasable by surrendering resident slots,
+   until KV arrives already in host memory.
+
+The implementation tax that was masking both is gone.
