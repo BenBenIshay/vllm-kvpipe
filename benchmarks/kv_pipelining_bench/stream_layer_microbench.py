@@ -62,6 +62,9 @@ def main() -> int:
                     help="contiguous runs the active set forms (= n requests "
                          "with per-request extents)")
     ap.add_argument("--iters", type=int, default=50)
+    ap.add_argument("--n-layers", type=int, default=32,
+                    help="distinct pinned mirrors to cycle, so reads are COLD "
+                         "like the engine's per-layer mirrors")
     args = ap.parse_args()
 
     dev = torch.device("cuda")
@@ -69,8 +72,20 @@ def main() -> int:
     W, H, bs, nkv, hd = (args.blocks, args.h_max, args.block_size,
                          args.kv_heads, args.head_dim)
 
-    host = torch.empty((2, H, bs, nkv, hd), dtype=dt, device="cpu",
-                       pin_memory=True)
+    # COLD, like the engine. Timing one tensor in a loop measures a cache-hot
+    # copy: the first version of this benchmark reported 6.0 ms for the gather
+    # while the engine's own profile said 22.5 ms. The engine cycles a separate
+    # pinned mirror per layer -- ~2.2 GB at 64 layers -- so every gather reads
+    # DRAM cold. Cycle through `n_layers` mirrors to reproduce that, or the fix
+    # gets sized against a number that never occurs in practice.
+    hosts = [torch.empty((2, H, bs, nkv, hd), dtype=dt, device="cpu",
+                         pin_memory=True) for _ in range(args.n_layers)]
+    host = hosts[0]
+    _cycle = {"i": 0}
+
+    def nxt(pool):
+        _cycle["i"] = (_cycle["i"] + 1) % len(pool)
+        return pool[_cycle["i"]]
     stage = torch.empty((2, W, bs, nkv, hd), dtype=dt, device="cpu",
                         pin_memory=True)
     slot = torch.empty((2, W, bs, nkv, hd), dtype=dt, device=dev)
@@ -87,8 +102,9 @@ def main() -> int:
                        dtype=torch.long)
 
     def gather_into():
+        h = nxt(hosts)
         for hs, cs, l in runs:
-            stage.narrow(1, cs, l).copy_(host.narrow(1, hs, l))
+            stage.narrow(1, cs, l).copy_(h.narrow(1, hs, l))
 
     def h2d():
         slot.copy_(stage, non_blocking=True)
@@ -98,25 +114,27 @@ def main() -> int:
         h2d()
 
     def direct():                     # proposed: skip the CPU staging entirely
+        h = nxt(hosts)
         for hs, cs, l in runs:
-            slot.narrow(1, cs, l).copy_(host.narrow(1, hs, l),
+            slot.narrow(1, cs, l).copy_(h.narrow(1, hs, l),
                                         non_blocking=True)
 
     def gather_index_select():        # the fragmented fallback path
-        torch.index_select(host, 1, idx, out=stage)
+        torch.index_select(nxt(hosts), 1, idx, out=stage)
 
     # BLOCK-MAJOR variant. The mirror is [2, H, ...], so a run of blocks is two
     # strided chunks (one for K, one for V) -- which is why the direct H2D above
     # is SLOWER than staging. Lay the mirror out block-first, [H, 2, ...], and a
     # run becomes one contiguous byte range: it can go straight from pinned host
     # to the device with no CPU copy at all.
-    host_bm = torch.empty((H, 2, bs, nkv, hd), dtype=dt, device="cpu",
-                          pin_memory=True)
+    hosts_bm = [torch.empty((H, 2, bs, nkv, hd), dtype=dt, device="cpu",
+                            pin_memory=True) for _ in range(args.n_layers)]
     slot_bm = torch.empty((W, 2, bs, nkv, hd), dtype=dt, device=dev)
 
     def direct_block_major():
+        h = nxt(hosts_bm)
         for hs, cs, l in runs:
-            slot_bm.narrow(0, cs, l).copy_(host_bm.narrow(0, hs, l),
+            slot_bm.narrow(0, cs, l).copy_(h.narrow(0, hs, l),
                                            non_blocking=True)
 
     results = {}
