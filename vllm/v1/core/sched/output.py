@@ -246,6 +246,13 @@ class SchedulerOutput:
     # runs, because their tier already reads "hbm" in req_kv_tiers above.
     promote_req_ids: set[str] | None = None
 
+    # Hybrid tiered KV: req_id -> its COMPLETE main-pool block id list, to
+    # overwrite the runner's row with. Needed when promotion refills the null
+    # placeholders left by the prefill reclaim: those block ids replace
+    # positions the runner already holds, so they cannot travel through
+    # `new_block_ids`, which only ever appends.
+    rewrite_block_ids: dict[str, list[int]] | None = None
+
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

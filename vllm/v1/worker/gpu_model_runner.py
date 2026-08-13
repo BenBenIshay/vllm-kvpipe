@@ -819,6 +819,29 @@ class GPUModelRunner(
                 decode_threshold=self.reorder_batch_threshold,
             )
 
+    def _apply_rungd_block_rewrites(self, scheduler_output) -> None:
+        """Replace a request's entire block row with the list the scheduler
+        sent.
+
+        Promotion out of the host tier refills the null placeholders left by
+        the prefill reclaim. Those block ids sit at positions the runner
+        already has, so `new_block_ids` (which only appends) cannot carry
+        them -- this overwrites the row instead.
+        """
+        rewrites = getattr(scheduler_output, "rewrite_block_ids", None)
+        if not rewrites:
+            return
+        for req_id, block_ids in rewrites.items():
+            req_state = self.requests.get(req_id)
+            if req_state is None:
+                continue
+            req_state.block_ids = (list(block_ids),)
+            req_index = self.input_batch.req_id_to_index.get(req_id)
+            if req_index is None:
+                continue          # not in the persistent batch; added with the
+                                  # new block_ids above when it re-enters
+            self.input_batch.block_table.add_row(req_state.block_ids, req_index)
+
     def _maybe_restore_promoted(self, scheduler_output, attn_metadata) -> None:
         """Copy a promoted request's KV from the host pool back into its
         resident blocks, before anything reads them.
@@ -1072,16 +1095,42 @@ class GPUModelRunner(
         tiers = self.input_batch.kv_tier_by_req_id
         cpu_rows: list[int] = []       # request row index (block_table / seq_lens)
         cpu_qidx: list[int] = []       # query token index of that row's decode token
+        stray_qidx: list[int] = []     # pool-managed rows with a non-decode shape
+        _pool = getattr(self, "_rungd_pool", None)
         for i in range(num_reqs):
             if i + 1 >= len(qsl_np):
                 break
-            if int(qsl_np[i + 1] - qsl_np[i]) != 1:
-                continue  # not a decode row (prefill / chunked)
             rid = self.input_batch._req_ids[i]
             tier = fresh.get(rid) or tiers.get(rid, "hbm")
+            qlen = int(qsl_np[i + 1] - qsl_np[i])
+            if qlen != 1:
+                # Not a decode row (prefill / chunked / speculative). If this
+                # request is already pool-managed its resident blocks may have
+                # been reclaimed and handed to someone else, so its write MUST
+                # still be suppressed -- writing there would corrupt another
+                # request's KV. The pool only tracks one token per step, so we
+                # also say so loudly: this shape is not supported.
+                if (
+                    tier == "cpu"
+                    and _pool is not None
+                    and rid in _pool.req_seeded
+                ):
+                    stray_qidx.extend(range(int(qsl_np[i]), int(qsl_np[i + 1])))
+                    if not getattr(self, "_rungd_stray_warned", False):
+                        logger.warning(
+                            "hybrid-kv tiers: pool-managed request %s scheduled "
+                            "with query length %d (expected 1). Its resident "
+                            "write is suppressed to protect reclaimed blocks, "
+                            "but the pool records only one token per step -- "
+                            "speculative decoding is not supported with the "
+                            "host tier.", rid, qlen)
+                        self._rungd_stray_warned = True
+                continue
             if tier == "cpu":
                 cpu_rows.append(i)
                 cpu_qidx.append(int(qsl_np[i]))
+        if stray_qidx:
+            self._rungd_skip_cpu_resident_write(attn_metadata, stray_qidx, self.device)
         if not cpu_rows:
             clear_hybrid_decode_split()
             return
@@ -1112,6 +1161,18 @@ class GPUModelRunner(
             clear_hybrid_decode_split()
             return
         set_hybrid_decode_split(split)
+
+    def _drain_rungd_seed_ack(self) -> list[str] | None:
+        """Hand the scheduler the requests seeded into the host pool since the
+        last step, and clear the buffer. Draining (rather than reporting the
+        cumulative set) keeps the message O(newly seeded) and makes a dropped
+        output fail safe: an unreported request simply keeps its resident
+        blocks."""
+        ack = getattr(self, "_rungd_seeded_ack", None)
+        if not ack:
+            return None
+        self._rungd_seeded_ack = []
+        return ack
 
     def _rungd_skip_cpu_resident_write(
         self, attn_metadata, cpu_qidx: list[int], dev
@@ -1212,6 +1273,7 @@ class GPUModelRunner(
                             len(ordered), k_window)
         pool = self._rungd_pool
 
+        seeded_now: list[str] = []
         try:
             for i, rid in enumerate(req_ids):
                 seqlen = int(seq_cpu[i])
@@ -1220,6 +1282,7 @@ class GPUModelRunner(
                 if rid not in pool.req_seeded:
                     resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
                     pool.seed_req(rid, resident_ids)
+                    seeded_now.append(rid)
             rolling_bt, seqused = pool.build_step(
                 req_ids, [int(seq_cpu[i]) for i in range(len(req_ids))]
             )
@@ -1242,6 +1305,15 @@ class GPUModelRunner(
         split.cpu_cur_compact = cur_comp
         split.cpu_cur_offset = cur_off
         split.cpu_cur_hostblock = cur_hb
+        # Only acknowledge the seed once the whole per-step setup has succeeded,
+        # i.e. this request really is being served from the pool. If build_step
+        # had failed we fall back to the resident path for this step, and the
+        # scheduler must NOT have freed the blocks that path reads.
+        if seeded_now:
+            ack = getattr(self, "_rungd_seeded_ack", None)
+            if ack is None:
+                ack = self._rungd_seeded_ack = []
+            ack.extend(seeded_now)
         if dbg:
             logger.info("HYBRID rung-d POOL step: n_cpu=%d W=%d",
                         len(req_ids), pool._w_cur)
@@ -1333,6 +1405,13 @@ class GPUModelRunner(
             # rung-d: return the request's host-pool blocks + clear its seeded
             # state so the host block-id pool does not leak over a long run.
             if _rungd_pool is not None:
+                _rungd_pool.free_req(req_id)
+        # A preempted request recomputes its prefill from scratch into freshly
+        # allocated resident blocks, so the pool's copy of its KV -- and its
+        # "already seeded" mark -- are stale. Drop them, or it would be served
+        # from the previous attempt's host data.
+        if _rungd_pool is not None and scheduler_output.preempted_req_ids:
+            for req_id in scheduler_output.preempted_req_ids:
                 _rungd_pool.free_req(req_id)
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
@@ -1553,6 +1632,11 @@ class GPUModelRunner(
         self.input_batch.condense()
         # Allow attention backend to reorder the batch, potentially
         self._may_reorder_batch(scheduler_output)
+        # Hybrid-KV: overwrite whole block rows for requests whose null
+        # placeholders the scheduler just refilled for promotion. Done after
+        # condense/reorder so the row indices are final, and before
+        # refresh_metadata so attention sees the new blocks.
+        self._apply_rungd_block_rewrites(scheduler_output)
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
@@ -4038,6 +4122,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                kv_tier_seeded_req_ids=self._drain_rungd_seed_ack(),
             )
 
         if not self.use_async_scheduling:

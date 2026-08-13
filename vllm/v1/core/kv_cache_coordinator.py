@@ -220,6 +220,27 @@ class KVCacheCoordinator(ABC):
         for manager in self.single_type_managers:
             manager.remove_skipped_blocks(request_id, total_computed_tokens)
 
+    def reclaim_all_blocks(self, request_id: str) -> int:
+        """Hybrid-KV reclaim: null out and free EVERY block of a request whose
+        KV now lives on the host tier. See `KVCacheManager.reclaim_tier_blocks`.
+        """
+        freed = 0
+        for manager in self.single_type_managers:
+            freed += manager.reclaim_all_blocks(request_id)
+        return freed
+
+    def refill_null_blocks(self, request_id: str) -> list[int] | None:
+        """Hybrid-KV promotion: restore real blocks in the nulled positions.
+
+        Only meaningful for a single-group (full-attention) layout, which is the
+        only configuration the hybrid tiers support; with several groups the
+        runner has no single block-id list to rewrite the row from, so we refuse
+        rather than half-promote.
+        """
+        if len(self.single_type_managers) != 1:
+            return None
+        return self.single_type_managers[0].refill_null_blocks(request_id)
+
     def get_blocks(self, request_id: str) -> tuple[list[KVCacheBlock], ...]:
         """
         Get the blocks for the request.

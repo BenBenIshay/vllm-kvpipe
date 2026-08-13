@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -86,6 +87,17 @@ class Scheduler(SchedulerInterface):
         self._promoting_req_ids: set[str] = set()
         self._promote_attempts: dict[str, int] = {}
         self._promote_max_attempts: int = 8
+        # Hybrid-KV prefill reclaim (paper/BLOCKER_PREFILL_RESIDENCY.md).
+        # Host-tier requests whose main-pool blocks have been freed, and the
+        # full block rows to hand the runner when one is promoted back.
+        self._rungd_reclaimed: set[str] = set()
+        self._rungd_block_rewrites: dict[str, list[int]] = {}
+        self._rungd_reclaim_enabled: bool = (
+            os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM", "0") == "1"
+            and os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+            and getattr(vllm_config.scheduler_config, "enable_hybrid_kv_tiers", False)
+        )
+        self._rungd_blocks_reclaimed: int = 0
         self.transfer_aware_admission = TransferAwareAdmissionController(
             self.scheduler_config
         )
@@ -873,6 +885,7 @@ class Scheduler(SchedulerInterface):
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             req_kv_tiers=req_kv_tiers,
             promote_req_ids=promoted_now if req_kv_tiers is not None else None,
+            rewrite_block_ids=self._take_rungd_block_rewrites(),
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -909,6 +922,11 @@ class Scheduler(SchedulerInterface):
         assert request.status == RequestStatus.RUNNING, (
             "Only running requests can be preempted"
         )
+        # Hybrid-KV: a preempted request recomputes its prefill from scratch, so
+        # the host pool's copy of its KV is stale and its seed must be redone.
+        # The runner drops the pool entry on seeing it in preempted_req_ids.
+        self._rungd_reclaimed.discard(request.request_id)
+        self._rungd_block_rewrites.pop(request.request_id, None)
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
@@ -1213,12 +1231,10 @@ class Scheduler(SchedulerInterface):
             if req_id not in req_to_new_blocks:      # not scheduled this step
                 continue
             need = cdiv(request.num_computed_tokens + 1, bs)
-            try:
-                have = len(
-                    self.kv_cache_manager.get_block_ids(req_id)[0]
-                )
-            except Exception:
-                have = 0
+            # Count only blocks that hold KV: after a prefill reclaim the list
+            # is full-length but padded with null blocks, which would otherwise
+            # satisfy this check with an empty table.
+            have = self._rungd_num_real_blocks(req_id)
             if have < need:
                 # Not enough blocks YET. allocate_slots fills the hole over a
                 # few steps, so keep the cap lifted and re-check next step,
@@ -1245,6 +1261,64 @@ class Scheduler(SchedulerInterface):
             self._promote_attempts.pop(req_id, None)
             committed.add(req_id)
         return committed
+
+    def _rungd_reclaim_seeded(self, seeded_req_ids: Iterable[str]) -> None:
+        """Free the main-pool blocks of host-tier requests the worker has just
+        seeded into the host pool.
+
+        This is the fix for `paper/BLOCKER_PREFILL_RESIDENCY.md`. The block cap
+        in `schedule()` only stops a host-tier request from GROWING; without
+        this it keeps its entire prefill resident, so offloading it frees
+        almost nothing while still costing S*k of interconnect every step --
+        strictly worse than leaving it in HBM. Reclaiming the prefill is what
+        makes a host-tier request cheap enough for the mixture to beat both
+        endpoints.
+
+        Safe only because, for a request being served from the pool:
+          - its attention reads the pool's compacted rolling region, not the
+            main block table (`_build_rolling_compaction` / `_pool_cpu_override`);
+          - its resident write is skipped (`_rungd_skip_cpu_resident_write`);
+          - `allocate_slots` is short-circuited by the cap, so nothing appends
+            to a block list we have nulled.
+        We act only on the worker's acknowledgement, never on our own guess
+        that the seed must have happened.
+        """
+        if not self._rungd_reclaim_enabled:
+            return
+        ctl = self.transfer_aware_admission
+        for req_id in seeded_req_ids:
+            if req_id in self._rungd_reclaimed:
+                continue
+            request = self.requests.get(req_id)
+            if request is None:
+                continue                      # finished this step; already freed
+            if ctl.get_req_tier(req_id) != "cpu":
+                continue                      # promoted before we got the ack
+            if req_id in self._promoting_req_ids:
+                continue                      # mid-promotion; it needs its blocks
+            freed = self.kv_cache_manager.reclaim_tier_blocks(req_id)
+            self._rungd_reclaimed.add(req_id)
+            self._rungd_blocks_reclaimed += freed
+            logger.debug(
+                "hybrid-kv tiers: reclaimed %d main-pool blocks from host-tier "
+                "request %s (%d total)", freed, req_id, self._rungd_blocks_reclaimed
+            )
+
+    def _take_rungd_block_rewrites(self) -> dict[str, list[int]] | None:
+        """Hand this step's refilled block rows to the runner, once."""
+        if not self._rungd_block_rewrites:
+            return None
+        rewrites = self._rungd_block_rewrites
+        self._rungd_block_rewrites = {}
+        return rewrites
+
+    def _rungd_num_real_blocks(self, req_id: str) -> int:
+        """Blocks of `req_id` that actually hold KV -- nulls left by the reclaim
+        do not count, or the promotion check would pass on an empty table."""
+        try:
+            return self.kv_cache_manager.num_real_blocks(req_id)
+        except Exception:
+            return 0
 
     def _apply_tier_migrations(self) -> None:
         """Item 3: execute the migrations the controller planned.
@@ -1276,6 +1350,21 @@ class Scheduler(SchedulerInterface):
                 # lifts the block cap so the next allocate_slots fills its hole.
                 # Phase 2 (verify blocks cover the full sequence, then commit)
                 # runs in _commit_promotions() after scheduling.
+                if req_id in self._rungd_reclaimed:
+                    # Its prefill blocks were freed, and allocate_slots cannot
+                    # give them back: the null placeholders make the block list
+                    # already long enough, so it would allocate nothing. Refill
+                    # the holes explicitly, and refuse the promotion outright if
+                    # the pool cannot cover them -- a partial refill would serve
+                    # garbage for the missing range.
+                    ids = self.kv_cache_manager.refill_tier_blocks(req_id)
+                    if ids is None:
+                        ctl.record_skip("migrate_promote_no_blocks")
+                        continue
+                    self._rungd_reclaimed.discard(req_id)
+                    # These block ids REPLACE positions the runner already has,
+                    # so they cannot travel as `new_block_ids` (which appends).
+                    self._rungd_block_rewrites[req_id] = ids
                 self._promoting_req_ids.add(req_id)
                 ctl.record_skip("migrate_promote_phase1")
 
@@ -1463,6 +1552,13 @@ class Scheduler(SchedulerInterface):
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
+
+        # Hybrid-KV: reclaim the main-pool blocks of host-tier requests the
+        # worker seeded into the host pool during this step. Done here, after
+        # the step has completed and finished requests have been freed, so a
+        # request that stopped this step is simply absent.
+        if model_runner_output.kv_tier_seeded_req_ids:
+            self._rungd_reclaim_seeded(model_runner_output.kv_tier_seeded_req_ids)
 
         # Remove the stopped requests from the running and waiting queues.
         if stopped_running_reqs:
@@ -1707,6 +1803,8 @@ class Scheduler(SchedulerInterface):
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
+        self._rungd_reclaimed.discard(request.request_id)
+        self._rungd_block_rewrites.pop(request.request_id, None)
         self.kv_cache_manager.free(request)
         del self.requests[request.request_id]
 
