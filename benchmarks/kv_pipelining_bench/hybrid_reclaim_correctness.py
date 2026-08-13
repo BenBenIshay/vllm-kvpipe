@@ -200,15 +200,23 @@ def main() -> int:
     van_b = run(9943, reclaim=False, serial=True)
     print("=== HOST TIER + PREFILL RECLAIM (concurrent) ===", flush=True)
     rec = run(9942, reclaim=True)
+    # Serial arm: batch of one on both sides removes the near-tie problem
+    # entirely, so ALL prompts are gateable. The concurrent arm above is what
+    # exercises reclaimed blocks being recycled under load; this one is what
+    # gives full token coverage. Neither alone is enough.
+    print("=== HOST TIER + PREFILL RECLAIM (serial) ===", flush=True)
+    rec_s = run(9944, reclaim=True, serial=True)
 
     events, blocks = reclaim_stats(9942)
+    events_s, _ = reclaim_stats(9944)
     with open(f"{LOGDIR}/reclaim_correctness_outputs.json", "w") as f:
         json.dump({"vanilla_concurrent": van_a, "vanilla_serial": van_b,
-                   "reclaim": rec, "reclaim_events": events,
-                   "blocks_reclaimed": blocks}, f, indent=2)
+                   "reclaim_concurrent": rec, "reclaim_serial": rec_s,
+                   "reclaim_events": events, "blocks_reclaimed": blocks}, f,
+                  indent=2)
 
     print("=" * 70)
-    bad = [t for t in van_a + van_b + rec if t.startswith("<")]
+    bad = [t for t in van_a + van_b + rec + rec_s if t.startswith("<")]
     if bad:
         print(f"INCONCLUSIVE: {bad[0]}")
         return 2
@@ -239,19 +247,32 @@ def main() -> int:
         print(f"WARNING: only {events} of {len(PROMPTS)} requests were "
               "reclaimed; the rest never reached the host tier.")
 
+    # GATE 1 (all prompts): batch of one on both sides, so no near-tie can
+    # confound it. Full token coverage of the host tier at long sequences.
+    serial_mism = [i for i in range(len(PROMPTS)) if van_b[i] != rec_s[i]]
+    print(f"serial gate  : {len(PROMPTS) - len(serial_mism)}/{len(PROMPTS)} "
+          f"identical to vanilla ({events_s} reclaims)")
+    # GATE 2 (batching-stable prompts): under concurrency, where reclaimed
+    # blocks are actually recycled into other requests.
     gated = [i for i in range(len(PROMPTS)) if i not in sensitive]
-    if not gated:
-        print("VACUOUS: every prompt is batching-sensitive; nothing was gated.")
-        return 2
     real = [i for i in mism if i not in sensitive]
-    if real:
-        print(f"RECLAIM CORRECTNESS FAIL: {len(real)}/{len(gated)} gateable "
-              "prompts diverged -- a genuine defect.")
+    print(f"concurrent gate: {len(gated) - len(real)}/{len(gated)} identical "
+          "to vanilla on batching-stable prompts")
+
+    if serial_mism:
+        print(f"RECLAIM CORRECTNESS FAIL: prompts {serial_mism} differ with a "
+              "batch of one on BOTH sides -- nothing can excuse that; the host "
+              "tier is losing or corrupting KV.")
         return 1
-    print(f"RECLAIM CORRECTNESS PASS: {len(gated)}/{len(PROMPTS)} prompts are "
-          "batching-stable, and on every one of them the host tier -- long "
-          "prefills, small pool, freed blocks recycled under load -- generates "
-          "tokens IDENTICAL to vanilla vLLM.")
+    if real:
+        print(f"RECLAIM CORRECTNESS FAIL: {len(real)}/{len(gated)} "
+              "batching-stable prompts diverged under concurrency -- the "
+              "serial path is fine, so suspect block reuse after reclaim.")
+        return 1
+    print(f"RECLAIM CORRECTNESS PASS: all {len(PROMPTS)} prompts token-"
+          f"identical serially, and all {len(gated)} batching-stable prompts "
+          "token-identical under concurrency with long prefills, a small pool, "
+          f"and {blocks} of {NUM_BLOCKS} blocks reclaimed and recycled.")
     return 0
 
 
