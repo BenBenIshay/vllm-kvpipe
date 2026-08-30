@@ -223,6 +223,84 @@ class RungdHostPool:
     def mark_seeded(self, req_id: str) -> None:
         self.req_seeded.add(req_id)
 
+    # -- external load (KV arrives from OUTSIDE, never touching HBM) ---------
+    def preload_layer(
+        self,
+        req_id: str,
+        layer_name: str,
+        keys: torch.Tensor,      # [num_tokens, nkv, hd], token-major
+        values: torch.Tensor,
+        start_pos: int = 0,
+    ) -> None:
+        """Write one layer of a request's KV straight into the host mirrors.
+
+        This is the door into the host tier that does NOT go through HBM.
+
+        `seed_layer` reads a request's KV out of its *resident* blocks, which
+        means a request can only become a rider by first being an ordinary
+        fully-resident request: it must be allocated HBM, prefill into it, and
+        only then be copied out and reclaimed. That transient residency is what
+        forces `b_hbm_max` below capacity -- riders end up purchased with
+        resident slots rather than added on top of them.
+
+        Here the KV comes from the caller (a prefill node, a connector that
+        staged it during prefill, or a test fixture), so a request can be live
+        on the host tier having never owned a main-pool block.
+
+        Token-major in, block-major out: tokens [start_pos, start_pos+n) land in
+        the host blocks this request already owns via `ensure_req`.
+        """
+        n = keys.shape[0]
+        if n == 0:
+            return
+        hblks = self.req_blocks.get(req_id)
+        if not hblks:
+            raise RuntimeError(f"preload_layer: {req_id} has no host blocks; "
+                               "call ensure_req first")
+        bs = self.block_size
+        need = (start_pos + n + bs - 1) // bs
+        if need > len(hblks):
+            raise RuntimeError(
+                f"preload_layer: {req_id} needs {need} host blocks for "
+                f"positions [{start_pos}, {start_pos + n}) but owns {len(hblks)}")
+        hk, hv = self.host_k[layer_name], self.host_v[layer_name]
+        k_cpu = keys.to("cpu", non_blocking=False)
+        v_cpu = values.to("cpu", non_blocking=False)
+        # Flatten (block, offset) so a contiguous token range is a contiguous
+        # destination range whenever it sits inside one block.
+        hk_flat = hk.view(hk.shape[0] * bs, *hk.shape[2:])
+        hv_flat = hv.view(hv.shape[0] * bs, *hv.shape[2:])
+        written = 0
+        while written < n:
+            pos = start_pos + written
+            blk, off = divmod(pos, bs)
+            take = min(bs - off, n - written)
+            dst = hblks[blk] * bs + off
+            hk_flat[dst:dst + take].copy_(k_cpu[written:written + take])
+            hv_flat[dst:dst + take].copy_(v_cpu[written:written + take])
+            written += take
+
+    def preload_req(
+        self,
+        req_id: str,
+        num_tokens: int,
+        kv_by_layer: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    ) -> None:
+        """Admit a request to the host tier from external KV, with no HBM.
+
+        `kv_by_layer` maps layer name -> (keys, values), each
+        [num_tokens, nkv, hd]. Afterwards the request is marked seeded, so the
+        runner will not try to seed it from resident blocks that it never had.
+        """
+        nb = max(1, (num_tokens + self.block_size - 1) // self.block_size)
+        self.ensure_req(req_id, nb)
+        for ln in self.layers:
+            kv = kv_by_layer.get(ln)
+            if kv is None:
+                raise RuntimeError(f"preload_req: no KV supplied for layer {ln}")
+            self.preload_layer(req_id, ln, kv[0], kv[1])
+        self.req_seeded.add(req_id)
+
     def seed_req(self, req_id: str, resident_block_ids: list[int]) -> None:
         """Seed all layers' prefill KV for a request from resident, once."""
         if req_id in self.req_seeded or not self.resident:
