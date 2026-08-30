@@ -92,6 +92,9 @@ class Scheduler(SchedulerInterface):
         # full block rows to hand the runner when one is promoted back.
         self._rungd_reclaimed: set[str] = set()
         self._rungd_block_rewrites: dict[str, list[int]] = {}
+        # Requests whose KV is already in the host pool, so they can be admitted
+        # with no main-pool blocks at all (see _rungd_admit_preloaded).
+        self._rungd_preloaded: set[str] = set()
         self._rungd_reclaim_enabled: bool = (
             os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM", "0") == "1"
             and os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
@@ -680,16 +683,30 @@ class Scheduler(SchedulerInterface):
                     else 0
                 )
 
-                new_blocks = self.kv_cache_manager.allocate_slots(
-                    request,
-                    num_new_tokens,
-                    num_new_computed_tokens=num_new_local_computed_tokens,
-                    new_computed_blocks=new_computed_blocks,
-                    num_lookahead_tokens=effective_lookahead_tokens,
-                    num_external_computed_tokens=num_external_computed_tokens,
-                    delay_cache_blocks=load_kv_async,
-                    num_encoder_tokens=num_encoder_tokens,
-                )
+                # Hybrid-KV: a host-tier request whose KV is ALREADY in the host
+                # pool needs no main-pool blocks at all -- not even for prefill.
+                #
+                # This is the other half of the reclaim. The reclaim frees a
+                # rider's blocks AFTER it has prefilled into them, so becoming a
+                # rider still costs a full request's worth of HBM transiently,
+                # which forces b_hbm_max below capacity and makes riders come
+                # out of resident slots instead of on top of them (measured
+                # 2026-08-13: 3 resident + 2 riders = 5, against all-HBM's 6).
+                # A preloaded rider never owns a block at any instant, so
+                # b_hbm_max can be the full capacity and riders add to it.
+                if self._rungd_admit_preloaded(request):
+                    new_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                else:
+                    new_blocks = self.kv_cache_manager.allocate_slots(
+                        request,
+                        num_new_tokens,
+                        num_new_computed_tokens=num_new_local_computed_tokens,
+                        new_computed_blocks=new_computed_blocks,
+                        num_lookahead_tokens=effective_lookahead_tokens,
+                        num_external_computed_tokens=num_external_computed_tokens,
+                        delay_cache_blocks=load_kv_async,
+                        num_encoder_tokens=num_encoder_tokens,
+                    )
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
@@ -698,6 +715,16 @@ class Scheduler(SchedulerInterface):
                     # manager
                     if request.has_encoder_inputs:
                         self.encoder_cache_manager.free(request)
+                    # Hybrid-KV: this request is starved of BLOCKS, and the loop
+                    # normally stops here, which would also stop every request
+                    # behind it -- including preloaded riders that need no
+                    # blocks at all. Head-of-line blocking on a resource the
+                    # rider does not consume is what pins the running set at
+                    # HBM capacity, so step over it to look for riders. They
+                    # cannot make this request's wait any worse: it is waiting
+                    # for blocks, and a rider takes none.
+                    if self._rungd_defer_for_riders(request, skipped_waiting_requests):
+                        continue
                     break
 
                 # KVTransfer: the connector uses this info to determine
@@ -927,6 +954,7 @@ class Scheduler(SchedulerInterface):
         # The runner drops the pool entry on seeing it in preempted_req_ids.
         self._rungd_reclaimed.discard(request.request_id)
         self._rungd_block_rewrites.pop(request.request_id, None)
+        self._rungd_preloaded.discard(request.request_id)
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
@@ -1261,6 +1289,49 @@ class Scheduler(SchedulerInterface):
             self._promote_attempts.pop(req_id, None)
             committed.add(req_id)
         return committed
+
+    def _rungd_defer_for_riders(self, request: Request, skipped) -> bool:
+        """Step over a block-starved request so preloaded riders behind it can
+        still be admitted. Returns True if the caller should keep scanning.
+
+        Only does anything when there IS a rider waiting behind, so in every
+        other case scheduling keeps its usual stop-at-the-first-unschedulable
+        behaviour and stock vLLM is untouched. The deferred request goes to the
+        skipped queue, which is prepended back to `waiting` at the end of
+        `schedule()`, so it keeps its place rather than being sent to the back.
+        """
+        if not self._rungd_reclaim_enabled or not self._rungd_preloaded:
+            return False
+        # Only worth scanning if a preloaded rider is actually queued behind.
+        if not any(r.request_id in self._rungd_preloaded for r in self.waiting):
+            return False
+        popped = self.waiting.pop_request()
+        skipped.prepend_request(popped)
+        return True
+
+    def register_pool_preloaded(self, req_id: str) -> None:
+        """Declare that this request's KV is already in the host pool.
+
+        Called by whatever delivered it -- a KV connector fed by a prefill node,
+        or a bench fixture. From here the scheduler will admit the request
+        without allocating it any main-pool blocks, so it is a rider that has
+        never owned HBM.
+        """
+        self._rungd_preloaded.add(req_id)
+
+    def _rungd_admit_preloaded(self, request: Request) -> bool:
+        """Should this waiting request be admitted with ZERO main-pool blocks?
+
+        Only for a host-tier request whose KV the pool already holds. Getting
+        this wrong in the permissive direction serves a request with no KV at
+        all, so every condition is required and the default is False.
+        """
+        if not self._rungd_reclaim_enabled:
+            return False
+        if request.request_id not in self._rungd_preloaded:
+            return False
+        return self.transfer_aware_admission.get_req_tier(
+            request.request_id) == "cpu"
 
     def _rungd_reclaim_seeded(self, seeded_req_ids: Iterable[str]) -> None:
         """Free the main-pool blocks of host-tier requests the worker has just
@@ -1810,6 +1881,7 @@ class Scheduler(SchedulerInterface):
         assert request.is_finished()
         self._rungd_reclaimed.discard(request.request_id)
         self._rungd_block_rewrites.pop(request.request_id, None)
+        self._rungd_preloaded.discard(request.request_id)
         self.kv_cache_manager.free(request)
         del self.requests[request.request_id]
 
