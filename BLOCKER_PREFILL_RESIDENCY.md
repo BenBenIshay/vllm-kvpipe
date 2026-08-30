@@ -303,3 +303,67 @@ Both limits are now measured rather than argued:
    until KV arrives already in host memory.
 
 The implementation tax that was masking both is gone.
+
+---
+
+# 2026-08-30: the mixture holds more than HBM alone
+
+The 2026-08-13 conclusion -- "in a combined prefill+decode engine the mixture
+cannot win" -- was right about the cause and is now fixed at the cause.
+
+**The b_hbm_max sweep, completed.** There is no good value, and the reason is
+that riders and residents drew on the same headroom:
+
+| b_hbm_max | riders | total (all-HBM = 6.0) |
+|---|---|---|
+| 3 | ~2 | 5.3 |
+| 4 | ~1.5 | 5.7 |
+| 5 | ~0.3 | 5.8 |
+| 6 | 0 | 6.0 |
+| 8 | 0 | 6.0 |
+
+Riders shrank exactly as b_hbm_max grew, so the sum crept toward capacity from
+below and never passed it. (This also falsifies the capacity-1 hypothesis that
+was recorded as untested.)
+
+**The fix: riders that never own a block.** `preload_req` delivers a rider's KV
+straight into the host mirrors, and the scheduler admits such a request with no
+main-pool blocks at all -- not even for prefill, whose work is declared already
+done except the final token. Three pieces were needed, and the third was only
+found by testing:
+
+1. zero-block admission (`_rungd_admit_preloaded`);
+2. no prefill for a rider (declare the prompt computed);
+3. **head-of-line**: vLLM's waiting loop stops at the first request it cannot
+   allocate, which also stopped riders behind it that needed nothing. A
+   block-starved head is now deferred so the scan continues. Without this, a
+   rider that costs nothing still could not get in.
+
+**Measured** (Qwen-32B, ctx 2048, b_hbm_max = the measured all-HBM ceiling):
+
+| offered | all-HBM peak | mixture peak | mixture wall vs all-HBM |
+|---|---|---|---|
+| 48 | 8 | **48** | 89.5s vs 47.6s |
+| 96 | 7 | **96** | 119.4s vs 79.3s |
+
+The mixture matches whatever is offered while all-HBM sits at 7-8. **HBM is no
+longer the binding constraint**; host memory and the interconnect are. Both
+figures are LOWER BOUNDS -- the mixture hit the offered load, not its ceiling.
+
+The throughput cost is the link, as measured: 90 riders x 512 MiB is ~49 GB of
+transfer per step, ~1.96 s at 25 GB/s. The same 49 GB is ~54 ms on C2C against a
+~45 ms compute step, so ~90 riders at ctx 2048 sits right at the C2C hiding
+limit -- consistent with the independent ~75-rider estimate from the roofline.
+
+**What this does NOT establish.** Riders are filled synthetically, because the
+prefill-node transport does not exist yet: generated TOKENS are meaningless, as
+with the bench connectors' fake fills. This is a CAPACITY result. Token
+correctness of the pool path is covered bitwise by `pool_preload_test.py`,
+`rungd_host_pool_test.py` and `hybrid_rungd_real.py`, and the reclaim path by
+`hybrid_reclaim_correctness.py`. Riders also skip prefill (P/D decode-node
+semantics), so the wall is not comparable to a baseline that prefills all.
+
+**GH200.** The load-bearing unknown -- does the transfer hide on C2C -- needs no
+real KV, so it can be measured with synthetic delivery. The real prefill->pool
+transport is follow-on work for an end-to-end correctness claim, not a
+prerequisite for the hiding measurement.
