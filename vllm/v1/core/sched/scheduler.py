@@ -619,6 +619,17 @@ class Scheduler(SchedulerInterface):
                     num_new_local_computed_tokens = 0
                     num_computed_tokens = request.num_computed_tokens
 
+                # Hybrid-KV: a preloaded rider's KV is already on the host, so
+                # there is nothing to prefill. Declare the prompt computed and
+                # let the engine do only the final token -- vLLM requires at
+                # least one token of work per scheduled request, and that last
+                # token's KV is folded into the pool by `write_token` on the
+                # step it is produced. Without this the scheduler would try to
+                # prefill through a block table it was deliberately not given.
+                if self._rungd_admit_preloaded(request):
+                    num_computed_tokens = max(
+                        num_computed_tokens, request.num_prompt_tokens - 1)
+
                 encoder_inputs_to_schedule = None
                 external_load_encoder_input = []
                 new_encoder_compute_budget = encoder_compute_budget
@@ -954,7 +965,7 @@ class Scheduler(SchedulerInterface):
         # The runner drops the pool entry on seeing it in preempted_req_ids.
         self._rungd_reclaimed.discard(request.request_id)
         self._rungd_block_rewrites.pop(request.request_id, None)
-        self._rungd_preloaded.discard(request.request_id)
+        self._rungd_forget_preloaded(request.request_id)
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
@@ -1290,6 +1301,11 @@ class Scheduler(SchedulerInterface):
             committed.add(req_id)
         return committed
 
+    def _rungd_forget_preloaded(self, req_id: str) -> None:
+        from vllm.v1 import hybrid_pool_admit
+        self._rungd_preloaded.discard(req_id)
+        hybrid_pool_admit.discard(req_id)
+
     def _rungd_defer_for_riders(self, request: Request, skipped) -> bool:
         """Step over a block-starved request so preloaded riders behind it can
         still be admitted. Returns True if the caller should keep scanning.
@@ -1315,9 +1331,12 @@ class Scheduler(SchedulerInterface):
         Called by whatever delivered it -- a KV connector fed by a prefill node,
         or a bench fixture. From here the scheduler will admit the request
         without allocating it any main-pool blocks, so it is a rider that has
-        never owned HBM.
+        never owned HBM. Mirrored into the module registry because the model
+        runner must know too, and it does not see the scheduler.
         """
+        from vllm.v1 import hybrid_pool_admit
         self._rungd_preloaded.add(req_id)
+        hybrid_pool_admit.mark_preloaded(req_id)
 
     def _rungd_admit_preloaded(self, request: Request) -> bool:
         """Should this waiting request be admitted with ZERO main-pool blocks?
@@ -1328,10 +1347,22 @@ class Scheduler(SchedulerInterface):
         """
         if not self._rungd_reclaim_enabled:
             return False
-        if request.request_id not in self._rungd_preloaded:
-            return False
-        return self.transfer_aware_admission.get_req_tier(
+        is_host_tier = self.transfer_aware_admission.get_req_tier(
             request.request_id) == "cpu"
+        if not is_host_tier:
+            return False
+        if request.request_id not in self._rungd_preloaded:
+            # Capacity-measurement policy: with a synthetic delivery source,
+            # EVERY host-tier request is treated as arriving with its KV
+            # already on the host -- which is what a P/D decode node sees, its
+            # riders having been prefilled elsewhere. Without that source the
+            # request must have been registered by whatever really delivered
+            # it, so an unregistered one is not admitted block-free.
+            if os.environ.get(
+                    "VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD", "0") != "1":
+                return False
+            self.register_pool_preloaded(request.request_id)
+        return True
 
     def _rungd_reclaim_seeded(self, seeded_req_ids: Iterable[str]) -> None:
         """Free the main-pool blocks of host-tier requests the worker has just
@@ -1881,7 +1912,7 @@ class Scheduler(SchedulerInterface):
         assert request.is_finished()
         self._rungd_reclaimed.discard(request.request_id)
         self._rungd_block_rewrites.pop(request.request_id, None)
-        self._rungd_preloaded.discard(request.request_id)
+        self._rungd_forget_preloaded(request.request_id)
         self.kv_cache_manager.free(request)
         del self.requests[request.request_id]
 

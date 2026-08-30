@@ -1162,6 +1162,56 @@ class GPUModelRunner(
             return
         set_hybrid_decode_split(split)
 
+    def _rungd_take_external_delivery(self, rid: str, seqlen: int, pool) -> bool:
+        """Take delivery of a rider's externally-supplied KV, if any.
+
+        Returns True if this request's KV came from outside and the pool is now
+        holding it, so the caller must NOT fall back to seeding from resident
+        blocks the request never owned.
+
+        In a P/D deployment the source is the prefill node, handed over by a KV
+        connector. `VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD=1` substitutes a
+        synthetic fill so the CAPACITY question -- how many riders can be held
+        at a fixed HBM budget -- can be measured before that transport exists.
+        Synthetic KV makes generated TOKENS meaningless, exactly like the bench
+        connectors' fake fills, so it must never be used for a token-identity
+        comparison.
+        """
+        # `os` is imported per-function in this module, not at module scope.
+        import os
+
+        from vllm.v1.hybrid_pool_admit import is_preloaded
+
+        if not is_preloaded(rid):
+            return False
+        if os.environ.get("VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD", "0") != "1":
+            # Marked preloaded but nothing delivered it: refuse rather than
+            # invent KV. Seeding from an empty block table would be silent
+            # garbage, which is worse than a loud failure.
+            logger.warning(
+                "hybrid-kv tiers: %s is marked pool-preloaded but no KV was "
+                "delivered for it; it will be served from whatever the pool "
+                "holds. Wire a delivery source, or set "
+                "VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD=1 for a capacity-only run.",
+                rid)
+            pool.mark_seeded(rid)
+            return True
+        kv = {}
+        fill = float(os.environ.get("VLLM_KVPIPE_RUNGD_PRELOAD_FILL", "0.015"))
+        # Announce it: "were riders actually served from the pool" is the
+        # question any capacity result has to answer, and with preloaded riders
+        # there is no reclaim event to count (they never held a block).
+        logger.info("hybrid-kv tiers: PRELOAD DELIVERED %s (%d tokens, "
+                    "synthetic) -- rider is pool-served and owns no HBM",
+                    rid, seqlen)
+        for ln in pool.layers:
+            shp = pool.host_k[ln].shape          # [H, bs, nkv, hd]
+            k = torch.full((seqlen, shp[2], shp[3]), fill,
+                           dtype=pool.host_k[ln].dtype)
+            kv[ln] = (k, k.clone())
+        pool.preload_req(rid, seqlen, kv)
+        return True
+
     def _drain_rungd_seed_ack(self) -> list[str] | None:
         """Hand the scheduler the requests seeded into the host pool since the
         last step, and clear the buffer. Draining (rather than reporting the
@@ -1280,6 +1330,14 @@ class GPUModelRunner(
                 nb = max(1, math.ceil(seqlen / bs))
                 pool.ensure_req(rid, nb)
                 if rid not in pool.req_seeded:
+                    # A preloaded rider was admitted with NO main-pool blocks,
+                    # so there is no resident copy to seed from -- its block
+                    # table is empty and reading it would seed garbage. Its KV
+                    # is delivered externally instead (`preload_req`); here we
+                    # only take delivery of whatever has arrived.
+                    if self._rungd_take_external_delivery(rid, seqlen, pool):
+                        seeded_now.append(rid)
+                        continue
                     resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
                     pool.seed_req(rid, resident_ids)
                     seeded_now.append(rid)
