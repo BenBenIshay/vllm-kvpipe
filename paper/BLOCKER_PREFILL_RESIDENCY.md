@@ -502,3 +502,60 @@ if the pool accounts for only a few ms, the cost is in the attention path --
 most likely `VLLM_KVPIPE_HYBRID_TWOPASS` re-routing the WHOLE batch rather than
 just the riders, which would explain a cost of this size when nothing
 rider-shaped can.
+
+## Hunting the fixed cost: three hypotheses dead, one profiler artifact
+
+**It is not the batch-wide gather/scatter.** `_maybe_hybrid_two_pass` re-routes
+BOTH tiers through index_select/scatter once a split is published, so the
+resident cohort stops being one fused flash call. That predicts a fixed cost
+growing with resident count. `fixed_cost_locator.py` holds riders at ONE and
+varies residents:
+
+| residents | ITL base | ITL +1 rider | fixed cost |
+|---|---|---|---|
+| 2 | 46.91 | 86.07 | 39.16 |
+| 4 | 48.03 | 86.87 | 38.84 |
+| 8 | 49.91 | 86.93 | 37.02 |
+
+Flat across 4x the residents, slightly DECREASING. Hypothesis dead, and the
+structural fix it implied would have bought nothing.
+
+**It is not `build_step`** -- 0.45 to 1.23 ms per step (`profile_host_tier.py`).
+
+**It is not `write_token`'s blocking device->host copy, and that reading was a
+profiler artifact.** The pool profiler attributes ~21 ms of CPU per rider per
+step to `write_token`, which appends ONE token (a few KB over 64 layers). The
+blocking `keys.to("cpu")`, twice per layer, looked like an obvious pipeline
+drain. `write_token_d2h_microbench.py` sizes it against a REALISTIC queue,
+because a blocking copy on an idle GPU is nearly free:
+
+| GPU work queued | blocking | async | gain |
+|---|---|---|---|
+| ~3 ms | 4.78 | 1.50 | 3.2x |
+| ~14 ms | 18.71 | 14.64 | 1.3x |
+| ~50 ms (engine-realistic) | 62.39 | 58.30 | 1.1x |
+
+At engine load the blocking form costs ~4 ms, not 21. Both variants sit near
+60 ms because they are waiting on GPU work that has to happen anyway -- so the
+profiler's CPU column charges `write_token` for the model's own compute. This
+is the same class of mistake as the earlier profiler bug that put
+`torch.cuda.synchronize()` inside its timing wrapper and made async
+double-buffering look worthless; it has now misled this investigation twice,
+in opposite directions.
+
+The async patch was written and NOT applied: ~4 ms of a 37 ms problem, paid
+for with async-ordering risk in three paths that read the mirrors from the CPU
+(`stash_from_host`, `restore_layer`, the `host` property). Bad trade before the
+real cost is known.
+
+**What is left.** ~37 ms, switched on by rider #1, flat in both resident and
+rider count: about 0.58 ms per layer over 64 layers. Insensitive to size but
+sensitive to existence is the signature of LAUNCH-BOUND overhead, and the
+two-pass path does two `index_select`s, a `torch.empty`, a `torch.arange`, two
+flash calls and a scatter EVERY layer. The resident sweep ruled out the gather
+VOLUME scaling with batch size; it does not rule out the per-call cost of doing
+it 128 times a step.
+
+That is elimination, not evidence. The next step is a real trace (torch
+profiler / nsys) of one decode step at 0 vs 1 rider -- not another round of
+inference from aggregate timers.
