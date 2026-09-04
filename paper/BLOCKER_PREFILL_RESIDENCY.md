@@ -695,3 +695,44 @@ queue -- so it overstates the requirement badly (7 vs a measured 3-4). It now
 reports the MEASURED crossing from the tok/s column and keeps the model only as
 a labelled upper bound. A number in the repo that contradicts the data printed
 beside it is worse than no number.
+
+## The remaining 12.29 ms, named: per-layer launch overhead, not a defect
+
+A fresh operator trace against current code (0-rider vs 1-rider, identical
+prompts) closes the question.
+
+**`cudaStreamSynchronize` has dropped out of the table entirely** -- it was 260
+calls/step and the single largest cost before the hoists. That absence is the
+~21 ms those four fixes bought, confirmed independently of the ITL measurement.
+
+What remains, per step:
+
+| operator | calls/step (was) | what it is |
+|---|---|---|
+| `cudaMemcpyAsync` | 335 (9) | issuing ~5 async copies per layer |
+| `aten::copy_` | 581 (138) | ~7 extra copies per layer |
+| `aten::index_copy_` | 312 (0) | ~5 scatters per layer |
+| `Memcpy HtoD (Pinned)` | 129 (6) | the actual KV transfer, 2/layer |
+| `Memcpy DtoH (Pageable)` | 128 (1) | `write_token`'s two `.to("cpu")` |
+
+Concentration: top operator 16%, top three 43%, top ten 86%. **No dominant
+term.** The cost is the per-layer structure itself: once a rider exists, every
+layer must issue the rolling-slot H2D, write the new token into both the GPU
+slot and the host mirror, gather the query rows, run a second flash call and
+scatter the result back -- ~10 extra operations x 64 layers = ~640 extra
+launches per step. 12.29 / 64 = 0.19 ms per layer, which is about right for
+that many small launches.
+
+**This is a floor for the current design, not a bug.** The four things fixed
+were cases of doing MORE than necessary; what is left is the necessary work,
+issued 64 times in small pieces. Getting past it needs batching ACROSS layers
+rather than per-layer issue -- the `k_window` slots already exist for it, and
+prefetching a window of layers in one shot instead of one layer of lookahead
+would cut the issue count several-fold. That is a design change, not a fix, and
+should be measured before being believed.
+
+**For GH200 this settles the open question.** The residual is not a lurking
+defect that would corrupt the C2C measurement -- it is launch overhead,
+identical on either machine, and now small enough (12 ms against a 49 ms step)
+that the interconnect term dominates again on C2C. That was the thing worth
+knowing before booking, and it checks out.
