@@ -450,6 +450,55 @@ for +8% ITL. That is a lower bound assuming the overlap is never fixed; C2C's
 
 A single point also cannot separate a FIXED cost of using the host path at all
 from a PER-BYTE cost that fails to overlap, and those extrapolate to very
-different C2C numbers. `rider_hide_efficiency.py` sweeps the rider count and
-fits `ITL = baseline + fixed + r * per_rider` to separate them. That fit, not
-this table, is what should decide the GH200 booking.
+different C2C numbers. So the rider count was swept, and the fit REVERSES the
+reading above.
+
+## The transfer does hide. A fixed cost is what kills it.
+
+`rider_hide_efficiency.py`, same config, all four points clean (12/12
+completed, no errors, engine alive, delivered riders exactly matching the cap):
+
+| riders | peak | median ITL | tok/s |
+|---|---|---|---|
+| 0 | 7 | 49.91 | 57.3 |
+| 1 | 9 | 86.12 | 50.0 |
+| 2 | 10 | 87.93 | 51.0 |
+| 3 | 11 | 96.95 | 51.8 |
+
+Least squares on the rider points: **fixed +29.59 ms, marginal 5.42 ms per
+rider**. A rider at ctx 2048 is 0.537 GB per step = 21.39 ms unoverlapped at
+25.1 GB/s, so the marginal cost is a quarter of that: **~75% of the transfer
+hides**. The apparent bandwidth is 99 GB/s, 3.95x the link -- which is not an
+error but the signature of overlap, since part of the transfer is paid out of
+time the GPU was computing anyway.
+
+**The earlier "~89% of the transfer did not hide" was wrong.** It was inferred
+from the single r=2 point, which cannot distinguish a steep slope from a large
+intercept. The sweep inverted it rather than refining it. (The harness then
+printed "0% hidden" from an inverted formula, agreeing with the wrong answer by
+coincidence; fixed, and it now reports the apparent-bandwidth multiple.)
+
+Note also that throughput RISES with rider count (50.0 -> 51.0 -> 51.8) while
+staying under the 57.3 baseline. Each marginal rider pays for itself; it is the
+entry fee that puts the arm underwater.
+
+## What this means for GH200
+
+Break-even -- the rider count at which concurrency/ITL beats the rider-free
+arm -- is **~17 riders on PCIe**, which B1 will never allow on bytes. Not
+reachable.
+
+On C2C the marginal term is dominated by the visible quarter of the transfer,
+which shrinks by 36x. Keeping the 29.59 ms fixed cost exactly as it is,
+break-even lands at **~4 riders**, with everything beyond it profit. Caveat
+stated: this treats the whole 5.42 ms slope as transfer, and any part of it
+that is really rider-side ATTENTION compute does not shrink with bandwidth --
+so ~4 is optimistic and the honest range is roughly 4-8.
+
+So C2C is justified even without touching the fixed cost. But removing that
+29.59 ms moves break-even to the FIRST rider, so it is worth a profiling pass
+before booking: `profile_host_tier.py` times the pool's own entry points, and
+if the pool accounts for only a few ms, the cost is in the attention path --
+most likely `VLLM_KVPIPE_HYBRID_TWOPASS` re-routing the WHOLE batch rather than
+just the riders, which would explain a cost of this size when nothing
+rider-shaped can.
