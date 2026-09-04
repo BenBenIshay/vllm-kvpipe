@@ -73,12 +73,29 @@ class TransferAwareAdmissionController:
         "_migrate_warmup_steps",
         # KV bytes per token, derived from the model rather than hand-set.
         "_b_tok_cached",
+        # B1 hide budget measured from real forward iterations.
+        "_resident_only_ms_ema",
+        "_resident_only_samples",
+        "_measured_budget_enabled",
+        "_measured_budget_min_samples",
+        "_measured_budget_announced",
     )
 
     def __init__(self, scheduler_config: "SchedulerConfig",
                  vllm_config: "VllmConfig | None" = None) -> None:
         self.scheduler_config = scheduler_config
         self._b_tok_cached: int = self._resolve_b_tok(vllm_config)
+        # B1's hide budget is "how long a forward iteration lasts", which is a
+        # MEASURED quantity, not a flag. Sampled only on steps with no host-tier
+        # request running: including rider steps would be circular, since a step
+        # slowed by transfer would then justify admitting more transfer.
+        self._resident_only_ms_ema: float = 0.0
+        self._resident_only_samples: int = 0
+        self._measured_budget_enabled: bool = (
+            os.environ.get("VLLM_KVPIPE_B1_MEASURED", "1") == "1")
+        self._measured_budget_min_samples: int = int(
+            os.environ.get("VLLM_KVPIPE_B1_MEASURED_MIN", "8") or 8)
+        self._measured_budget_announced: bool = False
         self._events_this_step: dict[str, int] = {}
         self._schedule_step_index = 0
         # Predictor is lazy-loaded on first admission decision so that turning
@@ -209,11 +226,17 @@ class TransferAwareAdmissionController:
 
     # ------------------------------------------------ B2 closed-loop guardrail
 
-    def observe_step_time(self, step_ms: float, is_decode_only: bool) -> None:
+    def observe_step_time(self, step_ms: float, is_decode_only: bool,
+                          num_host_tier: int | None = None) -> None:
         """Feed the measured engine step time (≈ resident ITL) back to the
         controller. Only decode-only steps are counted (prefill steps are
         naturally longer). Updates an EMA and the OK/THROTTLED state with
-        hysteresis around the SLO."""
+        hysteresis around the SLO.
+
+        `num_host_tier` is how many host-tier requests were running during the
+        step. A step with none is a CLEAN measurement of a forward iteration,
+        and those are what B1's hide budget is built from.
+        """
         if not is_decode_only or step_ms <= 0:
             return
         a = 0.2  # EMA weight
@@ -221,14 +244,22 @@ class TransferAwareAdmissionController:
         self._resident_step_ms_ema = step_ms if prev <= 0 else (
             a * step_ms + (1 - a) * prev
         )
+        if num_host_tier == 0:
+            r = self._resident_only_ms_ema
+            self._resident_only_ms_ema = step_ms if r <= 0 else (
+                a * step_ms + (1 - a) * r)
+            self._resident_only_samples += 1
+        ema = self._resident_step_ms_ema
+        # Kept regardless of whether an SLO is configured: the demotion probe
+        # reads this window for its baseline, and it used to be populated only
+        # when an SLO happened to be set.
+        self._ema_window.append(ema)
+        if len(self._ema_window) > 64:
+            self._ema_window.pop(0)
         slo = float(self.scheduler_config.transfer_aware_slo_p99_itl_ms or 0.0)
         if slo <= 0:
             self._itl_throttled_state = False
             return
-        ema = self._resident_step_ms_ema
-        self._ema_window.append(ema)
-        if len(self._ema_window) > 64:
-            self._ema_window.pop(0)
         if self._itl_throttled_state:
             if ema < slo * 0.85:          # low watermark -> resume admitting
                 self._itl_throttled_state = False
@@ -399,6 +430,46 @@ class TransferAwareAdmissionController:
                 out.append((r.request_id, "promote"))
         return out
 
+    def hide_budget_ms(self) -> float:
+        """How long a forward iteration lasts, in ms -- B1's hide budget.
+
+        Prefers the MEASURED resident-only step time over the configured
+        `--hybrid-itl-ms`. The configured value was a hand-set constant that
+        every harness had to guess, and guessing it high (100000, "capacity
+        question, not an SLO question") disables the gate entirely. The
+        interconnect budget is a property of the machine and the model, so it
+        should be observed, not declared.
+
+        Only steps with NO host-tier request running are sampled, because a
+        step already slowed by rider transfer would otherwise enlarge the
+        budget that admitted those riders -- a loop that inflates itself.
+        Falls back to the configured value until enough clean samples exist.
+        """
+        cfg_ms = float(self.scheduler_config.hybrid_itl_ms or 0.0)
+        if (self._measured_budget_enabled
+                and self._resident_only_samples >= self._measured_budget_min_samples
+                and self._resident_only_ms_ema > 0):
+            if not self._measured_budget_announced:
+                self._measured_budget_announced = True
+                logger.info(
+                    "B1 hide budget now MEASURED: %.2f ms per forward iteration "
+                    "(%d clean resident-only steps); configured value was "
+                    "%.2f ms", self._resident_only_ms_ema,
+                    self._resident_only_samples, cfg_ms)
+            return self._resident_only_ms_ema
+        if cfg_ms > 0:
+            return cfg_ms
+        predictor = self._maybe_load_predictor()
+        if predictor is not None:
+            try:
+                return float(predictor.predict_p99_itl_ms(1))
+            except Exception:                                  # noqa: BLE001
+                pass
+        return 16.0
+
+    def hide_budget_source(self) -> str:
+        return ("measured" if self._measured_budget_announced else "configured")
+
     def hide_budget_headroom_bytes(self, running_requests: "list[Request]") -> float:
         """Bytes of per-step transfer still available under the B1 hide budget.
 
@@ -411,7 +482,7 @@ class TransferAwareAdmissionController:
         from vllm.v1.hybrid_kv_roofline import effective_pcie_gbps
 
         cfg = self.scheduler_config
-        itl_ms = float(cfg.hybrid_itl_ms or 0.0) or 16.0
+        itl_ms = self.hide_budget_ms()
         b_tok = self._b_tok_cached
         x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
         budget = (itl_ms / 1000.0) * x_eff * 1e9 * (1.0 - self._budget_margin())
@@ -571,23 +642,11 @@ class TransferAwareAdmissionController:
         if self._itl_throttled_state:
             return False, "hybrid_itl_throttled"
 
-        # Hide budget (ms of resident compute a transfer can overlap): prefer the
-        # MEASURED resident step time (B2 EMA); else configured/predicted itl_ms.
-        itl_ms = float(cfg.hybrid_itl_ms or 0.0)
-        if itl_ms <= 0:
-            predictor = self._maybe_load_predictor()
-            if predictor is not None:
-                try:
-                    itl_ms = float(predictor.predict_p99_itl_ms(len(running_requests) + 1))
-                except Exception:
-                    itl_ms = 16.0
-            else:
-                itl_ms = 16.0
-        # B1's hide budget uses the configured itl_ms (a stable target ≈ the
-        # resident-only step time); the MEASURED step time drives only the B2
-        # guardrail below (using the EMA here would be circular, since it already
-        # includes the CPU cohort's transfer).
-        budget_ms = itl_ms
+        # Hide budget: how long one forward iteration lasts. Measured from
+        # steps with no rider running when enough of those exist, else the
+        # configured value. Never the live EMA -- that already contains the
+        # rider transfer, so feeding it back here would be circular.
+        budget_ms = self.hide_budget_ms()
 
         b_tok = self._b_tok_cached
         x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))

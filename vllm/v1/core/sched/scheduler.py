@@ -281,9 +281,18 @@ class Scheduler(SchedulerInterface):
         _rungd_now = time.monotonic()
         _rungd_prev = getattr(self, "_rungd_last_sched_t", None)
         if _rungd_prev is not None:
+            # `self.running` here is still the PREVIOUS step's set, so this is
+            # how many riders that step actually carried. A step that carried
+            # none is a clean forward-iteration measurement, which is what B1's
+            # hide budget is built from.
+            _rungd_hosts = sum(
+                1 for r in self.running
+                if self.transfer_aware_admission.get_req_tier(r.request_id)
+                == "cpu")
             self.transfer_aware_admission.observe_step_time(
                 (_rungd_now - _rungd_prev) * 1000.0,
                 getattr(self, "_rungd_last_decode_only", False),
+                _rungd_hosts,
             )
         self._rungd_last_sched_t = _rungd_now
         # NOTE(woosuk) on the scheduling algorithm:
