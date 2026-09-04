@@ -606,3 +606,19 @@ per layer). ~257 extra syncs per step remain, plus `aten::copy_` at 702
 calls/step against 138, and `index_copy_` at 312 against 0. The next step is
 the same operator trace re-run against current code, so the diff is not
 dominated by the sync already removed.
+
+**The headline moves with it.** Re-running the two-arm comparison after the
+hoist (offered 12, b_hbm_max 8):
+
+| | ITL | tok/s | vs control |
+|---|---|---|---|
+| before hoist | 50.89 -> 88.91 | 57.4 -> 50.9 | **-11.3%** |
+| after hoist | 49.96 -> 76.00 | 57.3 -> 54.0 | **-5.8%** |
+
+The controls reproduce tightly (57.4/57.3 tok/s, 50.89/49.96 ms), so the change
+is the change. 12 ms of fixed cost removed halved the throughput deficit, which
+makes the A100 goal -- riders paying for themselves, a little -- look reachable
+rather than blocked: extrapolating the remaining ~23 ms puts the mixture at
+roughly break-even to a few percent positive. Soft extrapolation, though;
+throughput is not simply concurrency/ITL once queueing is in play, which is why
+the -11.3% never matched its own concurrency ratio either.
