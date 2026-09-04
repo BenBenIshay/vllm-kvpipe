@@ -95,7 +95,9 @@ def main() -> int:
     print(f"{'arm':<10} {'cap':>4} {'riders':>7} {'peak':>5} {'ITL med':>9} "
           f"{'tok/s':>8}")
     pts: list[tuple[int, float]] = []
+    tok_pts: list[tuple[int, float]] = []
     base = None
+    base_tok = None
     for arm, cap, r in rows:
         if r.get("error") or r.get("engine_died") or r.get("errors"):
             print(f"{arm:<10} {cap:>4}   INVALID ({r.get('error') or r.get('engine_died') or str(r.get('errors')) + ' failed reqs'})")
@@ -108,8 +110,11 @@ def main() -> int:
             continue
         if arm == "no_riders":
             base = itl
+            base_tok = r.get("decode_tok_s")
         else:
             pts.append((riders, itl))
+            if r.get("decode_tok_s"):
+                tok_pts.append((riders, r["decode_tok_s"]))
     print("=" * 78)
 
     if base is None or len(pts) < 2:
@@ -163,10 +168,25 @@ def main() -> int:
               "faster interconnect shrinks the per-rider term and leaves the "
               "fixed one exactly where it is, so this number, not the "
               "bandwidth, decides whether C2C is worth buying.")
-    print(f"break-even rider count on this link: solving "
-          f"(R+r)/(ITL0+fixed+slope*r) = R/ITL0 for r, with R={args.b_hbm_max} "
-          f"residents, needs r ~ "
-          f"{_breakeven(args.b_hbm_max, base, fixed, slope):.0f}")
+    # Break-even from the MEASURED throughput, not from a model. The model
+    # below assumes throughput = concurrency / ITL, which ignores queueing --
+    # the rider-free arm leaves requests waiting, and riders shorten that
+    # queue. Measured on A100 it said ~7 riders while the tok/s column crossed
+    # at 3-4, so it is reported only as a labelled upper bound.
+    if base_tok and tok_pts:
+        crossed = [r for r, t in tok_pts if t >= base_tok]
+        if crossed:
+            print(f"MEASURED break-even: {min(crossed)} riders "
+                  f"(tok/s reaches the rider-free arm's {base_tok})")
+        else:
+            best_r, best_t = max(tok_pts, key=lambda rt: rt[1])
+            print(f"MEASURED: not reached within this sweep -- best is "
+                  f"{best_t} tok/s at {best_r} riders vs {base_tok} rider-free "
+                  f"({(best_t / base_tok - 1) * 100:+.1f}%). Extend --caps to "
+                  "find the crossing.")
+    print(f"  (a concurrency/ITL model, which IGNORES queueing and so "
+          f"overstates the requirement, would say "
+          f"~{_breakeven(args.b_hbm_max, base, fixed, slope):.0f})")
     return 0
 
 
