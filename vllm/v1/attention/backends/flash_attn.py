@@ -1064,8 +1064,17 @@ class FlashAttentionImpl(AttentionImpl):
                     and _crr_max is not None
                     and _crr_max < seqused_k.shape[0]
                 ):
-                    _seqused_std = seqused_k.clone()
-                    _seqused_std.index_fill_(0, _crr, 1)
+                    # Loop-invariant: `seqused_k` comes from attn_metadata and
+                    # `_crr` from the split, so all 64 layers were allocating,
+                    # copying and scattering to produce the SAME tensor. The
+                    # split is rebuilt every step, so caching on it is scoped
+                    # correctly by construction.
+                    _seqused_std = getattr(_split, "seqused_masked", None)
+                    if (_seqused_std is None
+                            or _seqused_std.shape != seqused_k.shape):
+                        _seqused_std = seqused_k.clone()
+                        _seqused_std.index_fill_(0, _crr, 1)
+                        _split.seqused_masked = _seqused_std
                 flash_attn_varlen_func(
                     q=query[:num_actual_tokens],
                     k=key_cache,

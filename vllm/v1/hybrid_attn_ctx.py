@@ -76,6 +76,10 @@ class HybridDecodeSplit:
     # device, the max costs nothing.
     rolling_max_seqlen_k: int | None = None
     cpu_cu_seqlens_q: torch.Tensor | None = None
+    # `seqused_k` with the pooled rows masked to length 1, so the standard pass
+    # skips KV reads the pool override is going to overwrite anyway. Cached
+    # because it is identical for every layer of a step.
+    seqused_masked: torch.Tensor | None = None
     meta: dict = field(default_factory=dict)
 
 
