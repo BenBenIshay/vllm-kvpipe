@@ -622,3 +622,46 @@ rather than blocked: extrapolating the remaining ~23 ms puts the mixture at
 roughly break-even to a few percent positive. Soft extrapolation, though;
 throughput is not simply concurrency/ITL once queueing is in play, which is why
 the -11.3% never matched its own concurrency ratio either.
+
+## The fixed cost, halved twice more: 37.0 -> 16.1 ms
+
+Three more instances of the SAME defect, all found by the operator trace and
+all loop-invariant work executed inside the per-layer loop:
+
+| what | where | fixed cost |
+|---|---|---|
+| start | | 37.02 ms |
+| `int(_crr.max())` per layer | `flash_attn.py:1056` | 24.78 |
+| scatter indices rebuilt per layer | `RungdHostPool.write_token` | 20.05 |
+| `int(ctx.seqused_k.max())` + `arange` per layer | `kv_tier_backend.py:143` | 16.10 |
+| `seqused_k.clone()` + `index_fill_` per layer | `flash_attn.py:1065` | (marginal) |
+
+And the headline moved with it every time, control reproducing to within 0.1
+tok/s across five runs (57.4/57.3/57.3/57.3/57.3):
+
+| | median ITL | tok/s | vs control |
+|---|---|---|---|
+| start | 50.89 -> 88.91 | 57.4 -> 50.9 | **-11.3%** |
+| after hoist 1 | 49.96 -> 76.00 | 57.3 -> 54.0 | **-5.8%** |
+| after hoists 2+3 | 50.00 -> 68.19 | 57.3 -> 55.7 | **-2.8%** |
+| after hoist 4 | 48.02 -> 67.01 | 57.3 -> 56.0 | **-2.3%** |
+
+Token identity is unchanged at every step (6/6 round 1, 4/6 round 2) and every
+bitwise gate passes, so none of this touched numerics.
+
+**The species matters more than any one instance.** The host-tier path is
+written per layer because that is how attention is structured, but nearly
+everything it computes -- scatter indices, sequence maxima, cu_seqlens, the
+masked seqused -- is fixed once the step's schedule is known. Four independent
+sites, ~21 ms between them. The design was never the problem; the plumbing was.
+
+**Honest ceiling on A100.** Even at zero fixed cost the arithmetic gives about
++2-3% here: 2 riders on 8 residents at ~5.4 ms of ITL each. "A little" is all
+PCIe can offer and the roofline said so before any of this work. What changed
+is that it is now within reach instead of buried under 37 ms of overhead. The
+number that matters for the paper is C2C, where the per-rider term collapses
+~36x and the fixed cost -- 16 ms now, not 37 -- sets break-even.
+
+**Still open: ~16 ms.** Diminishing returns per fix (the fourth bought 0.5pp).
+A fresh operator trace would be needed to decide whether the remainder is more
+of the same or something structural.
