@@ -60,6 +60,14 @@ class HybridDecodeSplit:
     # pipeline drains per step from a guard whose whole purpose is to save
     # work. The rows are fixed for the step, so this is loop-invariant.
     cpu_req_rows_max: int | None = None
+    # Flattened (block, offset) write positions for this step's new token, in
+    # cpu_idx order: `slot_pos` indexes the rolling GPU slot, `host_pos` the
+    # pinned host mirror. Derived ONCE here rather than in `write_token`, which
+    # runs per layer and was rebuilding both from Python lists 64 times over --
+    # three `as_tensor` conversions and a pageable host->device transfer each
+    # time, on data that cannot change between layers.
+    cpu_slot_pos: torch.Tensor | None = None   # device
+    cpu_host_pos: torch.Tensor | None = None   # cpu
     meta: dict = field(default_factory=dict)
 
 

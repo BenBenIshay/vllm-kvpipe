@@ -1414,6 +1414,13 @@ class GPUModelRunner(
         split.cpu_cur_compact = cur_comp
         split.cpu_cur_offset = cur_off
         split.cpu_cur_hostblock = cur_hb
+        # Loop-invariant across layers: derive the write positions once.
+        if cur_comp:
+            _off = torch.tensor(cur_off, dtype=torch.long)
+            split.cpu_slot_pos = (
+                torch.tensor(cur_comp, dtype=torch.long) * bs + _off).to(dev)
+            split.cpu_host_pos = (
+                torch.tensor(cur_hb, dtype=torch.long) * bs + _off)
         # Only acknowledge the seed once the whole per-step setup has succeeded,
         # i.e. this request really is being served from the pool. If build_step
         # had failed we fall back to the resident path for this step, and the

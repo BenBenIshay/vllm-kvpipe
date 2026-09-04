@@ -610,6 +610,7 @@ class FlashAttentionImpl(AttentionImpl):
                 lidx, split.cpu_cur_compact, split.cpu_cur_offset,
                 split.cpu_cur_hostblock,
                 key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+                split.cpu_slot_pos, split.cpu_host_pos,
             )
         m = cpu_idx.numel()
         out = output[:num_actual_tokens]

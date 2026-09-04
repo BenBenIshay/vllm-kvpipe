@@ -505,6 +505,8 @@ class RungdHostPool:
         host_blocks: list[int],
         keys: torch.Tensor,     # [n, nkv, hd] on device
         values: torch.Tensor,
+        slot_pos: torch.Tensor | None = None,
+        host_pos: torch.Tensor | None = None,
     ) -> None:
         """Fold the new decode-token KV into the host mirror (host block) and the
         current rolling slot (compact block). Vectorized: flatten (block, offset)
@@ -519,16 +521,22 @@ class RungdHostPool:
         hk, hv = self.host_k[ln], self.host_v[ln]
         bs = kslot.shape[1]
         dev = kslot.device
-        offs_l = torch.as_tensor(offsets, dtype=torch.long)
-        # slot: [W, bs, nkv, hd] -> [W*bs, nkv, hd]; pos = compact*bs + off
-        slot_pos = (torch.as_tensor(compact_ids, dtype=torch.long) * bs
-                    + offs_l).to(dev)
+        # `slot_pos`/`host_pos` are the same for every layer of a step, so the
+        # caller derives them once. Deriving them here meant three Python-list
+        # conversions plus a PAGEABLE host->device transfer per layer -- 64x
+        # over, on data fixed before the first layer ran. The fallback keeps
+        # direct callers (tests, the promotion path) working.
+        if slot_pos is None or host_pos is None:
+            offs_l = torch.as_tensor(offsets, dtype=torch.long)
+            # slot: [W, bs, nkv, hd] -> [W*bs, nkv, hd]; pos = compact*bs + off
+            slot_pos = (torch.as_tensor(compact_ids, dtype=torch.long) * bs
+                        + offs_l).to(dev)
+            host_pos = torch.as_tensor(host_blocks, dtype=torch.long) * bs + offs_l
         kslot.view(kslot.shape[0] * bs, *kslot.shape[2:]).index_copy_(
             0, slot_pos, keys)
         vslot.view(vslot.shape[0] * bs, *vslot.shape[2:]).index_copy_(
             0, slot_pos, values)
         # host mirrors (pinned CPU): pos = host_block*bs + off
-        host_pos = torch.as_tensor(host_blocks, dtype=torch.long) * bs + offs_l
         k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
         hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(0, host_pos, k_cpu)
         hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(0, host_pos, v_cpu)
