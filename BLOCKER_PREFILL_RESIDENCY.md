@@ -559,3 +559,50 @@ it 128 times a step.
 That is elimination, not evidence. The next step is a real trace (torch
 profiler / nsys) of one decode step at 0 vs 1 rider -- not another round of
 inference from aggregate timers.
+
+## The fixed cost, located: pipeline drains per step
+
+The operator trace (`rider_step_trace.py`, diffing 0-rider against 1-rider
+decode steps on identical prompts) named what two rounds of aggregate timers
+could not. Per step, one rider adds:
+
+    cudaStreamSynchronize      1  ->  321 calls     <- the largest delta
+    aten::max                  0  ->  123 calls
+    aten::_local_scalar_dense  0  ->  123 calls
+    Memcpy DtoH (Pageable)     1  ->  128 calls
+
+64 of those syncs came from one line, `flash_attn.py:1056`:
+
+    and int(_crr.max()) < seqused_k.shape[0]
+
+a device reduction plus a `.item()` evaluated once per layer on the hot path --
+inside a guard whose purpose is to SKIP expensive KV reads. An optimisation was
+paying a full pipeline drain per layer to decide whether to optimise.
+`cpu_req_rows` is fixed for the step and the runner builds it from a Python
+list, so the value is loop-invariant and now carried on the split.
+
+**Measured, residents=8, 1 rider: fixed cost 37.02 -> 24.78 ms.** A third of it,
+from hoisting one line, with every numeric gate still passing.
+
+**And then a wrong prediction, recorded because it corrects a real belief.**
+That result seemed to calibrate drains at ~0.19 ms each, which implied
+`write_token`'s 128 pageable D2H copies per step were worth ~24 ms -- so the
+async patch that had been written and rejected was applied after all. It moved
+the fixed cost 24.78 -> 23.14 ms: **1.6 ms, not 24**. Syncs are not equal-cost;
+a drain costs what is queued behind it, and `int(_crr.max())` sat immediately
+before the big flash call while `write_token`'s copies land where little is
+pending. The isolated microbenchmark that said "~4 ms" was closer than the
+extrapolation that overrode it.
+
+The async patch was REVERTED despite being correct (token identity unchanged:
+6/6 round 1, 4/6 round 2, matching exactly; all bitwise gates passing). It buys
+7% at the cost of three explicit sync guards on the CPU-read paths and a
+per-row Python loop whose cost GROWS with rider count (microbenchmarked 1.48 ->
+3.28 ms from 1 to 3 riders) -- a win that shrinks precisely where we need to
+scale.
+
+**Where it stands: 37.02 -> 24.78 ms, with ~23 ms still unexplained** (~0.36 ms
+per layer). ~257 extra syncs per step remain, plus `aten::copy_` at 702
+calls/step against 138, and `index_copy_` at 312 against 0. The next step is
+the same operator trace re-run against current code, so the diff is not
+dominated by the sync already removed.
