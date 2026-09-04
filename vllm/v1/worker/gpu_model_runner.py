@@ -1141,6 +1141,7 @@ class GPUModelRunner(
         )
         # Request-row indices (for masking CPU rows out of the standard pass).
         split.cpu_req_rows = torch.tensor(cpu_rows, dtype=torch.int64, device=dev)
+        split.cpu_req_rows_max = max(cpu_rows) if cpu_rows else None
         self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, dbg)
         # Skip the CPU decode tokens' resident write. When the pool set up OK
         # this is because their KV lives in the pool; when it FAILED (should not

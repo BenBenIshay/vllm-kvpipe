@@ -54,6 +54,12 @@ class HybridDecodeSplit:
     # to mask them out of the standard attention pass (opt #5) since the pool
     # override recomputes them anyway.
     cpu_req_rows: torch.Tensor | None = None
+    # The largest value in `cpu_req_rows`, as a plain int. Carried rather than
+    # recomputed because the attention path needs it EVERY layer, and taking
+    # `int(cpu_req_rows.max())` there is a GPU reduction plus a .item() -- 64
+    # pipeline drains per step from a guard whose whole purpose is to save
+    # work. The rows are fixed for the step, so this is loop-invariant.
+    cpu_req_rows_max: int | None = None
     meta: dict = field(default_factory=dict)
 
 

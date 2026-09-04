@@ -1051,9 +1051,15 @@ class FlashAttentionImpl(AttentionImpl):
                 # single key; their output is overwritten below).
                 _seqused_std = seqused_k
                 _crr = getattr(_split, "cpu_req_rows", None) if _pool_override else None
+                # NOT `int(_crr.max())`: that is a device reduction plus a
+                # .item(), i.e. a full pipeline drain, run once per layer on
+                # the hot path. The runner already knows this value from the
+                # Python list it built the tensor from.
+                _crr_max = getattr(_split, "cpu_req_rows_max", None)
                 if (
                     _crr is not None and _crr.numel() > 0
-                    and int(_crr.max()) < seqused_k.shape[0]
+                    and _crr_max is not None
+                    and _crr_max < seqused_k.shape[0]
                 ):
                     _seqused_std = seqused_k.clone()
                     _seqused_std.index_fill_(0, _crr, 1)
