@@ -68,6 +68,14 @@ class HybridDecodeSplit:
     # time, on data that cannot change between layers.
     cpu_slot_pos: torch.Tensor | None = None   # device
     cpu_host_pos: torch.Tensor | None = None   # cpu
+    # Longest pooled sequence this step, and the trivial cu_seqlens_q for the
+    # CPU rows. Both are fixed once `build_step` has run, but the tier backend
+    # was recomputing `int(seqused_k.max())` per layer -- a device reduction
+    # plus a .item(), i.e. another 64 pipeline drains per step -- and building
+    # the same arange 64 times. Taken on the CPU-side tensor before it moves to
+    # device, the max costs nothing.
+    rolling_max_seqlen_k: int | None = None
+    cpu_cu_seqlens_q: torch.Tensor | None = None
     meta: dict = field(default_factory=dict)
 
 

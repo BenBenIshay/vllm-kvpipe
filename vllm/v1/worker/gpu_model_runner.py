@@ -1411,6 +1411,11 @@ class GPUModelRunner(
         split.rungd_layer_index = self._rungd_layer_index
         split.rolling_block_table = rolling_bt.to(dev)
         split.rolling_seqused_k = seqused.to(dev)
+        # `seqused` is still on the CPU here, so this max is free -- unlike the
+        # per-layer `int(ctx.seqused_k.max())` it replaces.
+        split.rolling_max_seqlen_k = int(seqused.max()) if seqused.numel() else 0
+        split.cpu_cu_seqlens_q = torch.arange(
+            0, len(req_ids) + 1, device=dev, dtype=torch.int32)
         split.cpu_cur_compact = cur_comp
         split.cpu_cur_offset = cur_off
         split.cpu_cur_hostblock = cur_hb

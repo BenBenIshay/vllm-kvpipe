@@ -46,6 +46,9 @@ class TierAttendCtx:
     k_descale: torch.Tensor | None = None
     v_descale: torch.Tensor | None = None
     sinks: torch.Tensor | None = None
+    # Loop-invariant across layers; see StagedHostBackend.attend.
+    max_seqlen_k: int | None = None
+    cu_seqlens_q: "torch.Tensor | None" = None
 
 
 @runtime_checkable
@@ -136,11 +139,19 @@ class StagedHostBackend:
         # block-major slot cannot be sliced into what flash needs.
         k_slot, v_slot = handle
         m = q_sub.shape[0]
-        cu = torch.arange(0, m + 1, device=q_sub.device, dtype=torch.int32)
+        # Both of these are fixed for the step; the caller supplies them so
+        # this does not redo a device reduction (with a .item(), so a full
+        # pipeline drain) and an allocation on every one of 64 layers.
+        cu = ctx.cu_seqlens_q
+        if cu is None or cu.numel() != m + 1:
+            cu = torch.arange(0, m + 1, device=q_sub.device, dtype=torch.int32)
+        max_seqlen_k = ctx.max_seqlen_k
+        if max_seqlen_k is None:
+            max_seqlen_k = int(ctx.seqused_k.max())
         flash_attn_varlen_func(
             q=q_sub, k=k_slot, v=v_slot, out=out, cu_seqlens_q=cu,
             max_seqlen_q=1, seqused_k=ctx.seqused_k,
-            max_seqlen_k=int(ctx.seqused_k.max()), softmax_scale=ctx.scale,
+            max_seqlen_k=max_seqlen_k, softmax_scale=ctx.scale,
             causal=True, alibi_slopes=ctx.alibi_slopes,
             window_size=ctx.sliding_window, block_table=ctx.block_table,
             softcap=ctx.softcap, fa_version=ctx.fa_version,

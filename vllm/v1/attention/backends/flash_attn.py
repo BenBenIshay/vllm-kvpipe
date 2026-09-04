@@ -637,6 +637,8 @@ class FlashAttentionImpl(AttentionImpl):
                 k_descale=layer._k_scale.expand(descale_shape),
                 v_descale=layer._v_scale.expand(descale_shape),
                 sinks=self.sinks,
+                max_seqlen_k=getattr(split, "rolling_max_seqlen_k", None),
+                cu_seqlens_q=getattr(split, "cpu_cu_seqlens_q", None),
             ),
             out_sub,
         )
