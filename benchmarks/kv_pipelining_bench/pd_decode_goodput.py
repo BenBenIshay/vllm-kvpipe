@@ -318,22 +318,30 @@ def main() -> int:
             print(f"INVALID: {r['arm']} had {r['errors']} failed requests: "
                   f"{r.get('err_sample')}")
             return 2
+    # Gates apply only to the arms actually requested: this bench is also
+    # driven one arm at a time (rider_hide_efficiency.py), and a gate that
+    # fires because the OTHER arm was not asked for reports a false INVALID on
+    # a perfectly good measurement.
     mix, res = by.get("riders", {}), by.get("no_riders", {})
-    if mix.get("delivered_synthetic"):
+    if mix and mix.get("delivered_synthetic"):
         print("INVALID: riders were fed synthetic KV; this bench requires real "
               "prefill output.")
         return 2
-    if mix.get("undelivered"):
+    if mix and mix.get("undelivered"):
         print(f"INVALID: {mix['undelivered']} riders were admitted with no KV.")
         return 2
-    if not mix.get("delivered_real"):
+    if mix and not mix.get("delivered_real"):
         print("INVALID: no rider ever took delivery of stashed KV -- the "
               "riders arm was the control under another name.")
         return 2
-    if res.get("delivered_real"):
+    if res and res.get("delivered_real"):
         print(f"INVALID: the no_riders arm served {res['delivered_real']} "
               "requests from the pool, so it is not a rider-free control.")
         return 2
+    if not (mix and res):
+        print(f"single-arm run: {', '.join(sorted(by))} -- no comparison to "
+              "make, the numbers above are the measurement.")
+        return 0
     cal = res.get("itl_median_ms")
     print(f"B1 hide budget: {cal} ms per forward iteration "
           f"(calibrated from the control arm's median ITL)")

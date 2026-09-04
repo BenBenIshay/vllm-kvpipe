@@ -132,8 +132,13 @@ def main() -> int:
     intercept = (sy - slope * sx) / n
 
     bytes_per_rider = args.ctx * args.b_tok
+    # Time the transfer would take with NO overlap at all.
+    unoverlapped_ms = bytes_per_rider / 1e9 / args.link_gbps * 1000.0
+    # The APPARENT rate implied by the marginal cost. Exceeding the link rate
+    # is not an error -- it is the signature of overlap, because part of the
+    # transfer was paid for out of time the GPU was computing anyway.
     b_eff = bytes_per_rider / (slope / 1000.0) / 1e9 if slope > 0 else float("inf")
-    hidden = max(0.0, 1.0 - (bytes_per_rider / 1e9) / (args.link_gbps * slope / 1000.0)) if slope > 0 else 1.0
+    hidden = max(0.0, 1.0 - slope / unoverlapped_ms) if slope > 0 else 1.0
     fixed = intercept - base
 
     print(f"rider-free baseline ITL          {base:.2f} ms")
@@ -141,21 +146,46 @@ def main() -> int:
     print(f"per-rider cost                   {slope:.2f} ms")
     print(f"  a rider is {bytes_per_rider / 1e9:.3f} GB/step; at the "
           f"{args.link_gbps:.1f} GB/s link that is "
-          f"{bytes_per_rider / 1e9 / args.link_gbps * 1000:.2f} ms unoverlapped")
-    print(f"effective bandwidth              {b_eff:.2f} GB/s "
-          f"({b_eff / args.link_gbps * 100:.0f}% of link)")
+          f"{unoverlapped_ms:.2f} ms unoverlapped")
+    print(f"apparent bandwidth               {b_eff:.2f} GB/s "
+          f"({b_eff / args.link_gbps:.2f}x the link)")
     print(f"fraction of the transfer HIDDEN  {hidden * 100:.0f}%")
     print("=" * 78)
     if hidden < 0.25:
-        print("The transfer essentially does not overlap compute. B1's roofline "
-              "assumes it does, so it over-admits by construction -- the "
-              "budget should be the per-rider cost measured here, not the "
-              "link rate. Note this does NOT by itself sink C2C: the same "
-              "bytes cost 36x less there, so even zero overlap leaves room.")
+        print("The transfer barely overlaps compute. B1's roofline assumes it "
+              "does, so it over-admits by construction: the budget should be "
+              "the per-rider cost measured here, not the link rate.")
     else:
-        print("A meaningful fraction of the transfer hides; the roofline is a "
-              "usable model once discounted by the measured efficiency.")
+        print(f"{hidden * 100:.0f}% of the transfer hides -- the roofline's "
+              "premise holds and the interconnect is NOT the binding cost "
+              "here. The binding cost is the FIXED term: paid once per step "
+              "however few riders ride, and unchanged by a faster link. A "
+              "faster interconnect shrinks the per-rider term and leaves the "
+              "fixed one exactly where it is, so this number, not the "
+              "bandwidth, decides whether C2C is worth buying.")
+    print(f"break-even rider count on this link: solving "
+          f"(R+r)/(ITL0+fixed+slope*r) = R/ITL0 for r, with R={args.b_hbm_max} "
+          f"residents, needs r ~ "
+          f"{_breakeven(args.b_hbm_max, base, fixed, slope):.0f}")
     return 0
+
+
+def _breakeven(residents: int, base_ms: float, fixed_ms: float,
+               slope_ms: float) -> float:
+    """Riders needed before concurrency/ITL beats the rider-free arm.
+
+    Throughput goes as concurrency / ITL, so a rider pays only once the extra
+    request it adds outweighs the ITL it costs -- including its share of the
+    fixed term, which is what makes the first rider such a bad deal.
+    """
+    if slope_ms <= 0:
+        return float("inf")
+    rate0 = residents / base_ms
+    # (residents + r) = rate0 * (base + fixed + slope*r)
+    denom = 1.0 - rate0 * slope_ms
+    if denom <= 0:
+        return float("inf")
+    return (rate0 * (base_ms + fixed_ms) - residents) / denom
 
 
 if __name__ == "__main__":
