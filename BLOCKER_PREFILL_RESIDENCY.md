@@ -367,3 +367,89 @@ semantics), so the wall is not comparable to a baseline that prefills all.
 real KV, so it can be measured with synthetic delivery. The real prefill->pool
 transport is follow-on work for an end-to-end correctness claim, not a
 prerequisite for the hiding measurement.
+
+# 2026-09-04: the handover is real, and the transfer does not hide on PCIe
+
+Two things were built before booking a GH200: a real prefill->pool handover so
+riders stop being synthetic, and an admission controller that decides the rider
+count from the interconnect and one forward iteration. Both are done. The
+resulting end-to-end measurement is NEGATIVE on A100, and the reason is more
+useful than the result.
+
+## Three defects in the code the claim depends on
+
+1. **`b_tok` was 2x wrong.** Every harness passed `--hybrid-b-tok 131072`,
+   which is a 32-layer model; Qwen2.5-32B has 64 layers and therefore 262144
+   bytes of KV per token. The three roofline call sites also fell back to a
+   hardcoded `num_layers=32`. B1 was charging each rider HALF its interconnect
+   cost, so it would admit about twice as many as can hide. It never surfaced
+   because the gate was disabled (`--hybrid-itl-ms 100000`) in every run that
+   mattered. Now derived from the model; a disagreeing flag logs at ERROR.
+2. **The hide budget was a hand-set constant.** It is measured now, from steps
+   carrying no rider -- the live EMA would be circular, since a step slowed by
+   rider transfer would enlarge the budget that admitted those riders.
+3. **`_ema_window` was only populated when an SLO happened to be configured**,
+   so the demotion probe's baseline was empty in every run without one.
+
+## Riders now carry real prefill KV
+
+A prompt-keyed stash: a request prefills normally, is seeded into the host tier
+by the ordinary reclaim path, and its REAL KV is kept under its prompt key,
+outliving it. A later request for the same prompt is admitted with zero HBM
+blocks and never prefills. The scheduler admits block-free only after the
+WORKER confirms the KV exists.
+
+**The token test cannot be decisive, and says so.** A rider's last prompt token
+is recomputed by the decode kernel -- vLLM's own prefix cache does this, and
+every P/D decode node must. Qwen2.5-0.5B, greedy, serial, vs a fresh full
+prefill:
+
+| | identical |
+|---|---|
+| round 1 (prefill+seed+reclaim) | 6/6 |
+| **vanilla + vLLM's own prefix cache** | **2/6** |
+| round 2 (rider on real stashed KV) | 4/6 |
+
+vLLM's own cache perturbs MORE prompts than our handover, and ours are a strict
+subset of its. So `prefill_stash_identity.py` returns INCONCLUSIVE rather than
+claiming a pass. `prefill_stash_roundtrip.py` is the proof: bitwise exact
+(max|diff| = 0) across block boundaries, at unaligned lengths, after the
+producer's host extent is recycled and overwritten by another request, and read
+back through the rolling slots the attention kernel actually uses.
+
+## The result: correct admission, wrong model
+
+`pd_decode_goodput.py`, Qwen-32B, ctx 2048, 12 offered, one engine differing
+only in `b_hbm_max`. Phase 1 prefills every prompt and is not measured; phase 2
+decodes and neither arm prefills. 12/12 completed, no errors, engine alive,
+2 riders confirmed on real stashed KV.
+
+| arm | peak | median ITL | tok/s |
+|---|---|---|---|
+| no_riders | 8 | 50.89 ms | 57.4 |
+| riders | **10** | **88.91 ms** | 50.9 (**-11.3%**) |
+
+Concurrency rose exactly as designed -- B1 admitted precisely the 2 riders its
+roofline permits. Throughput fell, because ITL rose 75%.
+
+**Two riders at ctx 2048 is 1.074 GB per step, which is 42.8 ms at 25.1 GB/s if
+nothing overlaps. The step got 38.0 ms slower.** So ~89% of the transfer did
+not hide. The controller is doing its job; the model it optimises against
+assumes an overlap that is not happening.
+
+This is the most load-bearing thing measured so far, because "the transfer
+hides behind compute" is the premise the whole design rests on.
+
+## What it does NOT establish
+
+It does not sink C2C. The same 1.074 GB is 1.2 ms at 900 GB/s rather than 42.8.
+Even at ZERO overlap, an 8% ITL budget (~4 ms on a 50 ms step) buys ~3.3 GB per
+step, about 6 riders at ctx 2048 -- 8 residents + 6 riders is +75% concurrency
+for +8% ITL. That is a lower bound assuming the overlap is never fixed; C2C's
+36x bandwidth advantage swamps the overlap failure.
+
+A single point also cannot separate a FIXED cost of using the host path at all
+from a PER-BYTE cost that fails to overlap, and those extrapolate to very
+different C2C numbers. `rider_hide_efficiency.py` sweeps the rider count and
+fits `ITL = baseline + fixed + r * per_rider` to separate them. That fit, not
+this table, is what should decide the GH200 booking.
