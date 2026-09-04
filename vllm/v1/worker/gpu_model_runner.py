@@ -1162,6 +1162,41 @@ class GPUModelRunner(
             return
         set_hybrid_decode_split(split)
 
+    def _rungd_stash_prefill(self, rid: str, seqlen: int, pool) -> None:
+        """Keep this request's freshly-seeded prefill KV, keyed by its prompt.
+
+        Phase 1 of the local P/D emulation. The request prefilled normally into
+        HBM and was seeded into the host tier by the ordinary path, so what is
+        captured here is real model output. Keeping it under a prompt key lets
+        it outlive this request and be claimed later by a decode-side request
+        admitted with no HBM at all -- which is what the prefill node hands the
+        decode node, without needing two engines to show it.
+
+        Off unless VLLM_KVPIPE_RUNGD_PREFILL_STASH=1: it costs a full CPU copy
+        of every request's KV, which is only worth paying in the bench that
+        consumes it.
+        """
+        import os
+
+        if os.environ.get("VLLM_KVPIPE_RUNGD_PREFILL_STASH", "0") != "1":
+            return
+        from vllm.v1.hybrid_pool_admit import get_stash_key, mark_stash_ready
+
+        key = get_stash_key(rid)
+        if key is None or pool.has_stash(key):
+            return
+        try:
+            pool.stash_from_host(key, rid, seqlen)
+        except RuntimeError as e:
+            # Never fail the step over the stash: without it the request simply
+            # stays an ordinary seeded rider, which is still correct.
+            logger.warning("hybrid-kv tiers: could not stash prefill for %s "
+                           "(%s)", rid, e)
+            return
+        mark_stash_ready(key)
+        logger.info("hybrid-kv tiers: PREFILL STASHED %s (%d tokens) -- its KV "
+                    "can now seed a rider that owns no HBM", rid, seqlen)
+
     def _rungd_take_external_delivery(self, rid: str, seqlen: int, pool) -> bool:
         """Take delivery of a rider's externally-supplied KV, if any.
 
@@ -1182,8 +1217,19 @@ class GPUModelRunner(
 
         from vllm.v1.hybrid_pool_admit import is_preloaded
 
+        from vllm.v1.hybrid_pool_admit import get_stash_key
+
         if not is_preloaded(rid):
             return False
+        # Real KV first: a prompt whose prefill was actually computed and
+        # stashed is served from that, never from a fill value.
+        key = get_stash_key(rid)
+        if key is not None and pool.has_stash(key):
+            n = pool.preload_from_stash(rid, key)
+            logger.info("hybrid-kv tiers: PRELOAD DELIVERED %s (%d tokens, "
+                        "REAL prefill KV) -- rider is pool-served and owns "
+                        "no HBM", rid, n)
+            return True
         if os.environ.get("VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD", "0") != "1":
             # Marked preloaded but nothing delivered it: refuse rather than
             # invent KV. Seeding from an empty block table would be silent
@@ -1340,6 +1386,7 @@ class GPUModelRunner(
                         continue
                     resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
                     pool.seed_req(rid, resident_ids)
+                    self._rungd_stash_prefill(rid, seqlen, pool)
                     seeded_now.append(rid)
             rolling_bt, seqused = pool.build_step(
                 req_ids, [int(seq_cpu[i]) for i in range(len(req_ids))]

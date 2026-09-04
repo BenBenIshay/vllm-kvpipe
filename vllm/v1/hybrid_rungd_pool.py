@@ -121,6 +121,15 @@ class RungdHostPool:
         self._runs: list[tuple[int, int, int]] = []
         self.req_blocks: dict[str, list[int]] = {}   # req_id -> [host_block_id]
         self.req_seeded: set[str] = set()            # prefill seeded
+        # Prefill stash: KV that OUTLIVES the request that produced it, keyed by
+        # prompt rather than request id. This is the P/D handover made local --
+        # a prefill node's output, held until a decode-side request claims it.
+        # Plain pageable CPU tensors: the stash is written and read outside the
+        # measured decode window, so pinning it would waste pinned memory that
+        # the mirrors need.
+        self.prefill_stash: dict[str, dict[str, tuple[torch.Tensor,
+                                                      torch.Tensor]]] = {}
+        self.stash_tokens: dict[str, int] = {}
         # Resident tensors (layer_name -> [2, nblk, bs, nkv, hd]) for seeding.
         self.resident: dict[str, torch.Tensor] = {}
         # Per-step state (set by build_step).
@@ -300,6 +309,67 @@ class RungdHostPool:
                 raise RuntimeError(f"preload_req: no KV supplied for layer {ln}")
             self.preload_layer(req_id, ln, kv[0], kv[1])
         self.req_seeded.add(req_id)
+
+    # -- prefill stash (the P/D handover) -----------------------------------
+    def stash_from_host(self, key: str, req_id: str, num_tokens: int) -> None:
+        """Copy a seeded request's REAL KV out of the host mirrors, under `key`.
+
+        This is what makes a rider's KV genuine instead of synthetic. The
+        request that produced it prefilled normally, into HBM, and was seeded
+        and reclaimed by the ordinary path -- so this is model output, not a
+        fill value. Keeping it keyed by prompt lets it survive that request's
+        completion and be claimed later by a decode-side request, which is
+        exactly the handover a prefill node performs.
+
+        Token-major out (the inverse of `preload_layer`), so the result can be
+        fed straight back through `preload_req`.
+        """
+        if key in self.prefill_stash:
+            return
+        hblks = self.req_blocks.get(req_id)
+        if not hblks:
+            raise RuntimeError(f"stash_from_host: {req_id} owns no host blocks")
+        n = int(num_tokens)
+        bs = self.block_size
+        if (n + bs - 1) // bs > len(hblks):
+            raise RuntimeError(
+                f"stash_from_host: {req_id} claims {n} tokens but owns "
+                f"{len(hblks)} host blocks")
+        out: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        for ln in self.layers:
+            hk, hv = self.host_k[ln], self.host_v[ln]
+            hk_flat = hk.view(hk.shape[0] * bs, *hk.shape[2:])
+            hv_flat = hv.view(hv.shape[0] * bs, *hv.shape[2:])
+            k = torch.empty((n, *hk.shape[2:]), dtype=hk.dtype, device="cpu")
+            v = torch.empty((n, *hv.shape[2:]), dtype=hv.dtype, device="cpu")
+            taken = 0
+            while taken < n:
+                blk, off = divmod(taken, bs)
+                take = min(bs - off, n - taken)
+                src = hblks[blk] * bs + off
+                k[taken:taken + take].copy_(hk_flat[src:src + take])
+                v[taken:taken + take].copy_(hv_flat[src:src + take])
+                taken += take
+            out[ln] = (k, v)
+        self.prefill_stash[key] = out
+        self.stash_tokens[key] = n
+
+    def has_stash(self, key: str) -> bool:
+        return key in self.prefill_stash
+
+    def preload_from_stash(self, req_id: str, key: str) -> int:
+        """Admit a request to the host tier from stashed prefill KV. Returns the
+        number of tokens delivered."""
+        kv = self.prefill_stash.get(key)
+        if kv is None:
+            raise RuntimeError(f"preload_from_stash: nothing stashed for {key}")
+        n = self.stash_tokens[key]
+        self.preload_req(req_id, n, kv)
+        return n
+
+    def drop_stash(self, key: str) -> None:
+        self.prefill_stash.pop(key, None)
+        self.stash_tokens.pop(key, None)
 
     def seed_req(self, req_id: str, resident_block_ids: list[int]) -> None:
         """Seed all layers' prefill KV for a request from resident, once."""

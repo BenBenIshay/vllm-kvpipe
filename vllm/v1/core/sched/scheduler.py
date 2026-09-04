@@ -1352,6 +1352,16 @@ class Scheduler(SchedulerInterface):
         if not is_host_tier:
             return False
         if request.request_id not in self._rungd_preloaded:
+            from vllm.v1 import hybrid_pool_admit
+
+            # Real KV: the worker has stashed this prompt's actual prefill
+            # output, so a decode-side request for the same prompt can be
+            # admitted with no HBM. This is the honest path -- the KV exists
+            # and was computed by the model.
+            key = hybrid_pool_admit.get_stash_key(request.request_id)
+            if hybrid_pool_admit.stash_ready(key):
+                self.register_pool_preloaded(request.request_id)
+                return True
             # Capacity-measurement policy: with a synthetic delivery source,
             # EVERY host-tier request is treated as arriving with its KV
             # already on the host -- which is what a P/D decode node sees, its
@@ -1363,6 +1373,24 @@ class Scheduler(SchedulerInterface):
                 return False
             self.register_pool_preloaded(request.request_id)
         return True
+
+    def _rungd_note_prompt_key(self, request: Request) -> None:
+        """Record this request's prompt identity so the prefill it computes can
+        be handed to a later request for the same prompt.
+
+        Prompt-keyed rather than request-keyed on purpose: in P/D the KV
+        outlives the prefill request, and the decode-side request is a
+        different request entirely.
+        """
+        if not self._rungd_reclaim_enabled:
+            return
+        if os.environ.get("VLLM_KVPIPE_RUNGD_PREFILL_STASH", "0") != "1":
+            return
+        from vllm.v1 import hybrid_pool_admit
+
+        hybrid_pool_admit.set_stash_key(
+            request.request_id,
+            hybrid_pool_admit.prompt_key(request.prompt_token_ids))
 
     def _rungd_reclaim_seeded(self, seeded_req_ids: Iterable[str]) -> None:
         """Free the main-pool blocks of host-tier requests the worker has just
@@ -1846,6 +1874,7 @@ class Scheduler(SchedulerInterface):
         return len(self.running), len(self.waiting)
 
     def add_request(self, request: Request) -> None:
+        self._rungd_note_prompt_key(request)
         self.waiting.add_request(request)
         self.requests[request.request_id] = request
         if self.log_stats:
