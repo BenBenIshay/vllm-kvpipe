@@ -80,6 +80,11 @@ def launch(port: int, arm: str, args, budget_ms: float) -> subprocess.Popen:
         env["VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM"] = "1"
         env["VLLM_KVPIPE_RUNGD_ASYNC"] = "1"
         env["VLLM_KVPIPE_RUNGD_PREFILL_STASH"] = "1"
+        if args.max_offload:
+            # Hard cap on riders, independent of the B1 byte budget. Used to
+            # sweep rider count and measure how much of a rider's transfer
+            # actually hides behind compute.
+            env["VLLM_KVPIPE_MAX_OFFLOAD_REQS"] = str(args.max_offload)
         # NOT set: SYNTHETIC_PRELOAD. Riders carry real prefill KV here.
         cmd += [
             "--no-enable-prefix-caching",
@@ -261,6 +266,8 @@ def main() -> int:
     ap.add_argument("--offered", type=int, default=12)
     ap.add_argument("--b-hbm-max", type=int, default=8,
                     help="the measured all-HBM ceiling: riders add on top")
+    ap.add_argument("--max-offload", type=int, default=0,
+                    help="cap riders regardless of the B1 budget (0 = no cap)")
     ap.add_argument("--phase1-tokens", type=int, default=4,
                     help="enough decode steps for the host tier to seed and "
                          "stash; 1 is NOT enough")
