@@ -1194,8 +1194,11 @@ class GPUModelRunner(
                            "(%s)", rid, e)
             return
         mark_stash_ready(key)
-        logger.info("hybrid-kv tiers: PREFILL STASHED %s (%d tokens) -- its KV "
-                    "can now seed a rider that owns no HBM", rid, seqlen)
+        from vllm.v1 import hybrid_pool_admit as _hpa
+        logger.info("hybrid-kv tiers: PREFILL STASHED %s (%d tokens) key=%s "
+                    "ready_count=%d pid=%d -- its KV can now seed a rider that "
+                    "owns no HBM", rid, seqlen, key[:12],
+                    _hpa.stash_ready_count(), os.getpid())
 
     def _rungd_take_external_delivery(self, rid: str, seqlen: int, pool) -> bool:
         """Take delivery of a rider's externally-supplied KV, if any.

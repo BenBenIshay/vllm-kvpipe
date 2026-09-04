@@ -430,6 +430,15 @@ class TransferAwareAdmissionController:
                 out.append((r.request_id, "promote"))
         return out
 
+    def _stash_first_needed(self, request: "Request") -> bool:
+        """Is this a prompt whose prefill has not been captured to DDR yet?"""
+        if os.environ.get("VLLM_KVPIPE_RUNGD_PREFILL_STASH", "0") != "1":
+            return False
+        from vllm.v1 import hybrid_pool_admit
+
+        key = hybrid_pool_admit.get_stash_key(request.request_id)
+        return key is not None and not hybrid_pool_admit.stash_ready(key)
+
     def hide_budget_ms(self) -> float:
         """How long a forward iteration lasts, in ms -- B1's hide budget.
 
@@ -633,6 +642,19 @@ class TransferAwareAdmissionController:
             and hbm_max > 0
             and self.host_affinity(request) >= self._host_affinity_threshold()
         )
+        # Prefill output goes to DDR first. Under the prefill-stash P/D
+        # emulation a prompt nobody has stashed yet must take the host tier so
+        # that its KV is seeded out and kept; otherwise it prefills into HBM,
+        # is never seeded, and no rider can ever claim it. This mirrors the
+        # deployment: the prefill node writes to DDR unconditionally, and the
+        # decode node decides afterwards what to keep resident.
+        if not prefer_host and self._stash_first_needed(request):
+            prefer_host = True
+        if os.environ.get("VLLM_KVPIPE_ADMIT_DEBUG", "0") == "1":
+            logger.info("ADMIT? %s hbm=%d/%d cpu=%d prefer_host=%s "
+                        "stash_first=%s", request.request_id, hbm_count,
+                        hbm_max, cpu_count, prefer_host,
+                        self._stash_first_needed(request))
         if hbm_max > 0 and hbm_count < hbm_max and not prefer_host:
             self._req_tier[request.request_id] = "hbm"
             return True, "hybrid_hbm"

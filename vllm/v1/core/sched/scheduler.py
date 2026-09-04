@@ -1358,6 +1358,15 @@ class Scheduler(SchedulerInterface):
             return False
         is_host_tier = self.transfer_aware_admission.get_req_tier(
             request.request_id) == "cpu"
+        if os.environ.get("VLLM_KVPIPE_ADMIT_DEBUG", "0") == "1":
+            from vllm.v1 import hybrid_pool_admit as _hpa
+            _k = _hpa.get_stash_key(request.request_id)
+            logger.info("PRELOAD? %s tier=%s key=%s ready=%s count=%d pid=%d",
+                        request.request_id,
+                        self.transfer_aware_admission.get_req_tier(
+                            request.request_id),
+                        (_k or "none")[:12], _hpa.stash_ready(_k),
+                        _hpa.stash_ready_count(), os.getpid())
         if not is_host_tier:
             return False
         if request.request_id not in self._rungd_preloaded:
