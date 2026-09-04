@@ -57,3 +57,42 @@ def max_offload_from_env() -> int | None:
         return max(1, int(raw))
     except ValueError:
         return None
+
+
+def bytes_per_token_from_config(vllm_config) -> int | None:
+    """Per-request KV bytes per token, derived from the running model.
+
+    This exists because the hand-set `--hybrid-b-tok` was wrong. Every harness
+    in `benchmarks/kv_pipelining_bench` passed 131072, which is a 32-layer
+    model; Qwen2.5-32B has 64 layers, so the true figure is 262144. B1 was
+    therefore charging each host-tier request HALF its real interconnect cost
+    and would admit about twice as many riders as can hide inside a step --
+    silently, and in the direction that breaks the ITL claim.
+
+    Returns None when it cannot be derived, so callers keep whatever explicit
+    value they were given rather than substituting a guess.
+
+    Uses the PER-WORKER KV head count: the transfer budget is one worker's
+    link, and under TP each worker moves only its own shard.
+    """
+    try:
+        from vllm.utils.torch_utils import get_kv_cache_torch_dtype
+
+        model_config = vllm_config.model_config
+        parallel_config = vllm_config.parallel_config
+        num_layers = int(model_config.get_num_layers(parallel_config))
+        num_kv_heads = int(model_config.get_num_kv_heads(parallel_config))
+        head_dim = int(model_config.get_head_size())
+        dtype = get_kv_cache_torch_dtype(
+            vllm_config.cache_config.cache_dtype, model_config.dtype)
+        dtype_bytes = int(dtype.itemsize)
+    except Exception:                                          # noqa: BLE001
+        return None
+    if min(num_layers, num_kv_heads, head_dim, dtype_bytes) <= 0:
+        return None
+    return bytes_per_token(
+        num_layers=num_layers,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        dtype_bytes=dtype_bytes,
+    )

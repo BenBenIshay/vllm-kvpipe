@@ -54,7 +54,6 @@ def main() -> None:
         "--kv-transfer-config", json.dumps(kv_cfg),
         "--enable-transfer-aware-admission", "--enable-hybrid-kv-tiers",
         "--hybrid-b-hbm-max", str(B_HBM_MAX), "--hybrid-pcie-gbps", "25.1",
-        "--hybrid-b-tok", "131072",
     ]
     proc = subprocess.Popen(cmd, env=env, stdout=open(LOG, "w"),
                             stderr=subprocess.STDOUT, preexec_fn=os.setsid)

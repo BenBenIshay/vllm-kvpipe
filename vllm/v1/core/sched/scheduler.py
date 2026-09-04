@@ -102,7 +102,7 @@ class Scheduler(SchedulerInterface):
         )
         self._rungd_blocks_reclaimed: int = 0
         self.transfer_aware_admission = TransferAwareAdmissionController(
-            self.scheduler_config
+            self.scheduler_config, vllm_config
         )
         self.observability_config = vllm_config.observability_config
         self.kv_metrics_collector: KVCacheMetricsCollector | None = None

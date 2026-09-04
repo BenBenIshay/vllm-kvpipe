@@ -68,7 +68,7 @@ def launch(port: int, twopass: bool) -> subprocess.Popen:
         "--kv-transfer-config", json.dumps(kv_cfg),
         "--enable-transfer-aware-admission", "--enable-hybrid-kv-tiers",
         "--hybrid-b-hbm-max", str(B_HBM_MAX),
-        "--hybrid-pcie-gbps", "25.1", "--hybrid-b-tok", "131072",
+        "--hybrid-pcie-gbps", "25.1",
     ]
     logf = open(f"{LOGDIR}/twopass_server_{port}.log", "w")
     return subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT,

@@ -12,7 +12,7 @@ def launch(port, b_hbm_max, stream):
          "--max-model-len","1024","--gpu-memory-utilization","0.15","--disable-log-requests",
          "--dtype","auto","--max-num-seqs","8","--enforce-eager","--enable-kv-pipelining","--kv-k-window","4",
          "--kv-transfer-config",json.dumps(kv),"--enable-transfer-aware-admission","--enable-hybrid-kv-tiers",
-         "--hybrid-b-hbm-max",str(b_hbm_max),"--hybrid-pcie-gbps","25.1","--hybrid-b-tok","131072"]
+         "--hybrid-b-hbm-max",str(b_hbm_max),"--hybrid-pcie-gbps","25.1"]
     lf=open(f"/mnt/beegfs/benishay/paper_runs/20260728/hybrid_m1/mc_{port}.log","w")
     return subprocess.Popen(cmd,env=env,stdout=lf,stderr=subprocess.STDOUT,preexec_fn=os.setsid)
 

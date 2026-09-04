@@ -29,7 +29,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from vllm.config import SchedulerConfig
+    from vllm.config import SchedulerConfig, VllmConfig
     from vllm.v1.request import Request
 
 logger = logging.getLogger(__name__)
@@ -71,10 +71,14 @@ class TransferAwareAdmissionController:
         "_probe_results",
         "_ema_window",
         "_migrate_warmup_steps",
+        # KV bytes per token, derived from the model rather than hand-set.
+        "_b_tok_cached",
     )
 
-    def __init__(self, scheduler_config: "SchedulerConfig") -> None:
+    def __init__(self, scheduler_config: "SchedulerConfig",
+                 vllm_config: "VllmConfig | None" = None) -> None:
         self.scheduler_config = scheduler_config
+        self._b_tok_cached: int = self._resolve_b_tok(vllm_config)
         self._events_this_step: dict[str, int] = {}
         self._schedule_step_index = 0
         # Predictor is lazy-loaded on first admission decision so that turning
@@ -133,6 +137,56 @@ class TransferAwareAdmissionController:
         # startup transient and a harmful demotion looked beneficial.
         self._migrate_warmup_steps: int = int(
             os.environ.get("VLLM_KVPIPE_MIGRATE_WARMUP", "24") or 24)
+
+    # ------------------------------------------------- KV bytes per token
+
+    def _resolve_b_tok(self, vllm_config: "VllmConfig | None") -> int:
+        """KV bytes per token for one request, resolved ONCE at construction.
+
+        Order: model-derived, else the explicit `--hybrid-b-tok`, else a
+        last-resort constant. Model-derived wins because the explicit value is
+        what was wrong: every harness passed 131072 (a 32-layer model) while
+        running Qwen2.5-32B, whose 64 layers make it 262144. B1 was charging
+        each host-tier request half its real interconnect cost, which
+        over-admits riders by ~2x in exactly the direction that breaks the ITL
+        claim -- and does so silently.
+
+        A configured value that DISAGREES with the model is logged as an error,
+        not quietly honoured, since it can only be a stale flag.
+        """
+        from vllm.v1.hybrid_kv_roofline import (
+            bytes_per_token,
+            bytes_per_token_from_config,
+        )
+
+        cfg_b_tok = int(getattr(self.scheduler_config, "hybrid_b_tok", 0) or 0)
+        derived = (bytes_per_token_from_config(vllm_config)
+                   if vllm_config is not None else None)
+        if derived:
+            if cfg_b_tok and cfg_b_tok != derived:
+                logger.error(
+                    "hybrid_b_tok=%d disagrees with the model's actual KV size "
+                    "of %d bytes/token; using %d. A too-small value makes B1 "
+                    "admit ~%.1fx too many host-tier requests.",
+                    cfg_b_tok, derived, derived, derived / max(1, cfg_b_tok))
+            else:
+                logger.info("hybrid KV bytes/token = %d (model-derived)", derived)
+            return derived
+        if cfg_b_tok:
+            logger.warning(
+                "hybrid KV bytes/token = %d (from --hybrid-b-tok; could not be "
+                "derived from the model, so it is UNVERIFIED)", cfg_b_tok)
+            return cfg_b_tok
+        fallback = bytes_per_token(
+            num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2)
+        logger.warning(
+            "hybrid KV bytes/token falling back to %d (32L/8H/128D/fp16). If "
+            "the running model is larger, B1 will over-admit host-tier "
+            "requests.", fallback)
+        return fallback
+
+    def kv_bytes_per_token(self) -> int:
+        return self._b_tok_cached
 
     def get_req_tier(self, req_id: str) -> str | None:
         return self._req_tier.get(req_id)
@@ -354,12 +408,11 @@ class TransferAwareAdmissionController:
         which makes ITL WORSE. On PCIe the budget is tiny, so this is usually
         <= 0 and demotion is correctly refused.
         """
-        from vllm.v1.hybrid_kv_roofline import bytes_per_token, effective_pcie_gbps
+        from vllm.v1.hybrid_kv_roofline import effective_pcie_gbps
 
         cfg = self.scheduler_config
         itl_ms = float(cfg.hybrid_itl_ms or 0.0) or 16.0
-        b_tok = int(cfg.hybrid_b_tok or 0) or bytes_per_token(
-            num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2)
+        b_tok = self._b_tok_cached
         x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
         budget = (itl_ms / 1000.0) * x_eff * 1e9 * (1.0 - self._budget_margin())
         used = float(b_tok) * sum(
@@ -372,11 +425,7 @@ class TransferAwareAdmissionController:
     def _demotion_helps(self, request: "Request",
                         running_requests: "list[Request]") -> bool:
         """Would demoting this request actually relieve the step, or add to it?"""
-        from vllm.v1.hybrid_kv_roofline import bytes_per_token
-
-        cfg = self.scheduler_config
-        b_tok = int(cfg.hybrid_b_tok or 0) or bytes_per_token(
-            num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2)
+        b_tok = self._b_tok_cached
         need = float(b_tok) * int(getattr(request, "num_computed_tokens", 0) or 0)
         return need <= self.hide_budget_headroom_bytes(running_requests)
 
@@ -486,7 +535,6 @@ class TransferAwareAdmissionController:
         running_requests: "list[Request]",
     ) -> tuple[bool, str]:
         from vllm.v1.hybrid_kv_roofline import (
-            bytes_per_token,
             effective_pcie_gbps,
             max_offload_from_env,
         )
@@ -541,11 +589,7 @@ class TransferAwareAdmissionController:
         # includes the CPU cohort's transfer).
         budget_ms = itl_ms
 
-        b_tok = int(cfg.hybrid_b_tok or 0)
-        if b_tok <= 0:
-            b_tok = bytes_per_token(
-                num_layers=32, num_kv_heads=8, head_dim=128, dtype_bytes=2
-            )
+        b_tok = self._b_tok_cached
         x_eff = effective_pcie_gbps(float(cfg.hybrid_pcie_gbps or 0.0))
 
         # B1 seq-length-aware roofline: the per-step CPU->GPU transfer is the

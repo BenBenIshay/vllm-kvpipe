@@ -79,7 +79,7 @@ def launch(port: int, arm: str, args) -> subprocess.Popen:
         cmd += [
             "--enable-transfer-aware-admission", "--enable-hybrid-kv-tiers",
             "--hybrid-b-hbm-max", str(args.b_hbm_max),
-            "--hybrid-pcie-gbps", "25.1", "--hybrid-b-tok", "131072",
+            "--hybrid-pcie-gbps", "25.1",
             "--hybrid-itl-ms", str(args.hybrid_itl_ms),
             "--enable-kv-pipelining", "--kv-k-window", "4",
         ]
