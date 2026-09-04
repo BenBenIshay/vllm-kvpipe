@@ -665,3 +665,33 @@ number that matters for the paper is C2C, where the per-rider term collapses
 **Still open: ~16 ms.** Diminishing returns per fix (the fourth bought 0.5pp).
 A fresh operator trace would be needed to decide whether the remainder is more
 of the same or something structural.
+
+## Post-hoist cost curve: one rider short of parity
+
+Re-fitting the rider cost curve on current code (Qwen-32B, ctx 2048, 12
+offered, 8 residents):
+
+| riders | ITL | tok/s |
+|---|---|---|
+| 0 | 49.06 | 57.3 |
+| 1 | 65.98 | 54.8 |
+| 2 | 69.92 | 55.8 |
+| 3 | 74.89 | **57.1** |
+
+**fixed +12.29 ms, marginal 4.45 ms/rider, 79% of the transfer hidden.**
+
+The tok/s column is the result: 54.8 -> 55.8 -> 57.1, climbing to within 0.3%
+of the rider-free arm at three riders. **Empirical break-even is 3-4 riders.**
+
+**B1 admits 2.** The byte budget at ctx 2048 is 49 ms x 25.1 GB/s x 0.9 =
+1.107 GB and a rider is 0.537 GB, so 2.06 riders. On PCIe we are ONE rider
+short of parity and two short of a win -- and the remaining 12.29 ms of fixed
+cost is worth almost exactly one rider of headroom.
+
+**A tooling correction.** `rider_hide_efficiency.py` printed "break-even ~7
+riders" from a concurrency/ITL model. That model ignores queueing -- the
+rider-free arm leaves 4 of its 12 requests waiting and riders shorten that
+queue -- so it overstates the requirement badly (7 vs a measured 3-4). It now
+reports the MEASURED crossing from the tok/s column and keeps the model only as
+a labelled upper bound. A number in the repo that contradicts the data printed
+beside it is worse than no number.
