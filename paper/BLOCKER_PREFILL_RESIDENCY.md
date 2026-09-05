@@ -298,7 +298,10 @@ capacity with riders on top (6 + 2 = 8) -- which is precisely what transient
 prefill residency forbids.
 
 Both limits are now measured rather than argued:
-1. LINK -- ~2 riders hide on PCIe; ~75 on C2C (32 MiB/layer at 900 GB/s).
+1. LINK -- ~2 riders hide on PCIe; ~37 on C2C (32 MiB/layer at 450 GB/s).
+   [CORRECTED 2026-09-05: was "~75 ... at 900 GB/s". 900 is NVLink-C2C's
+   BIDIRECTIONAL figure; a rider stream is unidirectional H2D, so 450 is the
+   bound. See the correction entry at the end of this document.]
 2. STRUCTURE -- riders are only purchasable by surrendering resident slots,
    until KV arrives already in host memory.
 
@@ -351,9 +354,17 @@ longer the binding constraint**; host memory and the interconnect are. Both
 figures are LOWER BOUNDS -- the mixture hit the offered load, not its ceiling.
 
 The throughput cost is the link, as measured: 90 riders x 512 MiB is ~49 GB of
-transfer per step, ~1.96 s at 25 GB/s. The same 49 GB is ~54 ms on C2C against a
-~45 ms compute step, so ~90 riders at ctx 2048 sits right at the C2C hiding
-limit -- consistent with the independent ~75-rider estimate from the roofline.
+transfer per step, ~1.96 s at 25 GB/s. The same 49 GB is **~109 ms on C2C**
+against a ~45 ms compute step, so **~90 riders at ctx 2048 is roughly 2.4x OVER
+the C2C hiding limit**, not at it. The roofline's independent estimate is ~37
+riders, and the two agree.
+
+[CORRECTED 2026-09-05, and this one REVERSES the original claim. It read
+"~54 ms on C2C ... sits right at the C2C hiding limit -- consistent with the
+independent ~75-rider estimate", from dividing by 900 GB/s. 900 is the
+BIDIRECTIONAL figure; a rider stream is unidirectional H2D at 450 GB/s. The 48
+and 96 capacity numbers above are unaffected -- they are capacity, not hiding --
+but the sentence that said 90 riders would hide on C2C was wrong by 2x.]
 
 **What this does NOT establish.** Riders are filled synthetically, because the
 prefill-node transport does not exist yet: generated TOKENS are meaningless, as
@@ -442,11 +453,16 @@ hides behind compute" is the premise the whole design rests on.
 
 ## What it does NOT establish
 
-It does not sink C2C. The same 1.074 GB is 1.2 ms at 900 GB/s rather than 42.8.
-Even at ZERO overlap, an 8% ITL budget (~4 ms on a 50 ms step) buys ~3.3 GB per
-step, about 6 riders at ctx 2048 -- 8 residents + 6 riders is +75% concurrency
+It does not sink C2C. The same 1.074 GB is 2.4 ms at 450 GB/s rather than 42.8.
+Even at ZERO overlap, an 8% ITL budget (~4 ms on a 50 ms step) buys ~1.8 GB per
+step, about 3 riders at ctx 2048 -- 8 residents + 3 riders is +38% concurrency
 for +8% ITL. That is a lower bound assuming the overlap is never fixed; C2C's
-36x bandwidth advantage swamps the overlap failure.
+18x bandwidth advantage swamps the overlap failure.
+
+[CORRECTED 2026-09-05: was "1.2 ms at 900 GB/s ... ~3.3 GB ... about 6 riders
+... +75% concurrency ... 36x". Halved throughout -- 900 GB/s is bidirectional,
+450 is the per-direction bound a rider stream actually gets. The conclusion
+(C2C does not sink) survives; the margin is half what was claimed.]
 
 A single point also cannot separate a FIXED cost of using the host path at all
 from a PER-BYTE cost that fails to overlap, and those extrapolate to very
@@ -489,11 +505,16 @@ arm -- is **~17 riders on PCIe**, which B1 will never allow on bytes. Not
 reachable.
 
 On C2C the marginal term is dominated by the visible quarter of the transfer,
-which shrinks by 36x. Keeping the 29.59 ms fixed cost exactly as it is,
-break-even lands at **~4 riders**, with everything beyond it profit. Caveat
+which shrinks by 18x. Keeping the 29.59 ms fixed cost exactly as it is,
+break-even lands at **~5 riders**, with everything beyond it profit. Caveat
 stated: this treats the whole 5.42 ms slope as transfer, and any part of it
 that is really rider-side ATTENTION compute does not shrink with bandwidth --
-so ~4 is optimistic and the honest range is roughly 4-8.
+so ~5 is optimistic and the honest range is roughly 5-9.
+
+[CORRECTED 2026-09-05: was "36x ... ~4 riders ... roughly 4-8", computed at
+900 GB/s. At the correct 450 GB/s per direction the marginal term shrinks 18x,
+not 36x. Note this entry is superseded anyway -- the 29.59 ms fixed cost was
+later reduced to 12.29 ms.]
 
 So C2C is justified even without touching the fixed cost. But removing that
 29.59 ms moves break-even to the FIRST rider, so it is worth a profiling pass
@@ -660,7 +681,8 @@ sites, ~21 ms between them. The design was never the problem; the plumbing was.
 PCIe can offer and the roofline said so before any of this work. What changed
 is that it is now within reach instead of buried under 37 ms of overhead. The
 number that matters for the paper is C2C, where the per-rider term collapses
-~36x and the fixed cost -- 16 ms now, not 37 -- sets break-even.
+~18x and the fixed cost -- 16 ms now, not 37 -- sets break-even.
+[CORRECTED 2026-09-05: was "~36x", from the bidirectional 900 GB/s figure.]
 
 **Still open: ~16 ms.** Diminishing returns per fix (the fourth bought 0.5pp).
 A fresh operator trace would be needed to decide whether the remainder is more
@@ -780,3 +802,50 @@ not grow with context**. On C2C at ctx 2048 the transfer term collapses to
 so there is no capacity pressure and riders can only substitute, never add. The
 additive claim needs a context where HBM is the binding constraint -- which is
 what ctx 2048 was chosen for.
+
+---
+
+# 2026-09-05 CORRECTION: C2C is 450 GB/s per direction, not 900
+
+Every C2C projection in this document divided a rider's KV bytes by **900
+GB/s**. That is NVLink-C2C's **bidirectional** figure. A rider's KV stream is
+**unidirectional host-to-device**, so the bound is **450 GB/s**, and every one
+of those projections was optimistic by exactly 2x.
+
+Corrected in place, each marked `[CORRECTED 2026-09-05]`:
+
+| claim | was | is |
+|---|---|---|
+| per-rider term collapse on C2C | ~36x | **~18x** |
+| riders hiding under one step | ~75 | **~37** |
+| 1.074 GB rider transfer | 1.2 ms | **2.4 ms** |
+| 8%-ITL budget at zero overlap | ~6 riders | **~3** |
+| break-even at the 29.59 ms fixed cost | ~4 (range 4-8) | **~5 (range 5-9)** |
+
+**One correction reverses its sentence.** The 2026-08-30 entry read that 49 GB
+of transfer is "~54 ms on C2C against a ~45 ms compute step, so ~90 riders at
+ctx 2048 sits right at the C2C hiding limit". At 450 GB/s it is **~109 ms**, so
+90 riders is **~2.4x OVER** the hiding limit. The roofline's independent ~37
+estimate was never in agreement with 90; the two only appeared to agree because
+both were being read against the wrong constant.
+
+**What is NOT affected, checked rather than assumed:**
+
+* **The gain law and every headline projection.** `paper/model/killer_v2.py`
+  and `killer_scenario.py` define GH200 with `x = 450` GB/s already, so
+  x1.59 / x1.46 / x1.22 and the 7 / 5 / 12 endpoint table stand unchanged.
+  The error was confined to narrative arithmetic in this document.
+* **The measured A100 numbers.** Nothing here touches PCIe measurements.
+* **The capacity results** (all-HBM 8 vs mixture 48/96). Those are capacity,
+  not hiding, and do not involve the link constant.
+* **`gh200_preflight.py`.** It **measures** pinned H2D rather than assuming a
+  constant, which is why it is right on either reading; only its explanatory
+  comment said 36x, now 18x.
+
+**The direction survives comfortably.** At 450 GB/s a ~45 ms step still hides
+roughly 34 riders at ctx 2048 against 2 on PCIe. The magnitude of the C2C case
+halves; the case itself does not change.
+
+**Rule going forward:** never write 900 in a bandwidth calculation. The GH200
+plan's Phase 0 already says to measure the link rather than trust a spec
+figure, and the measured value will land below 450 as well.

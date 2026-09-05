@@ -6,9 +6,13 @@ merely annoying. Every check here corresponds to a mistake already made once on
 A100:
 
   * `--hybrid-pcie-gbps 25.1` is hardcoded in every harness in this directory.
-    Left alone on C2C, B1's byte budget is 36x too small and it admits ~2
-    riders instead of ~70 -- the whole trip would measure PCIe-era behaviour on
+    Left alone on C2C, B1's byte budget is 18x too small and it admits ~2
+    riders instead of ~37 -- the whole trip would measure PCIe-era behaviour on
     a machine rented to escape it. This MEASURES the link instead.
+    (18x, not 36x: NVLink-C2C's headline 900 GB/s is BIDIRECTIONAL, and a
+    rider's KV stream is unidirectional host-to-device, so 450 GB/s is the
+    bound. Measuring rather than assuming is what makes this check right
+    either way -- and the measured figure will land below 450 as well.)
   * `--hybrid-b-tok 131072` was passed while running a 64-layer model, so B1
     charged every rider half its real transfer. bytes/token is derived here
     from the model and cross-checked.
@@ -116,7 +120,7 @@ def main() -> int:
     print(f"\n      >>> pass --hybrid-pcie-gbps {gbps:.1f} to every harness, or "
           f"export VLLM_KVPIPE_PCIE_GBPS={gbps:.1f}")
     print("      (the harnesses default to 25.1, which on C2C would make B1 "
-          "admit ~36x too few riders)")
+          "admit ~18x too few riders)")
 
     print("\n3. KV geometry")
     try:
