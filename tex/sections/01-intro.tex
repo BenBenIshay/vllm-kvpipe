@@ -67,16 +67,18 @@ its batch is bounded by the sum rather than by either:
 \small
 \begin{tabular}{lrr}
 \toprule
-Llama-70B fp8, 8K, GH200-96 & KV bandwidth used & batch \\
+Llama-70B fp8, 8K, GH200-96 & KV read per step & batch \\
 \midrule
-all-HBM (vLLM, SGLang)  & 92\,GB/step HBM, 0 link & 7 \\
-all-host (DirectKV)     & 0 HBM KV, $\sim$13\,GB/step link & 5 \\
+all-HBM (vLLM, SGLang)  & 19\,GB HBM, \textbf{0 link} & 7 \\
+all-host (DirectKV)     & \textbf{0 HBM}, 13\,GB link & 5 \\
 \textbf{mixture (this paper)} & 19\,GB HBM \textbf{+} 13\,GB link & \textbf{12} \\
 \bottomrule
 \end{tabular}
 \caption{The optimum is interior, and unreachable from either endpoint without
 deciding \emph{which} requests go where and \emph{how many} the link can carry
-per step.}
+per step. Each endpoint leaves one of the two KV paths completely unused; the
+mixture is bounded by their sum. Weight traffic (72.7\,GB/step) is identical in
+all three rows and is excluded, so the column compares like with like.}
 \label{tab:endpoints}
 \end{table}
 

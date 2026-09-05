@@ -110,33 +110,58 @@ $\HBM/\Ckv$: \textbf{the value of offloading tracks how much of HBM the weights
 ate}, not model size and not context length.
 
 That single observation is the section's most useful consequence, because it
-is counter to how the field selects evaluation models. Table~\ref{tab:gain}
-applies Eq.~\ref{eq:gain} with the measured parameters of
-\S\ref{sec:model:params}.
+is counter to how the field selects evaluation models.
+
+Equation~\ref{eq:gain} is a first-order result and we are careful about what it
+does and does not include. It counts requests, not tokens per second, and it
+ignores two second-order effects: riders lengthen the step slightly (the link
+is not infinitely fast), and each rider costs a small, fixed share of device
+memory for the rolling window it is streamed into. Table~\ref{tab:gain}
+therefore reports \emph{both} the capacity ratio the closed form approximates
+and the throughput gain once those two effects are charged, since a reader who
+recomputes Eq.~\ref{eq:gain} by hand should land on the first column and not be
+surprised.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrrrr}
 \toprule
-Model (GH200-96) & weights & $\Ckv$ & ITL$_0$ & gain \\
+Model (GH200-96) & weights & $\Ckv$ & ITL$_0$ & capacity & tput \\
 \midrule
-Llama-8B fp16      & 16\,GB & 76\,GB & 50.4\,ms & $\times$1.22 \\
-Qwen-32B fp16      & 64\,GB & 28\,GB & 33.0\,ms & $\times$1.46 \\
-Llama-70B fp8      & 70\,GB & 22\,GB & 31.9\,ms & $\times$1.59 \\
+Llama-8B fp16      & 16\,GB & 76\,GB & 50.4\,ms & $\times$1.13 & $\times$1.17 \\
+Qwen-32B fp16      & 64\,GB & 28\,GB & 33.0\,ms & $\times$1.41 & $\times$1.44 \\
+Llama-70B fp8      & 70\,GB & 22\,GB & 31.9\,ms & $\times$1.55 & $\times$1.57 \\
 \bottomrule
 \end{tabular}
-\caption{The gain law is an amplifier on $\HBM/\Ckv$. An 8B model leaves so
-much HBM free that there is nothing to buy. % src: paper/model/killer_v2.py @ 2bfc6ca5e
-}
+\caption{The gain law is an amplifier on $\HBM/\Ckv$: an 8B model leaves so
+much HBM free that there is nothing to buy. \emph{capacity} is
+$B_{\mathrm{tot}}/B_0$, which Eq.~\ref{eq:gain} approximates to within 6\%
+($\times$1.65 predicted vs $\times$1.55 for 70B, the gap being the rolling
+window's memory cost). \emph{tput} additionally charges the step lengthening.
+Zero-copy substrate; the staged path is lower and is reported separately.}
+% src: paper/model/killer_v2.py, analyze(S=8192, GH200, slo=50, stage=0) @ 2bfc6ca5e
 \label{tab:gain}
 \end{table}
 
-These projections moved by less than 4\% across three rounds of parameter
-revision (70B $\times1.56 \to \times1.59$), because the gain depends on a
-\emph{ratio} and absolute bandwidth errors largely cancel between the ITL
-numerator and the capacity denominator. Sweeping $\effkv$ across its plausible
-band for 70B moves the projection only $\times1.58 \to \times1.61$.
+\todo{RESOLVE BEFORE SUBMISSION. The figures above are regenerated from
+\texttt{killer\_v2.py} as committed. Earlier drafts of this table carried
+$\times$1.22 / $\times$1.46 / $\times$1.59, which are the \emph{throughput}
+column of a later re-parameterisation that was never committed --- the script
+in the repository does not reproduce them, and it still assumes 70\,GB of
+weights where the fp8 checkpoint measures 72.7\,GB (which lowers $\Ckv$ from
+22 to 19.3\,GB and moves the numbers \emph{up}). Either update the script and
+regenerate, or restore the newer parameters to it. Do not ship a table whose
+own \texttt{\% src} does not reproduce it.}
+
+The projection is insensitive to the parameters, which matters because several
+of them are measured with error. Across three rounds of re-parameterisation the
+70B figure moved by less than 4\%, and sweeping $\effkv$ across its plausible
+band moves it only $\times1.58 \to \times1.61$. The reason is structural: the
+gain depends on a \emph{ratio}, so an error in absolute bandwidth largely
+cancels between the ITL numerator and the capacity denominator.
+% src: sensitivity figures from the uncommitted re-parameterisation -- see the
+% TODO above; re-derive them alongside the table.
 
 \subsection{(d) The applicability gate}
 
