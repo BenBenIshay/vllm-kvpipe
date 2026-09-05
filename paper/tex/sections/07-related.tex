@@ -36,27 +36,12 @@ entries of each layer \emph{in CPU memory}, and its Alg.~3 appends newly
 projected KV to CPU memory as well. \textbf{It places 100\% of KV on the host,
 for every request, always.} That is why it needs no scheduler: placement is
 static and total. Stock vLLM and SGLang are the opposite endpoint, at 0\%.
-Nobody runs the mixture, and the optimum is interior:
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{lrr}
-\toprule
-Llama-70B fp8, 8K, GH200-96 & KV bandwidth used & batch \\
-\midrule
-all-HBM (vLLM, SGLang)  & 92\,GB/step HBM, 0 link & 7 \\
-all-host (DirectKV)     & 0 HBM KV, $\sim$14\,GB/step link & 5 \\
-\textbf{mixture (ours)} & 19\,GB HBM \textbf{+} 14\,GB link & \textbf{12} \\
-\bottomrule
-\end{tabular}
-\caption{Neither endpoint is optimal, and neither can reach the interior point
-without deciding \emph{which} requests go where and \emph{how many} the link
-carries per step. Note that the all-host endpoint leaves the HBM not holding
-weights entirely idle --- which is why it loses to an HBM-resident baseline
-whenever that baseline fits.}
-\label{tab:endpoints}
-\end{table}
+Nobody runs the mixture, and the optimum is interior
+(Table~\ref{tab:endpoints}). Note in particular that the all-host endpoint
+leaves the device memory not holding weights entirely idle, which is why it
+loses to an HBM-resident baseline whenever that baseline fits --- a result
+DirectKV reports on Llama-3.1-8B and does not explain, and which our gain law
+predicts (\S\ref{sec:model:directkv}).
 
 A natural objection to the composability reading of DirectKV \S8.1 is that the
 vLLM and SGLang mechanisms it names --- continuous batching, prefix reuse,
