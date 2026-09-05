@@ -1,0 +1,40 @@
+% STATUS: skeleton, 2026-09-05. Write in W1. Branch-independent.
+\section{Design}
+\label{sec:design}
+
+\subsection{Which requests ride}
+\todo{Tier assignment from observable per-request state. The key analytical
+finding, which is negative and worth reporting: CONTEXT LENGTH DOES NOT
+DISCRIMINATE between tiers -- a long request frees $S\cdot k$ of HBM but spends
+$S\cdot k$ per step of interconnect, the same cancellation as design rule (a)
+in \S\ref{sec:model}. The discriminating signal is TEMPORAL: an idle request
+holds HBM while consuming no bandwidth. Contrast with OmniServe's external
+LS/BE label.}
+
+\subsection{How many ride: SLO-targeted admission}
+\todo{B1, the seq-length-aware roofline. A per-admission cumulative check
+against a hide budget, re-evaluated on each admission, rather than a static
+count. Two things that had to be fixed and are worth stating because they are
+the kind of error a roofline invites: the per-token transfer constant must be
+DERIVED from the model (ours was 2x wrong for 20 runs, charging every rider
+half its real cost), and the hide budget must be MEASURED from steps carrying
+no rider -- using the live EMA is circular.}
+\todo{B2, the closed-loop guardrail: EMA of observed step time with hysteresis
+against the SLO, gating new admissions only.}
+
+\subsection{When a request moves: migration as a probe}
+\todo{THE INTERESTING PART, and it came from a failure. An open-loop cost model
+is necessary but NOT SUFFICIENT: the roofline sees transfer bytes and cannot
+see the host path's fixed per-step cost, so it approved a demotion that made
+ITL worse (24\,ms against a 6\,ms SLO). The fix is to treat a demotion as a
+PROBE -- record the best recent steady-state ITL, demote, wait, and promote
+back with exponential backoff if ITL regressed beyond a margin.}
+\todo{Two details only measurement revealed, both worth a sentence: the
+baseline must be a recent MINIMUM rather than the instantaneous EMA (the EMA
+picks up startup transients and scores a harmful demotion as beneficial), and
+the loop needs a warmup or the first demotion fires before any steady state
+exists.}
+\todo{Contrast with the CAL letter's token-level reactive migration, whose own
+results show overhead dominating below ~60\% sparsity. Our testable claim:
+request granularity avoids that thrash. Adversarial-oscillation test measured
+0.0925 migrations/step against a 0.0938 bound.}
