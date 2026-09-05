@@ -93,6 +93,14 @@ def build_llm(arm: str, args, slo_ms: float):
             # performance be whatever it is.
             extra["hybrid_itl_ms"] = 1e9                   # unlimited B1 budget
             extra["transfer_aware_slo_p99_itl_ms"] = 0.0   # disables B2
+    if args.num_gpu_blocks_override:
+        # Force a SMALL KV pool so all-HBM saturates below the offered load.
+        # Without this the comparison can only be run at a scale where HBM
+        # genuinely binds, which on a small model means thousands of requests:
+        # a 0.5B dry run cannot reach it, so the whole decision path (verdict
+        # included) stays untested until the rented box. The vacuity guard
+        # catches such a run -- but only after the GPU-hours are spent.
+        extra["num_gpu_blocks_override"] = args.num_gpu_blocks_override
     return LLM(model=args.model, dtype=args.dtype,
                enable_prefix_caching=False,
                gpu_memory_utilization=args.gpu_mem_util,
@@ -303,6 +311,10 @@ def main() -> int:
     p.add_argument("--max-num-seqs", type=int, default=32)
     p.add_argument("--b-hbm-max", type=int, default=8)
     p.add_argument("--gpu-mem-util", type=float, default=0.35)
+    p.add_argument("--num-gpu-blocks-override", type=int, default=0,
+                   help="force a small KV pool so all-HBM binds; needed to "
+                        "dry-run the non-vacuous decision path on a small "
+                        "model. 0 = let vLLM size the pool.")
     p.add_argument("--link-gbps", type=float, default=25.1,
                    help="A100 PCIe4 ~25; GH200 C2C ~450 (MEASURE IT FIRST)")
     p.add_argument("--slos", default="30,40,50,75,100")

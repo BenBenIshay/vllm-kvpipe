@@ -92,6 +92,18 @@ def main() -> int:
                          "denominated in it. Re-run with the MEASURED value "
                          "once the control arm has run on this machine.")
     ap.add_argument("--block-size", type=int, default=16)
+    ap.add_argument("--weights-gb", type=float, default=72.7,
+                    help="checkpoint size on the device; 72.7 measured for the "
+                         "fp8 70B. KV space is what is left after this.")
+    ap.add_argument("--hbm-gb", type=float, default=0.0,
+                    help="override the measured HBM, to check the arithmetic "
+                         "for a machine you are not on yet")
+    ap.add_argument("--gpu-mem-util", type=float, default=0.90,
+                    help="must match what the experiment will actually run "
+                         "with; capacity is very sensitive to it")
+    ap.add_argument("--planned-offered", type=int, default=0,
+                    help="the --offered you intend to run 4.1 with; checked "
+                         "for vacuity")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -185,7 +197,34 @@ def main() -> int:
     ok(rolling < hbm * 0.15, "rolling slots are a small share of HBM",
        f"{rolling / 1e9:.1f} GB of {hbm / 1e9:.0f} GB", warn_only=True)
 
-    print("\n7. flags to use on this machine")
+    print("\n7. does the offered load actually BIND? (vacuity check)")
+    # The single most expensive way to waste a rental: run the 24 GPU-h
+    # decision experiment at an offered load the all-HBM arm can absorb. Then
+    # HBM capacity was never the binding constraint, no arm can differ, and
+    # endpoint_comparison's vacuity guard reports it -- AFTER the hours are
+    # spent. It is arithmetic, so do it now.
+    hbm_gb = args.hbm_gb or hbm / 1e9
+    kv_gb = hbm_gb * args.gpu_mem_util - args.weights_gb
+    if kv_gb <= 0:
+        ok(False, "the weights leave room for a KV pool",
+           f"{args.weights_gb} GB of weights vs {hbm_gb:.0f} GB HBM")
+    else:
+        cap = int(kv_gb * 1e9 // per_rider)
+        print(f"      {hbm_gb:.0f} GB HBM x {args.gpu_mem_util} util - "
+              f"{args.weights_gb} GB weights = {kv_gb:.1f} GB of KV space")
+        print(f"      all-HBM capacity at ctx {args.ctx}: ~{cap} concurrent")
+        rec = max(2 * cap, cap + 4)
+        print(f"      >>> run 4.1 with --offered >= {rec} "
+              f"(~2x capacity) so all-HBM saturates BELOW the offered load")
+        ok(cap >= 2, "all-HBM capacity is big enough to compare against",
+           f"{cap} concurrent", warn_only=True)
+        if args.planned_offered:
+            ok(args.planned_offered > cap * 1.05,
+               f"the planned --offered {args.planned_offered} will bind",
+               f"all-HBM holds ~{cap}; offered must exceed it or the run is "
+               "VACUOUS")
+
+    print("\n8. flags to use on this machine")
     print(f"      --hybrid-pcie-gbps {gbps:.1f}")
     print(f"      --max-num-seqs {total_reqs}   (>= residents + riders)")
     print(f"      --hybrid-b-hbm-max {args.residents}")
