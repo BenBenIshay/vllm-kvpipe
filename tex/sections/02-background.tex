@@ -1,0 +1,63 @@
+% ============================================================================
+% Section 2 -- background and system model.
+%
+% STATUS: skeleton, 2026-09-05. Write in W5 (paper/PAPER_PLAN_2026-09-05.md).
+%
+% THE ONE THING THIS SECTION MUST DO: state the disaggregated-prefill system
+% model explicitly and early. It is the paper's largest reviewer attack surface
+% (plan section 6.1) and burying it reads as concealment. Riders are admitted
+% with ZERO main-pool blocks and their prompt declared already computed, which
+% is only legitimate on a decode node whose KV arrives from a prefill node in
+% host DDR. Said up front it is a scoping assumption on the architecture the
+% field already runs; discovered by a reviewer in section 5 it is a hole.
+% ============================================================================
+
+\section{Background and system model}
+\label{sec:background}
+
+\subsection{Capacity-bound decode}
+
+\todo{The operating point: at capacity a step is $\sim$79\% KV read and
+$\sim$21\% weight read, so the GPU runs at single-digit arithmetic utilization
+while memory is exhausted. Weight-bound describes the \emph{under-filled}
+regime --- precisely where this feature is not needed. Cite bottlenecks;
+forward-reference Eq.~\ref{eq:step}.}
+
+\subsection{Host memory as a KV tier}
+
+\todo{Coherent CPU--GPU interconnects (NVLink-C2C at $\sim$450\,GB/s against
+PCIe~4 at $\sim$25\,GB/s) make host DDR a usable KV tier for an actively
+decoding request, not merely a swap target. What changes at that bandwidth,
+and what does not (\S\ref{sec:model}).}
+
+\subsection{System model: a disaggregated decode node}
+\label{sec:background:pd}
+
+\todo{WRITE THIS CAREFULLY --- it scopes every result in the paper.}
+
+\todo{Prefill/decode disaggregation is the production default (DistServe,
+Splitwise, Mooncake; vLLM's connector API exists for it). We target the
+\emph{decode} node. Its input is a request whose KV already exists, delivered
+over the transport from a prefill node.}
+
+\todo{The consequence that matters: a host-tier request on a decode node need
+never occupy an HBM block at all --- not even transiently for prefill. This is
+what makes riders \emph{additive} rather than displacing
+(\S\ref{sec:eval:capacity}). In a combined prefill+decode engine it is false,
+and we measured the difference: with prefill resident, riders and residents
+compete for the same headroom and the served total creeps toward the all-HBM
+capacity from below without ever passing it.}
+
+\todo{State the assumption plainly: KV arrives in host DDR. We implement the
+handover (\S\ref{sec:impl:stash}) and report its cost rather than assuming it
+away.}
+
+\subsection{Threat to validity: what ``lossless'' means here}
+
+\todo{bf16 attention reductions are batch-order dependent, so vanilla vLLM
+itself produces different text for the same prompt at concurrency 1 versus 6.
+Define the two-part gate used throughout: (a) serial comparison, batch of one
+on both sides; (b) concurrent comparison restricted to prompts screened as
+batching-stable. Neither alone suffices --- serial misses block reuse under
+load, concurrent alone cannot distinguish a near-tie from a defect. Note that
+our divergences are a strict subset of vLLM's own prefix cache's.}

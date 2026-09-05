@@ -1,0 +1,65 @@
+% STATUS: skeleton, 2026-09-05. Write in W1. Branch-independent.
+\section{Implementation}
+\label{sec:impl}
+\todo{vLLM v1 fork; every path env-gated and default-off, existing paths
+untouched. Name the swappable backend protocol (KVTierBackend: staged host,
+resident, zero-copy) -- it is the abstraction a reviewer asks for when the
+paper says "our policy would compose with their mechanism".}
+
+\subsection{Host-block-id KV pool}
+\todo{Own id space, per-request logical-to-host-block map, growth-aware, freed
+at request end so block reuse cannot alias. Why a resident-block-id mirror does
+NOT work: freeing a request's resident blocks nulls its block table and the ids
+are reused, so the read mapping cannot be rebuilt and one request's host data
+overwrites another's.}
+
+\subsection{Zero-block admission}
+\todo{The mechanism behind Table~\ref{tab:capacity}, in three pieces -- and the
+third was found only by testing: (1) admit with no main-pool blocks; (2)
+declare the prompt already computed so no prefill is scheduled; (3) HEAD OF
+LINE -- vLLM's waiting loop stops at the first request it cannot allocate,
+which also stopped riders behind it that needed nothing at all. A block-starved
+head is now deferred so the scan continues.}
+
+\subsection{Reclaim}
+\todo{The worker acknowledges the seed and the scheduler reclaims only on that
+ack -- the scheduler cannot know the device-to-host copy happened, and guessing
+loses history on a pool-setup failure. Promotion had to be repaired alongside:
+block accounting is LENGTH-based, so an in-place null counts as present, and
+the phase-2 "blocks cover the whole sequence" gate would have passed on an
+all-null table and served garbage.}
+
+\subsection{Prefill handover}
+\label{sec:impl:stash}
+\todo{Prompt-keyed stash; the scheduler admits block-free only after the worker
+confirms the KV exists. Bitwise-proven across block boundaries, unaligned
+lengths, and after the producer's extent is recycled and overwritten. Report
+its cost -- this is the answer to the largest objection to the system model.}
+
+\subsection{What the transfer path cost us, and why}
+\todo{WORTH A FULL SUBSECTION -- it generalises beyond this system.}
+\todo{(1) LAYOUT. A per-layer $[2,H,bs,\ldots]$ mirror makes a run of blocks two
+chunks strided by a whole K/V plane, so no pinned DMA is possible and every
+layer pays a CPU staging gather: 22\,ms/layer, 72\% of wall. Block-major with
+SPLIT K and V makes a run one contiguous byte range on both sides and the DMA
+engine does the compaction. CPU gather 10096\,ms $\to$ 39\,ms. On a fast
+interconnect this defect would have been INVISIBLE and we would have concluded
+that C2C does not help while measuring our own memcpy.}
+\todo{(2) LOOP-INVARIANT WORK. Four sites, one species: work computed per layer
+that is fixed once the step's schedule is known (a device reduction plus
+\texttt{.item()} inside a guard meant to SKIP work; scatter indices; sequence
+maxima; a masked clone). Fixed cost 37.02 $\to$ 12.29\,ms, headline
+$-11.3\% \to -2.3\%$, controls reproducing to 0.1 tok/s over five runs, no
+numerics touched.}
+\todo{(3) WHAT REMAINS IS A FLOOR, NOT A BUG. An operator trace shows
+\texttt{cudaStreamSynchronize} gone from the table entirely and no dominant
+remaining term: ~640 extra kernel launches per step (10 operations $\times$ 64
+layers), 0.19\,ms per layer. Machine-independent, so it does not corrupt the
+C2C measurement. Getting past it needs batching ACROSS layers -- the k-window
+slots already exist for it -- which is a design change, not a fix.}
+\todo{(4) METHOD. Two rounds of aggregate per-phase timers produced two wrong
+diagnoses, because a timer around async GPU work charges waiting-for-the-GPU to
+whoever holds it. An operator-level diff (0-rider against 1-rider on identical
+prompts) found all four sites. Related earlier bug: a
+\texttt{synchronize()} inside the timing wrapper made async double-buffering
+impossible BY CONSTRUCTION, so it "showed" the optimisation to be useless.}

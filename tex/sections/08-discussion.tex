@@ -1,0 +1,18 @@
+% STATUS: skeleton. Write in W5.
+\section{Discussion and limitations}
+\label{sec:discussion}
+\todo{The narrow applicability window is a FINDING, not an apology. Restate the
+gate and the gain law as a deployment rule.}
+\todo{ANTI-SCALING, addressed head-on before a reviewer raises it: the gain
+shrinks as HBM grows (70B: $\times$1.59 on GH200-96 to $\times$1.12 on
+GH200-144) -- structurally the same decay we cite against NEO. The answer is
+that weights are growing faster than HBM (MoE, 405B+), so $\HBM/\Ckv$ trends
+favourably. Say it ourselves.}
+\todo{Composition: KV quantization is NEUTRAL to our relative gain (it scales
+capacity and rider count together) so the two compose; weight quantization
+HURTS it, by giving back the $\HBM/\Ckv$ amplifier. Measure rather than
+assert.}
+\todo{Limitations: host memory pressure and the pinned mirror; the per-layer
+launch floor; speculative decoding is unsupported on the pool path; multi-tier
+and disk as future work; the prefill-node transport is emulated, not
+integrated with a production P/D stack.}
