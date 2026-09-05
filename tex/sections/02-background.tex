@@ -1,63 +1,132 @@
 % ============================================================================
 % Section 2 -- background and system model.
 %
-% STATUS: skeleton, 2026-09-05. Write in W5 (paper/PAPER_PLAN_2026-09-05.md).
+% STATUS: first full draft, 2026-09-05.
 %
-% THE ONE THING THIS SECTION MUST DO: state the disaggregated-prefill system
-% model explicitly and early. It is the paper's largest reviewer attack surface
-% (plan section 6.1) and burying it reads as concealment. Riders are admitted
-% with ZERO main-pool blocks and their prompt declared already computed, which
-% is only legitimate on a decode node whose KV arrives from a prefill node in
-% host DDR. Said up front it is a scoping assumption on the architecture the
-% field already runs; discovered by a reviewer in section 5 it is a hole.
+% This section carries the paper's largest reviewer risk (plan section 6.1).
+% Riders are admitted with ZERO main-pool blocks and their prompt declared
+% already computed. That is only legitimate on a decode node whose KV arrives
+% from a prefill node. Stated here it is a scoping assumption about the
+% architecture the field already runs; discovered by a reviewer in the
+% evaluation it reads as concealment.
 % ============================================================================
 
 \section{Background and system model}
 \label{sec:background}
 
-\subsection{Capacity-bound decode}
+\subsection{Capacity, not compute, caps the batch}
 
-\todo{The operating point: at capacity a step is $\sim$79\% KV read and
-$\sim$21\% weight read, so the GPU runs at single-digit arithmetic utilization
-while memory is exhausted. Weight-bound describes the \emph{under-filled}
-regime --- precisely where this feature is not needed. Cite bottlenecks;
-forward-reference Eq.~\ref{eq:step}.}
+A decode step is memory-bound by a wide margin. It reads every model weight
+once and every resident KV byte once, and performs arithmetic whose intensity
+equals the GQA group size --- 4 to 8 on current models, against a balance point
+near 116 FLOP/byte on an H100. The consequence is that a decode engine runs at
+single-digit arithmetic utilization, and what stops it running a larger batch
+is not the arithmetic but the bytes: KV cache exhausts the device long before
+the SMs saturate. A recent trace-driven study of production serving reaches the
+same conclusion from the workload side, finding that ``VRAM capacity, not token
+budget'' is what binds~\cite{bottlenecks}.
 
-\subsection{Host memory as a KV tier}
+It is worth being precise about which regime this is, because the opposite
+claim is also true somewhere. At small batch the step is dominated by the
+weight read and adding requests is nearly free --- decode is
+\emph{weight-bandwidth-bound}. That regime is real, but it is precisely the
+regime in which capacity is not a problem, so it is not the one a capacity
+feature should be designed for. At the operating point that matters, where the
+pool is full and the scheduler is turning requests away, the step is roughly
+79\% KV read and 21\% weight read. Everything in this paper concerns that
+second regime, and \S\ref{sec:model} makes the boundary between them explicit.
 
-\todo{Coherent CPU--GPU interconnects (NVLink-C2C at $\sim$450\,GB/s against
-PCIe~4 at $\sim$25\,GB/s) make host DDR a usable KV tier for an actively
-decoding request, not merely a swap target. What changes at that bandwidth,
-and what does not (\S\ref{sec:model}).}
+\subsection{Host memory as a tier for actively decoding requests}
+
+Offloading KV to host memory is an old idea that a new interconnect has
+changed. Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV to the GPU
+every decode step costs more than the step itself, so host memory could only
+ever be a \emph{swap} target: somewhere to park a request that is not currently
+running. NVLink-C2C moves 450\,GB/s in each direction,\footnote{The commonly
+quoted 900\,GB/s is bidirectional. A KV stream is unidirectional
+host-to-device, so 450\,GB/s is the figure that bounds it, and we measure
+rather than assume even that.} and at that rate the bytes a decoding request
+needs can cross the link inside the time the GPU spends reading its own
+weights.
+
+That changes what host memory \emph{is}. It becomes a tier that an
+\emph{actively decoding} request can occupy, which is a state that did not
+previously exist and which no existing KV policy governs --- continuous
+batching, prefix reuse, eviction and hierarchical caching all decide the
+residency of blocks belonging to requests that are not currently running.
 
 \subsection{System model: a disaggregated decode node}
 \label{sec:background:pd}
 
-\todo{WRITE THIS CAREFULLY --- it scopes every result in the paper.}
+We target a \textbf{decode node in a prefill/decode-disaggregated
+deployment}~\cite{distserve,splitwise,mooncake}. Prefill runs on separate
+hardware; a request arrives at the decode node with its KV cache already
+computed, delivered over the cluster transport. This is the production default
+rather than a convenience we adopt: the separation exists because prefill and
+decode have opposite resource profiles, and every major serving stack now
+supports it.
 
-\todo{Prefill/decode disaggregation is the production default (DistServe,
-Splitwise, Mooncake; vLLM's connector API exists for it). We target the
-\emph{decode} node. Its input is a request whose KV already exists, delivered
-over the transport from a prefill node.}
+The assumption does real work here, and we state exactly what it buys. On a
+decode node, a host-tier request's KV can be delivered \emph{into host memory}
+and never occupy an HBM block at all --- not even transiently. Riders are
+therefore \textbf{additive}: they are served in addition to a full resident
+cohort rather than displacing part of it.
 
-\todo{The consequence that matters: a host-tier request on a decode node need
-never occupy an HBM block at all --- not even transiently for prefill. This is
-what makes riders \emph{additive} rather than displacing
-(\S\ref{sec:eval:capacity}). In a combined prefill+decode engine it is false,
-and we measured the difference: with prefill resident, riders and residents
-compete for the same headroom and the served total creeps toward the all-HBM
-capacity from below without ever passing it.}
+In a combined prefill+decode engine this is false, and the difference is not
+subtle. A request must be prefilled somewhere, so its KV lands in HBM first and
+is only reclaimed afterwards; riders and residents then draw on the same
+headroom, and we measured the result --- the served total creeps toward the
+all-HBM capacity from below and never passes it, at any setting of the
+resident-cohort cap. A rider whose prefill stays resident frees nothing while
+still costing interconnect bandwidth every step, which is strictly worse than
+leaving it in HBM. We report that negative result in
+\S\ref{sec:eval:capacity}, because it is what motivates the mechanism and
+because it bounds where the technique applies.
 
-\todo{State the assumption plainly: KV arrives in host DDR. We implement the
-handover (\S\ref{sec:impl:stash}) and report its cost rather than assuming it
-away.}
+The assumption's cost is that KV must reach host DDR. We do not wave this
+away: \S\ref{sec:impl:stash} implements the handover and \S\ref{sec:eval}
+reports what it costs, so the reader can price the assumption rather than
+accept it.
 
-\subsection{Threat to validity: what ``lossless'' means here}
+\subsection{What ``lossless'' means, and how we test it}
+\label{sec:background:lossless}
 
-\todo{bf16 attention reductions are batch-order dependent, so vanilla vLLM
-itself produces different text for the same prompt at concurrency 1 versus 6.
-Define the two-part gate used throughout: (a) serial comparison, batch of one
-on both sides; (b) concurrent comparison restricted to prompts screened as
-batching-stable. Neither alone suffices --- serial misses block reuse under
-load, concurrent alone cannot distinguish a near-tie from a defect. Note that
-our divergences are a strict subset of vLLM's own prefix cache's.}
+We claim bit-exact output, so we owe the reader a precise account of how that
+is verified --- and the naive test does not work.
+
+Attention reductions in \texttt{bf16} are not associative, so their result
+depends on the order in which a batch is reduced. Stock vLLM therefore produces
+\emph{different text for the same prompt} at concurrency 1 and concurrency 6,
+reproducibly at each. Roughly half the prompts in a random sample behave this
+way: they contain a near-tie between two candidate tokens somewhere in the
+generation, and which one wins depends on batch composition. Any system that
+changes batching --- as a tier does, necessarily --- will diverge on those
+prompts without being wrong.
+
+A single comparison against a baseline therefore cannot establish correctness,
+and a same-configuration control cannot rescue it: a control at fixed
+concurrency proves the baseline is reproducible, not that a divergence in an
+arm which \emph{changes} concurrency is a defect. We use two gates together,
+and neither alone suffices:
+
+\begin{itemize}
+\item \textbf{Serial.} Batch of one on both sides, which removes batch-order
+      dependence entirely. This gate catches data loss but not block reuse
+      under load, since nothing is contended.
+\item \textbf{Concurrent, screened.} Full load, but compared only on prompts
+      pre-screened as batching-stable --- those where vanilla at concurrency
+      matches vanilla serial. This gate exercises reuse and eviction, and its
+      screen is what makes a divergence attributable.
+\end{itemize}
+
+Below the token level we verify numerically: the host pool's round trip, the
+two-pass attention against a single-pass reference over the same KV, and the
+prefill handover across block boundaries and after the producer's memory has
+been recycled and overwritten. These are exact comparisons
+($\max|\mathrm{diff}| = 0$) and they are what the token-level gates rest on.
+
+One measurement puts the token-level divergences in proportion: on a serial
+greedy comparison, our host tier matched vanilla on 6 of 6 prompts, while
+enabling \emph{vanilla's own prefix cache} matched on 2 of 6. Our divergences
+are a strict subset of those a stock, universally deployed vLLM feature already
+introduces.
