@@ -1,0 +1,111 @@
+% ============================================================================
+% Section 7 -- related work. Claim C4 and the novelty argument.
+%
+% STATUS: first full draft, 2026-09-05. Survives every branch of the GH200 gate.
+% Source: seven papers read end-to-end 2026-08-10; positioning table in
+% paper/PAPER_OUTLINE.md section 4.
+%
+% The endpoint argument is the load-bearing paragraph. Reviewers will go
+% straight to "why does DirectKV not pre-empt this" -- answer it early and in
+% their own words, with their own quotes.
+% ============================================================================
+
+\section{Related work}
+\label{sec:related}
+
+\paragraph{Capacity, not compute, is what binds.} A recent trace-driven study
+of production serving finds that ``VRAM capacity, not token budget'' limits
+batch size~\cite{bottlenecks}, and names scheduler improvements as future work.
+That is the premise this paper builds on, and it is measured rather than
+assumed.
+
+\paragraph{Mechanisms for host-resident KV.} DirectKV~\cite{directkv}
+contributes zero-copy GPU attention over CPU-resident KV on coherent
+GH200/GB200 interconnects, through CPU-memory-aware tiling, warp pipelining and
+kernel fusion on FlashAttention-3. It is the state of the art in
+\emph{mechanism}, and it is our substrate rather than our competitor --- its
+own \S8.1 says so: ``DirectKV does not change scheduling, batching, or
+KV-management policies\ldots leaving the scheduler\ldots unchanged.''
+DAK~\cite{dak} pushes host-resident tensors to shared memory via TMA and
+chooses per-\emph{operation} offload ratios by greedy search --- but takes a
+\emph{global} offload ratio as an input, which is precisely the quantity a
+policy has to produce.
+
+\paragraph{The endpoint argument.} DirectKV \S6 stores the initial $K,V$
+entries of each layer \emph{in CPU memory}, and its Alg.~3 appends newly
+projected KV to CPU memory as well. \textbf{It places 100\% of KV on the host,
+for every request, always.} That is why it needs no scheduler: placement is
+static and total. Stock vLLM and SGLang are the opposite endpoint, at 0\%.
+Nobody runs the mixture, and the optimum is interior:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Llama-70B fp8, 8K, GH200-96 & KV bandwidth used & batch \\
+\midrule
+all-HBM (vLLM, SGLang)  & 92\,GB/step HBM, 0 link & 7 \\
+all-host (DirectKV)     & 0 HBM KV, $\sim$14\,GB/step link & 5 \\
+\textbf{mixture (ours)} & 19\,GB HBM \textbf{+} 14\,GB link & \textbf{12} \\
+\bottomrule
+\end{tabular}
+\caption{Neither endpoint is optimal, and neither can reach the interior point
+without deciding \emph{which} requests go where and \emph{how many} the link
+carries per step. Note that the all-host endpoint leaves the HBM not holding
+weights entirely idle --- which is why it loses to an HBM-resident baseline
+whenever that baseline fits.}
+\label{tab:endpoints}
+\end{table}
+
+A natural objection to the composability reading of DirectKV \S8.1 is that the
+vLLM and SGLang mechanisms it names --- continuous batching, prefix reuse,
+eviction, hierarchical KV caching --- already constitute KV policy. They do
+not, for our purposes: each decides \emph{reuse} and \emph{preemption}, that
+is, the residency of blocks belonging to a request that is \emph{not currently
+decoding}. None of them decides the tier of an \emph{actively decoding}
+request. That state did not exist before the zero-copy mechanism created it.
+
+\paragraph{Policy, at other granularities.} OmniServe~\cite{omniserve} is the
+closest prior work on policy: it forms mixed GPU/host batches and admits
+host-tier work per layer under an SLO. The regime differs on three axes that
+change the problem. It targets PCIe-attached A100s with CPU-only hosts over
+RoCE; attention for host-tier requests is computed \emph{on the CPU}, so the
+trade is compute-for-capacity rather than bandwidth-for-capacity; and tiering
+is driven by an \emph{externally supplied} latency-sensitive/best-effort
+service class. Ours assumes a coherent interconnect, computes all attention on
+the GPU, and infers tier from observable request properties, so it applies in a
+single-class deployment where no such label exists.
+
+Dynamic KV Placement~\cite{calkv} gives a formal placement model and a
+simulated-annealing oracle bound on aggregate bandwidth. It is simulation only,
+on synthetically shrunk HBM, at \emph{token} granularity by importance, and it
+requires perfect foresight; its gains are contingent on 60--80\% attention
+sparsity, and it closes by explicitly calling for runtime policies. Its own
+results show migration overhead dominating below roughly 60\% sparsity. We
+make the testable counter-claim that \emph{request}-granularity migration
+avoids that thrash, because whole requests move once at controlled moments
+rather than pages chasing shifting token importance.
+
+\paragraph{Trading accuracy for capacity.} ShadowKV~\cite{shadowkv} keeps a
+low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely, reporting a
+$6\times$ footprint reduction and $3.04\times$ throughput. It is lossy, as are
+KV quantization, Quest and H2O. These achieve larger headline numbers than any
+lossless method can, and the honest comparison is not throughput but the
+exchange rate: what does exactness cost at matched effective capacity? We
+report bit-exact output, and \S\ref{sec:eval} measures that exchange rate
+rather than asserting it.
+
+\paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
+\emph{compute} to the CPU to grow the batch --- the same problem statement as
+ours with the opposite mechanism. Its own scaling is the argument against it:
+gains decay from $7.5\times$ on a T4 to 14\% on an H100, because a faster GPU
+makes the CPU's arithmetic relatively worse. Streaming KV to the GPU has the
+opposite dependence: it improves as the interconnect improves, which is the
+direction hardware is moving.
+
+\paragraph{Summary of the gap.} The mechanism for reading host-resident KV
+efficiently is solved. What is unsolved is which requests should live in which
+tier, how many host-tier requests a step can absorb without breaking the
+resident cohort's latency, and when a request should move. Three of the papers
+above name that layer as out of scope or future work.
