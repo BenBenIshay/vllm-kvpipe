@@ -75,9 +75,19 @@ Every item here is free and removes rental risk.
       it gated on `steady_concurrency`, which rewards a slower arm and is how
       the retracted +12% was produced. `two_source_tax` and `policy_ablation`
       arg-checked.
-- [ ] **Still to dry-run end-to-end:** `policy_ablation.py`,
-      `p4_itl_model_validation.py`, `run_suite.sh`.
-- [ ] ~~Write and dry-run every experiment script on A100~~ with Qwen-0.5B, so
+- [x] **All remaining scripts dry-run end-to-end (2026-09-05).**
+      `policy_ablation` writes its JSON; `run_suite.sh` is **9/9 PASS**,
+      including `rungd_real`, `restore_roundtrip` and `migrate_roundtrip` —
+      the promotion and pool paths the loop-invariant hoists touched, which
+      had not been re-run since.
+      **Caveat on `p4_itl_model_validation`: it RUNS, but a 0.5B model at
+      ctx 512 cannot validate the ITL model.** KV is only 0.6–4.8% of
+      bytes/step there and the step is 2.2 ms, so it is launch-bound rather
+      than bandwidth-bound and the `implied_eff ≈ 0.22` it reports is an
+      artifact, not a measurement. The model is only testable in a regime
+      where KV dominates traffic — i.e. the 70B at 8K on GH200. Do not quote
+      the dry-run figure.
+- [x] ~~Write and dry-run every experiment script on A100~~ with Qwen-0.5B, so
       only the constants change. Scripts needed:
       `endpoint_comparison.py`, `policy_ablation.py`, plus the existing
       `p4_itl_model_validation.py`, `two_source_tax.py`, `transfer_bw_probe.py`,
