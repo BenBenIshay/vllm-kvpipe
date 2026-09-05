@@ -50,7 +50,7 @@ LOGDIR = "/mnt/beegfs/benishay/paper_runs/20260904"
 
 
 def run(args, arm: str, cap: int) -> dict:
-    out = f"{LOGDIR}/hide_eff_{arm}_{cap}.json"
+    out = f"{args.logdir}/hide_eff_{arm}_{cap}.json"
     cmd = [PY, BENCH, "--model", args.model, "--ctx", str(args.ctx),
            "--out-len", str(args.out_len), "--offered", str(args.offered),
            "--b-hbm-max", str(args.b_hbm_max), "--arms", arm,
@@ -81,13 +81,19 @@ def main() -> int:
     ap.add_argument("--gpu-mem-util", type=float, default=0.83)
     ap.add_argument("--b-tok", type=int, default=262144)
     ap.add_argument("--link-gbps", type=float, default=25.1)
+    # The output directory was hardcoded, so a second run at different settings
+    # silently overwrote the first -- including runs whose numbers were already
+    # committed and quoted. Default is unchanged; pass --logdir to keep a sweep
+    # separate from whatever is already on disk.
+    ap.add_argument("--logdir", default=LOGDIR)
     args = ap.parse_args()
+    os.makedirs(args.logdir, exist_ok=True)
 
     rows = [("no_riders", 0, run(args, "no_riders", 0))]
     for cap in [int(c) for c in args.caps.split(",")]:
         rows.append(("riders", cap, run(args, "riders", cap)))
 
-    with open(f"{LOGDIR}/hide_efficiency.json", "w") as f:
+    with open(f"{args.logdir}/hide_efficiency.json", "w") as f:
         json.dump([{"arm": a, "cap": c, "row": r} for a, c, r in rows],
                   f, indent=2)
 
