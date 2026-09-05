@@ -191,6 +191,28 @@ mechanism comparison.
 (Updated from 8/5/13 after measuring the real fp8 checkpoint at 72.7 GB, which
 leaves C = 19.3 GB rather than the assumed 22 GB.)
 
+**The rider arithmetic behind arm C, written out so a wrong run is obvious
+within minutes** (checked 2026-09-05 against the corrected 450 GB/s
+per-direction link — see `BLOCKER_PREFILL_RESIDENCY.md`'s correction entry):
+
+| quantity | value |
+|---|---|
+| KV bytes/token, 70B (80 layers x 8 kv-heads x 128 x 2 x fp16) | 0.33 MB |
+| a rider at 8K ctx, per step | **2.68 GB** |
+| hide budget = ITL_0 x X x 0.9 = 31.9 ms x 450 GB/s x 0.9 | **12.9 GB** |
+| riders the link can carry | **~4.8** |
+| arm C = B_cap + riders = 7.2 + 4.8 | **~12** |
+
+So the 7 / 5 / 12 table IS consistent at 450 GB/s -- the gain law already used
+450 (`paper/model/killer_v2.py` sets `x=450`), which is why the endpoint
+predictions did not move when the narrative arithmetic was corrected.
+
+**Use ~5 riders as the live sanity check.** If B1 admits ~2, the link constant
+is still 25.1 somewhere -- run `gh200_preflight.py` and pass the MEASURED
+`--hybrid-pcie-gbps`. If it admits ~40, `b_tok` is wrong for an 80-layer model.
+Either way, stop and fix before spending hours on arms that cannot mean
+anything.
+
 - Primary metric: **requests served at a fixed ITL SLO**. Secondary: tokens/s,
   p99 ITL, achieved C2C bandwidth (to confirm the transfer actually hides).
 - SLO grid fixed in advance: **{30, 40, 50, 75, 100} ms**. Our gate says
@@ -206,6 +228,16 @@ leaves C = 19.3 GB rather than the assumed 22 GB.)
 - C > both but by < 15% → fall back to characterization, with this as a section.
 - C > both by ≥ 15% → proceed; this is the paper.
 
+**Set `b_hbm_max` = the MEASURED all-HBM ceiling from arm A, with riders on
+top.** `BLOCKER_PREFILL_RESIDENCY.md`'s setup-trap #2 says to set it *below*
+capacity; that rule is **superseded and now backwards** — it predates zero-block
+preload admission, after which riders never own a block and therefore add
+rather than displace. Capping the resident cohort below what HBM holds now
+handicaps arm C. The surviving half of that trap is the diagnostic: **if the
+mixture's tier histogram shows no `cpu` entries, no rider was created and the
+arms are identical by construction.** Check the histogram before believing any
+comparison.
+
 ### 4.2 Re-parameterize the model under FA3  (8 GPU-h)
 
 `p4_itl_model_validation.py` on Hopper: eff_w, and **eff_kv vs KV working set**.
@@ -215,6 +247,46 @@ denominator, so if FA3 reads paged KV much more efficiently than FA2 did, the
 step shortens, the rider budget shrinks, and our projected gain **falls**.
 Also re-run the FA2/Triton/**FlashInfer** crossover — on A100 FA2 won below
 B≈50 and Triton above; FA3 and a buildable FlashInfer may move that entirely.
+
+### 4.2b The rider cost curve — the crossover figure  (6 GPU-h)
+
+**Added 2026-09-05. It was missing, and figure F8 cannot be drawn without it.**
+
+`rider_hide_efficiency.py`, sweeping rider count on an otherwise identical
+engine, and fitting
+
+    ITL(r) = ITL_0 + fixed + r x (bytes_per_rider / B_effective)
+
+This is the one experiment that turns two machines into a *law*: PCIe gives one
+point on the bandwidth axis, C2C gives the second, and the model line through
+both — with break-even rider count as a second axis — is F8, the figure a
+reviewer will actually remember. 4.1 alone yields a point measurement on one
+machine.
+
+**Sweep at least `--caps 1,2,3,4,6,8,12,16,24,32`, not the A100 default of
+1,2,3.** Two reasons, both learned the hard way:
+
+1. **Three points do not pin the fixed/slope split.** Two runs of the same three
+   points on A100 fitted 12.29 ms fixed + 4.45 ms/rider and 9.55 + 4.66 — the
+   cap=2 point moved 69.92 → 65.93 between them. The *split* is exactly what
+   sets C2C break-even, because the fixed term is the part a faster link does
+   **not** shrink. A 30% swing in it is a 30% swing in the answer this whole
+   trip is buying.
+2. **The A100 fit was made at 1–3 riders while C2C needs 20–50.** Two slopes in
+   our own data would only bite at scale: `build_step` (0.45/0.83/1.23 ms at
+   1/2/3) and `_issue_runs` (two copies per contiguous run per layer, which
+   explodes if rider extents fragment). A ctx-256 sweep to 16 riders on A100
+   found both linear, but that is a proxy regime, not this one.
+
+Predicted here: the per-rider term collapses ~18x (25.1 → 450 GB/s), so a rider
+at 8K costs ~0.3 ms of link plus whatever is structural, and break-even should
+land at the **first or second rider** rather than PCIe's 3–4. **If break-even is
+still beyond ~8 riders, the host path has a fixed per-step cost that survives a
+fast link** — which is a finding, and one worth more to the paper than a clean
+win, because it bounds the technique for everyone.
+
+Also record achieved C2C bandwidth per step, so "the transfer hides" is
+measured rather than inferred from ITL.
 
 ### 4.3 Policy ablation — is the policy load-bearing?  (16 GPU-h)
 
@@ -266,10 +338,11 @@ FS we measured Llama-8B (15 GB) at 237 s -- ~63 MB/s -- which extrapolates to
 | 0 bring-up | 8 |
 | 4.1 endpoint comparison | 24 |
 | 4.2 re-parameterisation | 8 |
+| **4.2b rider cost curve (F8)** | **6** |
 | 4.3 policy ablation | 16 |
 | 4.4 negative control | 4 |
 | 4.5 DirectKV (optional) | 16 |
-| **total** | **60–76** |
+| **total** | **66–82** |
 
 At typical GH200 on-demand rates that is roughly **$250–450**, plus the 70 GB
 checkpoint transfer. Call it **a 5–7 day reservation** to absorb model-load time
@@ -283,6 +356,13 @@ rather than restarting).
 does not matter and we stop. Running the decisive experiment while the instance
 is fresh also means a bring-up overrun eats the optional phases, not the
 essential one.
+
+**4.2b is the exception to "optional phases go last" (added 2026-09-05).** It
+costs 6 hours and it is the only experiment that survives a failed 4.1: if the
+mixture does not clear the 15% bar, the fallback is the crossover paper, and
+the crossover paper *is* 4.2b plus the A100 curve we already have frozen. Run
+it immediately after 4.1, before 4.3, and do not let a bring-up overrun eat it.
+Everything after 4.2b is genuinely optional.
 
 ## 7. What we are NOT doing
 

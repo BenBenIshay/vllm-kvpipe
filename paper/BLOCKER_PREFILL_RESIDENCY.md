@@ -228,6 +228,24 @@ first decode step.
    `{'hbm': 1584}` — not one host-tier request — and was identical to all-HBM.
    `b_hbm_max`=8 is the GH200 plan's default. Derive it from a measured
    `all_hbm` run; do not fix it in advance.
+
+   > **[SUPERSEDED 2026-09-05 — this rule is now BACKWARDS. Do not follow it.]**
+   > It was written 2026-08-13, when a rider still had to be allocated main-pool
+   > blocks and therefore *displaced* a resident. Zero-block preload admission
+   > (2026-08-30) removed that: a rider never owns a block, so riders **add**
+   > instead of substituting. Setting `b_hbm_max` below capacity now **caps the
+   > resident cohort below what HBM can hold and handicaps the mixture** — the
+   > 8 → 48 result was obtained at `b_hbm_max` = the measured all-HBM ceiling,
+   > which under the old rule would have been forbidden.
+   >
+   > **Correct rule: `b_hbm_max` = the MEASURED all-HBM ceiling, with riders on
+   > top.** Still derive it from a measured `all_hbm` run rather than fixing it
+   > in advance; what changed is which side of the ceiling it sits on.
+   >
+   > The part of the trap that survives is the *diagnostic*: if a mixture run
+   > reports tier samples with no `cpu` entries, no rider was ever created and
+   > the arms are identical by construction, not by measurement. Check the tier
+   > histogram before believing any comparison.
 3. **A timed-out arm must not discard the arms that finished.** `all_host`
    hitting its cap raised and threw away a completed `all_hbm` and `mixture`.
    Fixed: unfinished arms are recorded and reported, the rest still print, and a
