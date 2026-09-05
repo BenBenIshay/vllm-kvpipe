@@ -65,12 +65,29 @@ Every item here is free and removes rental risk.
 - [ ] **Pre-stage the checkpoint** (~70 GB). Downloading it on a metered rented
       box is wasted money; stage to object storage or plan the download into
       hour 0 explicitly.
-- [ ] **Write and dry-run every experiment script on A100** with Qwen-0.5B, so
+- [x] **Dry-run on A100 with Qwen-0.5B — done 2026-09-05.** `transfer_bw_probe`
+      25.16 GB/s vs the 25.1 assumed. `endpoint_comparison` runs three arms x
+      two SLOs end to end; its first dry run came back VACUOUS (all-HBM
+      absorbed the whole offered load) which a 0.5B KV pool makes
+      unavoidable, so it gained `--num-gpu-blocks-override` and the
+      non-vacuous verdict path was then validated: all-HBM 450 / all-host 302
+      / mixture 438 tok/s at SLO 40. Its headline metric was ALSO replaced --
+      it gated on `steady_concurrency`, which rewards a slower arm and is how
+      the retracted +12% was produced. `two_source_tax` and `policy_ablation`
+      arg-checked.
+- [ ] **Still to dry-run end-to-end:** `policy_ablation.py`,
+      `p4_itl_model_validation.py`, `run_suite.sh`.
+- [ ] ~~Write and dry-run every experiment script on A100~~ with Qwen-0.5B, so
       only the constants change. Scripts needed:
       `endpoint_comparison.py`, `policy_ablation.py`, plus the existing
       `p4_itl_model_validation.py`, `two_source_tax.py`, `transfer_bw_probe.py`,
       `run_suite.sh`.
-- [ ] **Pin the environment**: exact torch/vLLM/CUDA versions, and a build
+- [x] **Environment pinned — `paper/ENVIRONMENT_PIN.md`.** python 3.12.13,
+      torch 2.9.1+cu128, CUDA 12.8. Notes two traps: `pip list` reports the
+      MAIN tree's path even from the worktree (stale dist-info; the finder is
+      what imports use), and `ptxas` does exist inside the nvidia wheels --
+      the A100 gap is specifically `nvcc`.
+- [ ] ~~Pin the environment~~: exact torch/vLLM/CUDA versions, and a build
       script that runs unattended.
 - [ ] **Confirm `nvcc` exists on the target image.** `nvcc` is the CUDA
       compiler; vLLM itself ships precompiled kernels and does not need it, but
@@ -82,7 +99,11 @@ Every item here is free and removes rental risk.
       (`nvidia/cuda:12.x-devel-*` has it; `*-runtime-*` does not).
       Verify in minute one: `nvcc --version`. Without it we lose 4.2's
       FlashInfer arm and all of 4.5.
-- [ ] **Decide the SLO grid** in advance (§4.1) so we are not tuning live.
+- [x] **SLO grid decided — `paper/SLO_GRID_DECISION.md`.** NOT the proposed
+      absolute {30,40,50,75,100} ms: an SLO below an arm's own rider-free step
+      is unsatisfiable by every arm and measures nothing at full price, and
+      the GH200 weights-bound floor alone is ~24 ms. Instead measure the
+      all-HBM median ITL in hour 1 (`T0`) and run `T0 x {1.0,1.2,1.5,2.0,3.0}`.
 
 ## 2b. KNOWN OPEN ISSUE — the `all_host` arm stalls at scale (2026-08-12)
 
