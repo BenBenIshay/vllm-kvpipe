@@ -22,20 +22,39 @@ assumed.
 \paragraph{Mechanisms for host-resident KV.} DirectKV~\cite{directkv}
 contributes zero-copy GPU attention over CPU-resident KV on coherent
 GH200/GB200 interconnects, through CPU-memory-aware tiling, warp pipelining and
-kernel fusion on FlashAttention-3. It is the state of the art in
-\emph{mechanism}, and it is our substrate rather than our competitor --- its
-own \S8.1 says so: ``DirectKV does not change scheduling, batching, or
-KV-management policies\ldots leaving the scheduler\ldots unchanged.''
+kernel fusion, eliminating the GPU staging buffer entirely. It is the state of
+the art in \emph{mechanism}, and it is our substrate rather than our competitor
+--- its own \S8.1 says so: ``DirectKV does not change scheduling, batching, or
+KV-management policies; instead, it provides an efficient execution path for
+CPU-resident KV blocks\ldots while leaving the scheduler, model execution
+graph, and frontend API unchanged.''
+
+It is also worth recording that DirectKV's own analysis agrees with our
+measured PCIe result: they conclude that ``on PCIe, DirectKV should be viewed
+primarily as a capacity-extension mechanism\ldots its performance advantage
+remains bounded by CPU--GPU interconnect bandwidth,'' and report NVLink-C2C
+reducing attention latency by up to $4.2\times$ relative to PCIe. Our
+\S\ref{sec:eval} finds the same boundary from the scheduling side. Their
+evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96; it does not
+include a 70B-class model, which is the configuration our gain law identifies
+as the most favourable.
+
+Swap-based offloading is the prior generation and DirectKV's own baseline set:
+FlexGen places KV across GPU, CPU and disk under a linear-programming placement
+search with compression, and Pie stages KV blocks through large GPU buffers
+over NVLink-C2C. Both pay the staging cost that zero-copy removes, and neither
+decides tier per request.
 DAK~\cite{dak} pushes host-resident tensors to shared memory via TMA and
 chooses per-\emph{operation} offload ratios by greedy search --- but takes a
 \emph{global} offload ratio as an input, which is precisely the quantity a
 policy has to produce.
 
-\paragraph{The endpoint argument.} DirectKV \S6 stores the initial $K,V$
-entries of each layer \emph{in CPU memory}, and its Alg.~3 appends newly
-projected KV to CPU memory as well. \textbf{It places 100\% of KV on the host,
-for every request, always.} That is why it needs no scheduler: placement is
-static and total. Stock vLLM and SGLang are the opposite endpoint, at 0\%.
+\paragraph{The endpoint argument.} DirectKV \S6: ``During prefill, the manager
+stores the initial $K,V$ entries from each layer in CPU memory. During decode,
+the GPU reuses these cached entries directly, while only appending new $K,V$
+for the latest token'' --- and its Alg.~3 appends that new $K,V$ to CPU memory
+as well. \textbf{It places 100\% of KV on the host, for every request, always.}
+That is why it needs no scheduler: placement is static and total. Stock vLLM and SGLang are the opposite endpoint, at 0\%.
 Nobody runs the mixture, and the optimum is interior
 (Table~\ref{tab:endpoints}). Note in particular that the all-host endpoint
 leaves the device memory not holding weights entirely idle, which is why it
