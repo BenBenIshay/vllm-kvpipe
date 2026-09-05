@@ -1,17 +1,163 @@
-% STATUS: skeleton. Write in W5, after the evaluation resolves.
+% ============================================================================
+% Section 1 -- introduction.
+%
+% STATUS: first full draft, 2026-09-05.
+%
+% Two deliberate choices, both from paper/PAPER_PLAN_2026-09-05.md section 6:
+%
+% 1. It opens on the ENDPOINT ARGUMENT rather than on the mechanism, because
+%    that is the one table that states the gap in a form nobody can already
+%    claim: everyone runs 0% or 100%, the optimum is interior.
+% 2. It states the APPLICABILITY WINDOW in the introduction, not only in the
+%    discussion. The window is narrow, and a reviewer who finds that out in
+%    section 5 reads it as a concession; stated up front it is a contribution,
+%    and it buys the credibility they will otherwise spend the paper hunting
+%    for.
+%
+% The results paragraph carries \needsgh slots. Do not let them quietly become
+% claims -- \draftfalse turns them into compile errors for exactly this reason.
+% ============================================================================
+
 \section{Introduction}
 \label{sec:intro}
-\todo{Open on the endpoint argument (Table~\ref{tab:endpoints}) -- it is the
-clearest one-table statement of the gap. Everyone runs 0\% or 100\%; nobody
-runs the mixture; the optimum is interior.}
-\todo{Contributions list -- mirror paper/PAPER\_OUTLINE.md section 5, updated:
-(1) the closed-form applicability model, validated on hardware AND against a
-published system's own inversion; (2) request-level tier assignment with no
-external service-class label; (3) SLO-targeted rider admission with a measured
-hide budget and a closed-loop guardrail; (4) tier migration as a measured
-probe rather than an open-loop cost model; (5) implementation in vLLM v1 and
-an evaluation that isolates policy gain from mechanism gain.}
-\todo{State the applicability window in the introduction, not only in the
-discussion. The honest framing -- "here is exactly when this pays, and here is
-when it does not" -- is a contribution, and stating it early buys credibility
-that a reviewer will otherwise spend the whole paper looking for.}
+
+A large language model serving decode requests is, in a specific and
+frustrating sense, mostly idle. Its arithmetic units run at single-digit
+utilization while its memory system runs flat out, because generating one token
+for a batch of requests requires reading every model weight and every resident
+KV cache byte, and almost no arithmetic per byte read. What stops the server
+from batching more requests --- which is what would put the arithmetic to work
+--- is not compute. It is that KV cache has exhausted device memory. A recent
+trace-driven study of production deployments reaches the same conclusion from
+the workload side: what binds is ``VRAM capacity, not token
+budget''~\cite{bottlenecks}.
+
+Host memory is the obvious place to put the overflow, and until recently it was
+not a serious option. Over PCIe, streaming an actively decoding request's KV to
+the GPU on every step costs more time than the step itself, so host memory
+could only serve as a swap target for requests that were not running. Coherent
+CPU--GPU interconnects change the arithmetic. At 450\,GB/s per direction, the
+KV a decoding request needs can cross the link inside the window during which
+the GPU is busy reading its own weights and wants nothing from the link at all.
+Reading host-resident KV efficiently from a GPU attention kernel is now a
+solved engineering problem, with a zero-copy implementation published at the
+architectural level~\cite{directkv}.
+
+\paragraph{Everybody runs an endpoint.} What is not solved is where KV should
+live. Every system we know of answers that question statically and totally.
+Stock vLLM and SGLang keep 100\% of KV in device memory: when it does not fit,
+requests wait. DirectKV keeps 100\% of KV on the host, for every request,
+always --- its \S6 places each layer's initial $K,V$ in CPU memory during
+prefill and its Alg.~3 appends newly projected KV there too. That is precisely
+why it needs no scheduler, and its \S8.1 says as much: it ``does not change
+scheduling, batching, or KV-management policies\ldots leaving the scheduler\ldots
+unchanged.''
+
+These are the two endpoints of a spectrum, and neither is optimal, for a reason
+that is visible without any measurement. An all-HBM server reads KV at HBM
+bandwidth and leaves the interconnect entirely idle. An all-host server reads
+KV over the interconnect and leaves the device memory not holding weights
+entirely idle --- which is why it loses to an HBM-resident baseline whenever
+that baseline fits, a result DirectKV itself reports on Llama-3.1-8B. A server
+that places \emph{some} requests in each tier reads KV from both at once, and
+its batch is bounded by the sum rather than by either:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Llama-70B fp8, 8K, GH200-96 & KV bandwidth used & batch \\
+\midrule
+all-HBM (vLLM, SGLang)  & 92\,GB/step HBM, 0 link & 7 \\
+all-host (DirectKV)     & 0 HBM KV, $\sim$13\,GB/step link & 5 \\
+\textbf{mixture (this paper)} & 19\,GB HBM \textbf{+} 13\,GB link & \textbf{12} \\
+\bottomrule
+\end{tabular}
+\caption{The optimum is interior, and unreachable from either endpoint without
+deciding \emph{which} requests go where and \emph{how many} the link can carry
+per step.}
+\label{tab:endpoints}
+\end{table}
+
+\paragraph{The interior point requires a policy, and the policy is the hard
+part.} Running a mixture means answering three questions every serving step.
+Which requests should occupy the host tier? How many of them can a step absorb
+before the resident cohort's latency breaks? And when should a request move
+between tiers as load changes? None of these is answered by existing KV
+machinery: continuous batching, prefix reuse, eviction and hierarchical caching
+all govern the residency of blocks belonging to requests that are \emph{not
+currently decoding}. The tier of an \emph{actively decoding} request is a state
+that did not exist before the zero-copy mechanism created it, and three recent
+papers name the resulting policy layer as out of scope or future work.
+
+\paragraph{But first: does it pay at all?} Before designing a policy we ask
+when the mixture is worth running, and the answer turns out to be sharply
+bounded. We derive a closed-form capacity multiplier
+$1 + (\Xlink/\BW)(\HBM/\Ckv)$, where $\Ckv$ is the device memory left after
+weights, and validate its structure on hardware. Two consequences are worth
+stating immediately because they contradict common intuition. \textbf{Long
+context does not help}: it shrinks the resident cohort and the affordable host
+cohort in the same proportion, so the ratio is context-independent. And
+\textbf{the value tracks how much of memory the weights ate}, not model size ---
+an 8B model
+leaves so much memory free that there is nothing to buy, while a 70B model
+leaves little and gains most.
+
+That model does something we consider the paper's strongest single asset: it
+explains a published result its own authors do not. DirectKV reports being
+slightly \emph{slower} than an HBM-resident baseline on Llama-3.1-8B and
+winning only on OPT-13B/30B where that baseline runs out of memory. Our gain
+law predicts exactly that inversion from the two models' weight footprints. A
+model that accounts for when a technique \emph{fails} is worth more than one
+tuned to its successes, and we report our own negative cases in the same
+spirit.
+
+\paragraph{Scope, stated plainly.} We target a decode node in a
+prefill/decode-disaggregated deployment~\cite{distserve,splitwise,mooncake} ---
+the production default --- where a request arrives with its KV already
+computed. That assumption is load-bearing: it is what lets a host-tier request
+avoid occupying device memory even transiently, which in turn is what makes
+host-tier requests \emph{additive} rather than merely substitutional. We
+implement the handover rather than assume it, and report its cost. Our
+placement is also \textbf{lossless}: unlike quantization or sparse
+reconstruction, a request produces bit-identical output in either tier, and we
+describe in \S\ref{sec:background:lossless} why establishing that is harder
+than it sounds.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item \textbf{A closed-form model of when host-KV offload pays} (\S\ref{sec:model}),
+      validated against 54 measured configurations on two models, and against a
+      published system's own unexplained inversion. It yields a deployment rule
+      and an applicability gate, both of which exclude popular configurations.
+\item \textbf{Request-level tier assignment} (\S\ref{sec:design}) driven by
+      observable per-request state, requiring no externally supplied service
+      class. We report the negative finding that context length --- the
+      intuitive signal --- does not discriminate, and identify what does.
+\item \textbf{SLO-targeted admission} with a hide budget measured from
+      rider-free steps rather than declared, plus a closed-loop guardrail on
+      observed step time.
+\item \textbf{Migration as a measured probe} rather than an open-loop cost
+      model. A demotion is provisional: the controller measures its effect and
+      reverts it if latency regressed. This exists because the roofline alone
+      approved a demotion that made latency four times worse --- it can see
+      transfer bytes but not the host path's fixed per-step cost.
+\item \textbf{An implementation in vLLM v1 and an evaluation that separates
+      policy gain from mechanism gain} (\S\ref{sec:eval}) by running uniform
+      offload and our policy on one substrate --- a comparison no prior work in
+      this space reports.
+\end{enumerate}
+
+\paragraph{Results.} On A100/PCIe --- provably the regime our own model says
+cannot pay --- we show the capacity mechanism works and the economics do not:
+host-tier requests raise sustained concurrency from 8 to 48 at a fixed KV pool,
+while 78\% of each request's transfer overlaps compute yet the residual still
+leaves throughput 2.3\% short.
+% src: paper/data/{preload_capacity,hide_efficiency,pd_decode_goodput}.json @ f3df05bdb
+That is the predicted outcome for a 25\,GB/s link, and we present it as a
+validated negative rather than a disappointment: it fixes one end of the
+bandwidth axis.
+\needsgh{The GH200 endpoint comparison (arms, SLO grid, headline capacity and
+SLO-attainment numbers), and the second point on the bandwidth axis that turns
+the cost decomposition into a crossover with a measured crossing point.}
