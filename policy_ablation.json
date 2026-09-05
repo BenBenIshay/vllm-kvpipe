@@ -1,0 +1,73 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "dtype": "float16",
+    "ctx": 512,
+    "out_len": 32,
+    "offered": 12,
+    "max_num_seqs": 32,
+    "b_hbm_max": 8,
+    "gpu_mem_util": 0.3,
+    "link_gbps": 25.1,
+    "slo": 50.0,
+    "probe_steps": 16,
+    "migrate_warmup": 24,
+    "eager": true,
+    "arms": "uniform_25,uniform_50,arrival,scored,scored_migrate",
+    "single_arm": "",
+    "arm_slo": 0.0,
+    "out": "policy_ablation.json"
+  },
+  "results": [
+    {
+      "arm": "uniform_25",
+      "slo_ms": 50.0,
+      "wall_s": 0.7814212292432785,
+      "tokens_per_s": 491.412295480969,
+      "steady_concurrency": 12.0,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "ref"
+    },
+    {
+      "arm": "uniform_50",
+      "slo_ms": 50.0,
+      "wall_s": 0.8605363424867392,
+      "tokens_per_s": 446.2333326798658,
+      "steady_concurrency": 12.0,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "arrival",
+      "slo_ms": 50.0,
+      "wall_s": 0.8228994943201542,
+      "tokens_per_s": 466.6426491332882,
+      "steady_concurrency": 12.0,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "scored",
+      "slo_ms": 50.0,
+      "wall_s": 0.8195197768509388,
+      "tokens_per_s": 468.56709361614975,
+      "steady_concurrency": 12.0,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "scored_migrate",
+      "slo_ms": 50.0,
+      "wall_s": 0.80902318097651,
+      "tokens_per_s": 474.6464737098175,
+      "steady_concurrency": 12.0,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    }
+  ]
+}
