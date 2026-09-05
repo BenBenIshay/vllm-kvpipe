@@ -57,12 +57,17 @@
 
 \begin{document}
 
+% NOTE: do not write \\[1ex] inside \twocolumn[...]. LaTeX scans the optional
+% argument to the first unbraced ], so the ] in [1ex] terminates it early and
+% the error surfaces as "Argument of \@icentercr has an extra }" -- which
+% points at the title, not at the real cause. Use \par\vspace instead.
 \twocolumn[
 \begin{center}
-{\Large\bf Who Rides Along? Request-Level KV Tiering for Capacity-Bound Decode}\\[1ex]
+{\Large\bf Who Rides Along? Request-Level KV Tiering for Capacity-Bound Decode}
+\par\vspace{1ex}
 \todo{author list and affiliations --- open decision, paper/PAPER\_PLAN\_2026-09-05.md section 8}
+\par\vspace{2ex}
 \end{center}
-\vspace{2ex}
 ]
 
 \input{sections/00-abstract}
