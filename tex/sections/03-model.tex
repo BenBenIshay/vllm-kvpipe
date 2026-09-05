@@ -1,0 +1,234 @@
+% ============================================================================
+% Section 3 -- the analytical spine. Contribution 1.
+%
+% STATUS: first full draft, 2026-09-05. This section survives every branch of
+% the GH200 gate (paper/PAPER_PLAN_2026-09-05.md section 4) and is deliberately
+% written first. Claims C2, C3, C4.
+%
+% All numbers here: % src: paper/model/p4_*.json @ 2bfc6ca5e
+% ============================================================================
+
+\section{When does host-KV offload pay?}
+\label{sec:model}
+
+Before describing a policy we establish what there is to gain, because the
+answer is narrow and the boundaries are sharp. This section derives four
+closed-form results, reports which of them survived contact with hardware, and
+uses the survivors to explain a published result that its own authors leave
+unexplained.
+
+\subsection{Setup}
+
+Let $\Xlink$ be the achieved interconnect bandwidth between host memory and the
+GPU, $\BW$ the achieved HBM bandwidth, $\HBM$ the device memory, $W$ the bytes
+of model weights, and $\Ckv = \HBM - W$ the memory left for KV cache. Let $S$
+be the context length and $k$ the KV bytes per token.
+
+A decode step reads every weight once and every resident KV byte once. Writing
+$\effw$ and $\effkv$ for the fraction of peak bandwidth each achieves --- we
+show below that these differ, and that the second is not a constant --- the
+step time at batch $B$ is
+%
+\begin{equation}
+\label{eq:step}
+\mathrm{ITL}(B) \;=\; \frac{W}{\BW \cdot \effw} \;+\; \frac{B \cdot S \cdot k}{\BW \cdot \effkv}.
+\end{equation}
+%
+The capacity-limited batch is $B_{\mathrm{cap}} = \Ckv / (S k)$: the point at
+which KV, not arithmetic, exhausts the device. A \emph{rider} is a request
+whose KV lives in host memory and streams over the interconnect during the
+step. The number of riders a step can absorb without lengthening it is
+$B_{\mathrm{off}} = \mathrm{ITL} \cdot \Xlink / (S k)$.
+
+\subsection{(a) Context length cancels}
+
+The ratio of riders to residents,
+%
+\begin{equation}
+\label{eq:cancel}
+\frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink / (S k)}{\Ckv / (S k)}
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink}{\Ckv},
+\end{equation}
+%
+is independent of $S$. Long context does not make offloading more attractive:
+it shrinks both cohorts equally. This is worth stating because the intuition
+runs the other way --- long context is what makes KV cache expensive, so it
+seems like the regime where moving KV off-device should pay most. It is not.
+What a long context buys the rider in freed HBM, it spends again in per-step
+transfer.
+
+\paragraph{Validated on hardware.} Equation~\ref{eq:step} predicts that ITL
+depends on batch and context only through their product. Across 54
+configurations on two models (Llama-3.1-8B, Qwen2.5-32B) on an A100-80, ITL is
+linear in total KV tokens $B \cdot S$ with $R^2 = 0.975$, and the residuals are
+unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$, $-0.09$, $+0.00$
+ms). $B{=}16,S{=}4096$ and $B{=}8,S{=}8192$ both measure $17.17$ ms.
+% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
+We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
+with identical prompts in both runs --- so prefill and warmup cancel exactly.
+
+\subsection{(b) A hardware constant that is not one}
+
+We initially expected that at capacity a step reads all of HBM once, giving
+$\mathrm{ITL}_0 \approx \HBM/\BW$ --- a quantity depending only on the device,
+not the model. That would have made the applicability gate below clean and
+model-independent.
+
+\textbf{Measurement falsifies it.} Full-pool ITL on A100-80 is $79.3$ ms for
+Llama-8B against $55.7$ ms for Qwen2.5-32B,
+% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
+a $1.4\times$ spread where equality was predicted. The cause is that weights
+and paged KV do not stream at the same efficiency
+(\S\ref{sec:model:params}); a model that is mostly weights reads its HBM faster
+than one that is mostly KV. We report this because the falsified version is the
+intuitive one, and because the gate that depends on it survives only in a
+weaker, model-dependent form.
+
+What does survive: the rider budget is still $\mathrm{ITL}\cdot\Xlink$, and most
+of it is still bought with \emph{weight-read time}. On GH200, a 70B model
+spends roughly 22\,ms of a 32\,ms step reading weights, and during that stretch
+nothing else contends for the interconnect. The free ride is real, but it is
+time, not bandwidth.
+
+\subsection{(c) The gain law}
+
+Adding $B_{\mathrm{off}}$ riders to $B_{\mathrm{cap}}$ residents multiplies the
+served batch by
+%
+\begin{equation}
+\label{eq:gain}
+\text{gain} \;=\; 1 + \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
+      \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\frac{\HBM}{\Ckv},
+\end{equation}
+%
+substituting $\mathrm{ITL}_0 \approx \HBM/(\BW\,\bar\eta)$ into
+Eq.~\ref{eq:cancel}. The structure is worth reading carefully. The bandwidth
+ratio $\Xlink/\BW$ is a handicap --- about $0.15$ even on NVLink-C2C --- and it
+cannot be improved by anything a serving system does. The amplifier is
+$\HBM/\Ckv$: \textbf{the value of offloading tracks how much of HBM the weights
+ate}, not model size and not context length.
+
+That single observation is the section's most useful consequence, because it
+is counter to how the field selects evaluation models. Table~\ref{tab:gain}
+applies Eq.~\ref{eq:gain} with the measured parameters of
+\S\ref{sec:model:params}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Model (GH200-96) & weights & $\Ckv$ & ITL$_0$ & gain \\
+\midrule
+Llama-8B fp16      & 16\,GB & 76\,GB & 50.4\,ms & $\times$1.22 \\
+Qwen-32B fp16      & 64\,GB & 28\,GB & 33.0\,ms & $\times$1.46 \\
+Llama-70B fp8      & 70\,GB & 22\,GB & 31.9\,ms & $\times$1.59 \\
+\bottomrule
+\end{tabular}
+\caption{The gain law is an amplifier on $\HBM/\Ckv$. An 8B model leaves so
+much HBM free that there is nothing to buy. % src: paper/model/killer_v2.py @ 2bfc6ca5e
+}
+\label{tab:gain}
+\end{table}
+
+These projections moved by less than 4\% across three rounds of parameter
+revision (70B $\times1.56 \to \times1.59$), because the gain depends on a
+\emph{ratio} and absolute bandwidth errors largely cancel between the ITL
+numerator and the capacity denominator. Sweeping $\effkv$ across its plausible
+band for 70B moves the projection only $\times1.58 \to \times1.61$.
+
+\subsection{(d) The applicability gate}
+
+Capacity binds only when the ITL SLO exceeds the full-pool ITL:
+%
+\begin{equation}
+\label{eq:gate}
+\mathrm{SLO} \;>\; \frac{W}{\BW\,\effw} + \frac{\Ckv}{\BW\,\effkv}.
+\end{equation}
+%
+Below the gate the scheduler is already refusing requests that HBM could hold,
+because admitting them would break latency --- the system is latency-limited,
+not capacity-limited, and offloading is then strictly harmful. Following (b),
+this gate is model-dependent rather than a property of the device alone.
+
+The gate is a scoping statement, and we state it as a finding rather than
+apologise for it: this is a feature for \emph{throughput-oriented} serving ---
+agentic pipelines, batch inference, long-form and reasoning workloads --- and
+not for interactive chat.
+
+\subsection{Measured parameters}
+\label{sec:model:params}
+
+A100-80 PCIe; two models; 41 single-shot configurations plus a
+13-configuration $n{=}3$ repeat sweep; distinct random contexts; prefix caching
+disabled.
+% src: paper/model/p4_llama8b_a100_rep3.json @ 2bfc6ca5e
+
+\paragraph{Weight read is efficient and stable.} $\effw = 0.75$ of peak
+($\approx$1450\,GB/s), consistent across both models, all contexts, and robust
+to the $\effkv$ assumed at $B{=}1$ (0.739--0.773 over that whole range).
+
+\paragraph{Paged KV read is neither.} $\effkv$ degrades by $1.6\times$ with the
+KV working set:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+KV working set & 4.3\,GB & 8.6\,GB & 17--34\,GB & 43\,GB & 51.5\,GB \\
+\midrule
+$\effkv$ & 0.77 & 0.72 & 0.54--0.56 & 0.49 & 0.46 \\
+\bottomrule
+\end{tabular}
+\caption{Paged KV read efficiency is not a constant. Error bars from $n{=}3$
+repeats are $\pm0.02$--$0.04$; the degradation is far outside them.}
+\label{tab:effkv}
+\end{table}
+
+This is the real correction to the model, and it matters beyond this paper:
+\textbf{every fixed-bandwidth roofline in this literature mis-predicts the
+capacity-bound operating point}, because it is exactly at capacity that
+$\effkv$ is worst.
+
+\paragraph{A caveat at kernel granularity.} The claim that only total KV bytes
+matter holds at three of four same-byte test points but breaks at 17.2\,GB
+($B{=}32,S{=}4096$ gives 0.561 against $B{=}16,S{=}8192$ at 0.747). The cause
+is a reproducible anomaly at $B{=}32,S{=}4096$ that also appeared in an
+independent earlier run --- an attention-kernel scheduling artifact, most
+likely FlashDecoding's split-KV heuristics, not measurement noise ($\pm0.61$\,ms
+against a $\sim$3\,ms deviation). The aggregate law holds; the
+per-configuration surface has kernel-regime steps.
+
+\paragraph{Compute is not the binding term.} Decode-attention arithmetic
+intensity equals the GQA group size --- 8 for 70B, 4 for 8B --- against an
+H100 balance point near 116 FLOP/byte, so attention sits 14--29$\times$ below
+the compute roof. At batch 8, 70B spends 7\% of its step on arithmetic.
+% src: paper/model/compute_check.py @ 2bfc6ca5e
+Llama-8B at 4K does cross into compute-bound at batch 142, which is a further
+reason it is the wrong model to evaluate on.
+
+\subsection{The model explains a published result}
+\label{sec:model:directkv}
+
+DirectKV~\cite{directkv} reports that on Llama-3.1-8B its zero-copy host-KV
+attention is \emph{slightly slower} than the HBM-resident SGLang baseline, and
+that it wins only on OPT-13B and OPT-30B, where SGLang runs out of memory. The
+paper does not explain the inversion.
+
+Equation~\ref{eq:gain} predicts it. Llama-8B leaves $\Ckv \approx 76$\,GB of an
+H100/GH200 --- $\HBM/\Ckv \approx 1.26$, so there is essentially nothing to
+buy, and any overhead the mechanism carries shows up as a net loss. OPT-30B's
+60\,GB of weights leave $\Ckv \approx 32$\,GB, more than doubling the
+amplifier. \textbf{The applicability gate and the gain law together account for
+which of a published system's configurations win and which lose}, which is the
+strongest available evidence that the model captures something real rather
+than fitting our own measurements.
+
+\ifdraft
+\needsgh{$\effkv$ under FA-3 is the top downside risk and sits in the capacity
+denominator: if Hopper's kernels close the paged-KV gap, the step shortens, the
+rider budget shrinks, and Table~\ref{tab:gain} falls. Re-measured in
+\S\ref{sec:eval} (GH200 plan 4.2), which runs early for exactly this reason.}
+\fi

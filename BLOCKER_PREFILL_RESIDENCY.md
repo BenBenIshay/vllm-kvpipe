@@ -736,3 +736,47 @@ defect that would corrupt the C2C measurement -- it is launch overhead,
 identical on either machine, and now small enough (12 ms against a 49 ms step)
 that the interconnect term dominates again on C2C. That was the thing worth
 knowing before booking, and it checks out.
+
+## Pre-rental validation: many-rider scaling, and the structural cost does not grow with context
+
+Every number in the cost model was fitted on 1-3 riders while C2C needs 20-50,
+and two per-rider slopes in our own data would only bite at scale: `build_step`
+(0.45/0.83/1.23 ms at 1/2/3 riders) and `_issue_runs` (two copies per
+contiguous run per layer -- cheap if rider extents stay adjacent, thousands of
+launches per step if they fragment). Neither is visible at r<=3.
+
+A rider at **ctx 256 on A100** costs ~2.7 ms of transfer, close to what a
+ctx-2048 rider costs on **C2C** (~0.6 ms), so a many-rider sweep at small
+context is a legitimate dress rehearsal for the C2C regime: transfer nearly
+vanishes and the structural per-rider cost is exposed.
+
+| riders | ITL | tok/s | concurrency |
+|---|---|---|---|
+| 0 (control, 24 residents) | 47.99 | 311.9 | 24 |
+| 1 | 58.96 | 119.5 | 9 |
+| 2 | 64.00 | 119.9 | 10 |
+| 4 | 65.06 | 155.1 | 12 |
+| 8 | **64.97** | 171.5 | 16 |
+| 16 | 74.06 | 264.0 | 24 |
+
+**fixed +9.93 ms, per-rider 0.99 ms, LINEAR to 16 riders** -- flat between 4 and
+8. Both fears are dead: 15 extra riders cost 15.1 ms in total, so `build_step`
+cannot be 0.39 ms/rider here, and `_issue_runs` is not exploding.
+
+**Two context points now agree on the important thing:**
+
+| ctx | per-rider measured | visible transfer (79% hidden) |
+|---|---|---|
+| 256 | 0.99 ms | 0.56 ms |
+| 2048 | 4.45 ms | 4.48 ms |
+
+Per-rider cost is visible transfer plus ~0.4 ms, and **that structural term does
+not grow with context**. On C2C at ctx 2048 the transfer term collapses to
+~0.13 ms visible, so per-rider is ~0.5 ms. At 40 riders: 49.06 + 12.29 + 20 =
+~81 ms at 48 concurrent against 8 at 49.06 -- roughly **3.5x the throughput**.
+
+**Do not misread the cap=16 row.** 8 residents + 16 riders is 15.4% worse than
+24 residents there, and that is expected: at ctx 256 the HBM pool holds all 24,
+so there is no capacity pressure and riders can only substitute, never add. The
+additive claim needs a context where HBM is the binding constraint -- which is
+what ctx 2048 was chosen for.
