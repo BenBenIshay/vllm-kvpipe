@@ -97,11 +97,13 @@ is verified --- and the naive test does not work.
 Attention reductions in \texttt{bf16} are not associative, so their result
 depends on the order in which a batch is reduced. Stock vLLM therefore produces
 \emph{different text for the same prompt} at concurrency 1 and concurrency 6,
-reproducibly at each. Roughly half the prompts in a random sample behave this
-way: they contain a near-tie between two candidate tokens somewhere in the
-generation, and which one wins depends on batch composition. Any system that
-changes batching --- as a tier does, necessarily --- will diverge on those
-prompts without being wrong.
+reproducibly at each. Such prompts contain a near-tie between two candidate
+tokens somewhere in the generation, and which one wins depends on batch
+composition; in one six-prompt set we examined, three behaved this way. We do
+not claim that fraction is representative --- the point is only that such
+prompts are common enough that a correctness gate must account for them. Any
+system that changes batching --- as a tier does, necessarily --- will diverge
+on them without being wrong.
 
 A single comparison against a baseline therefore cannot establish correctness,
 and a same-configuration control cannot rescue it: a control at fixed
@@ -125,8 +127,12 @@ prefill handover across block boundaries and after the producer's memory has
 been recycled and overwritten. These are exact comparisons
 ($\max|\mathrm{diff}| = 0$) and they are what the token-level gates rest on.
 
-One measurement puts the token-level divergences in proportion: on a serial
-greedy comparison, our host tier matched vanilla on 6 of 6 prompts, while
-enabling \emph{vanilla's own prefix cache} matched on 2 of 6. Our divergences
-are a strict subset of those a stock, universally deployed vLLM feature already
-introduces.
+One measurement puts the token-level divergences in proportion. On a serial
+greedy comparison our host tier matched vanilla on 6 of 6 prompts in the first
+generation round and 4 of 6 in a second round, while enabling \emph{vanilla's
+own prefix cache} --- changing nothing else --- matched on only 2 of 6. Our
+divergences are a strict subset of those a stock, universally deployed vLLM
+feature already introduces, which is the honest frame for a losslessness claim
+in bf16: exactness is established numerically
+(\S\ref{sec:eval:correct}), and token-level agreement is reported with the
+baseline's own instability alongside it rather than in isolation.

@@ -152,14 +152,26 @@ than it sounds.
 \end{enumerate}
 
 \paragraph{Results.} On A100/PCIe --- provably the regime our own model says
-cannot pay --- we show the capacity mechanism works and the economics do not:
-host-tier requests raise sustained concurrency from 8 to 48 at a fixed KV pool,
-while 78\% of each request's transfer overlaps compute yet the residual still
-leaves throughput 2.3\% short.
-% src: paper/data/{preload_capacity,hide_efficiency,pd_decode_goodput}.json @ f3df05bdb
+cannot pay --- the capacity mechanism works and the economics do not. These are
+two separate experiments and we keep them apart, because they are measured
+under different conditions and only one of them produces meaningful tokens.
+
+\emph{Capacity.} Against a fixed KV pool, host-tier requests raise peak
+concurrency from 8 to 48 --- and 48 is a lower bound, being the entire offered
+load rather than the system's ceiling. KV is delivered synthetically in this
+experiment, so it establishes capacity only; generated tokens are not
+meaningful.
+% src: paper/data/preload_capacity.json @ f3df05bdb
+
+\emph{Goodput.} In a separate experiment with real KV delivered through the
+prefill handover, 78\% of each host-tier request's transfer overlaps compute,
+yet the unhidden residual and a fixed per-step cost still leave throughput
+2.3\% short of not offloading at all.
+% src: paper/data/{hide_efficiency,pd_decode_goodput}.json @ f3df05bdb
+
 That is the predicted outcome for a 25\,GB/s link, and we present it as a
 validated negative rather than a disappointment: it fixes one end of the
-bandwidth axis.
+bandwidth axis, and the model says where the other end lies.
 \needsgh{The GH200 endpoint comparison (arms, SLO grid, headline capacity and
 SLO-attainment numbers), and the second point on the bandwidth axis that turns
 the cost decomposition into a crossover with a measured crossing point.}
