@@ -1,0 +1,38 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-32B-Instruct",
+    "ctx": 2048,
+    "out_len": 64,
+    "offered": 12,
+    "b_hbm_max": 8,
+    "max_offload": 2,
+    "phase1_tokens": 4,
+    "itl_fallback_ms": 1000.0,
+    "gpu_mem_util": 0.83,
+    "req_timeout": 1800,
+    "arms": "riders",
+    "out": "/mnt/beegfs/benishay/paper_runs/20260905_freeze/hide_eff_riders_2.json"
+  },
+  "rows": [
+    {
+      "arm": "riders",
+      "completed": 12,
+      "errors": 0,
+      "err_sample": [],
+      "phase1_prefill_s": 19.0,
+      "decode_wall_s": 13.8,
+      "decode_tokens": 768,
+      "decode_tok_s": 55.8,
+      "itl_median_ms": 65.93,
+      "itl_p99_ms": 627.05,
+      "peak_running": 10,
+      "stashed": 12,
+      "delivered_real": 2,
+      "delivered_synthetic": 0,
+      "undelivered": 0,
+      "prefix_cache_hit_rate": 0.0,
+      "measured_budget_ms": null,
+      "engine_died": null
+    }
+  ]
+}

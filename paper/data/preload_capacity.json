@@ -1,0 +1,40 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-32B-Instruct",
+    "ctx": 2048,
+    "out_len": 64,
+    "offered": 48,
+    "b_hbm_max": 6,
+    "hybrid_itl_ms": 100000,
+    "gpu_mem_util": 0.83,
+    "req_timeout": 1800,
+    "arms": "all_hbm,mixture",
+    "out": "/mnt/beegfs/benishay/paper_runs/20260905_freeze/preload_capacity.json"
+  },
+  "rows": [
+    {
+      "arm": "all_hbm",
+      "completed": 48,
+      "errors": 0,
+      "err_sample": [],
+      "wall_s": 47.8,
+      "peak_running": 8,
+      "reclaims": 0,
+      "delivered": 0,
+      "undelivered_warnings": 0,
+      "engine_died": null
+    },
+    {
+      "arm": "mixture",
+      "completed": 48,
+      "errors": 0,
+      "err_sample": [],
+      "wall_s": 89.7,
+      "peak_running": 48,
+      "reclaims": 42,
+      "delivered": 42,
+      "undelivered_warnings": 0,
+      "engine_died": null
+    }
+  ]
+}

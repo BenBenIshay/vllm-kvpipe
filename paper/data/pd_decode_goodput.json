@@ -1,0 +1,58 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-32B-Instruct",
+    "ctx": 2048,
+    "out_len": 64,
+    "offered": 12,
+    "b_hbm_max": 8,
+    "max_offload": 0,
+    "phase1_tokens": 4,
+    "itl_fallback_ms": 60.0,
+    "gpu_mem_util": 0.83,
+    "req_timeout": 1800,
+    "arms": "no_riders,riders",
+    "out": "/mnt/beegfs/benishay/paper_runs/20260905_freeze/pd_decode_goodput.json"
+  },
+  "rows": [
+    {
+      "arm": "no_riders",
+      "completed": 12,
+      "errors": 0,
+      "err_sample": [],
+      "phase1_prefill_s": 18.9,
+      "decode_wall_s": 13.4,
+      "decode_tokens": 768,
+      "decode_tok_s": 57.1,
+      "itl_median_ms": 50.5,
+      "itl_p99_ms": 645.09,
+      "peak_running": 7,
+      "stashed": 12,
+      "delivered_real": 0,
+      "delivered_synthetic": 0,
+      "undelivered": 0,
+      "prefix_cache_hit_rate": 0.0,
+      "measured_budget_ms": null,
+      "engine_died": null
+    },
+    {
+      "arm": "riders",
+      "completed": 12,
+      "errors": 0,
+      "err_sample": [],
+      "phase1_prefill_s": 19.0,
+      "decode_wall_s": 13.8,
+      "decode_tokens": 768,
+      "decode_tok_s": 55.8,
+      "itl_median_ms": 70.89,
+      "itl_p99_ms": 653.04,
+      "peak_running": 10,
+      "stashed": 12,
+      "delivered_real": 2,
+      "delivered_synthetic": 0,
+      "undelivered": 0,
+      "prefix_cache_hit_rate": 0.0,
+      "measured_budget_ms": null,
+      "engine_died": null
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "frozen_at": "2026-09-05T11:01:29+03:00",
+  "commit": "f3df05bdb549eb4cc51812eb272cd666283af645",
+  "branch": "hybrid-kv-tiers",
+  "dirty_files": 0,
+  "slurm_job": "2170988",
+  "purpose": "F1-F5 source data for the MLSys 2027 submission",
+  "note": "dirty_files must be 0 for any number quoted in the paper",
+  "valid": true,
+  "commit_end": "decf285d7cc15e9660c69eef0a8f09de7a8478ec",
+  "dirty_end": 0,
+  "invalid_reason": null,
+  "drift_files": [
+    "paper/figs/f4_rider_cost.py",
+    "paper/figs/f5_capacity.py",
+    "paper/tex/README.md"
+  ],
+  "drift_touches_runtime_code": false,
+  "drift_adjudication": "HEAD moved during the run because the operator committed figure scripts and a README mid-flight. Every changed file is under paper/ and none is executed by the harnesses, so all arms ran identical code. Verified by git diff --name-only; recorded rather than overridden. Do NOT relax the automatic check -- it was right to fire."
+}
