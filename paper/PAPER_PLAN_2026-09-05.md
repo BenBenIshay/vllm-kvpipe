@@ -343,16 +343,27 @@ Red-team the draft against this list in W6. Each item names its answer.
 
 ---
 
-## 8. Open decisions needing Ben
+## 8. Decisions
 
-1. **GH200 booking window.** The critical path. Everything above assumes it
-   starts by ~Sep 19 and ends by Oct 3.
-2. **Venue confirmed as MLSys Oct 30?** (with the Oct-3 roll-forward rule to
-   OSDI Dec 8.)
-3. **Author list and affiliations.**
-4. **Writing substrate** — Overleaf with the MLSys style, or LaTeX scaffolded in
-   `paper/tex/` under git. Recommend the latter: figures build from
-   `paper/data/`, and every number stays traceable to a commit.
-5. **ShadowKV baseline** — build it, or cite and argue? Recommend cite-and-argue
-   given 55 days; it is the lossless-vs-lossy point, not a throughput
-   competitor we expect to beat.
+**SETTLED 2026-09-05 (Ben):**
+
+1. **GH200 window: book for ~Sep 19**, ending ~Oct 3. W0–W1 writing proceeds
+   while the box is being provisioned. The Oct-3 roll-forward rule to OSDI '27
+   (Dec 8) stands if the window slips.
+2. **Venue: MLSys 2027, Oct 30.**
+3. **Substrate: Overleaf, MLSys 2027 style.** Working practice, so that the
+   traceability we need is not lost to a web editor:
+   - `paper/tex/` in git is the **source of truth for prose**; Overleaf syncs
+     from it (Overleaf imports a zip, or links a git remote).
+   - `paper/data/*.json` + `paper/figs/*.py` stay in git and are **never edited
+     in Overleaf**. Figures are built locally and the PDFs uploaded.
+   - Every numeric claim in the text carries a `% src:` comment naming the JSON
+     file and commit SHA it came from. Given how many numbers here have been
+     measured, retracted and re-measured, this is not bureaucracy.
+
+**STILL OPEN:**
+
+4. **Author list and affiliations.**
+5. **ShadowKV baseline** — build it, or cite and argue? Recommend
+   cite-and-argue given 55 days; it is the lossless-vs-lossy point, not a
+   throughput competitor we expect to beat.

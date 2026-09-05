@@ -1,0 +1,81 @@
+% Request-level KV tiering for capacity-bound decode
+% Target: MLSys 2027 (deadline 2026-10-30).
+%
+% SUBSTRATE: Overleaf is the editor; THIS directory is the source of truth for
+% prose (paper/PAPER_PLAN_2026-09-05.md section 8). Figures are built locally
+% from paper/data/*.json by paper/figs/*.py and uploaded as PDFs -- they are
+% never edited in Overleaf.
+%
+% CONVENTION, and it is not bureaucracy: every numeric claim carries a
+%   % src: <file>.json @ <commit sha>
+% comment. Numbers in this project have been measured, retracted and
+% re-measured repeatedly; a number without a source is a number we cannot
+% defend in a rebuttal.
+%
+% To build with the real style: drop mlsys2027.sty next to this file
+% (from the MLSys 2027 author kit) -- the conditional below picks it up.
+
+\documentclass[letterpaper]{article}
+
+\usepackage{iftex}
+\IfFileExists{mlsys2027.sty}{%
+  \usepackage[accepted]{mlsys2027}%
+}{%
+  % Local fallback so the draft compiles before the author kit is dropped in.
+  \usepackage[margin=1in]{geometry}
+  \newcommand{\mlsystitlerunning}[1]{}
+  \typeout{WARNING: mlsys2027.sty not found -- compiling in fallback mode.}
+}
+
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+
+% Drafting aids. Set \draftfalse before submission; \showtodos triggers an
+% error if any TODO survives, so none can ship by accident.
+\newif\ifdraft\drafttrue
+\ifdraft
+  \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+  \newcommand{\needsgh}[1]{\textcolor{blue}{[GH200: #1]}}
+\else
+  \newcommand{\todo}[1]{\GenericError{}{UNRESOLVED TODO IN SUBMISSION}{}{}}
+  \newcommand{\needsgh}[1]{\GenericError{}{UNRESOLVED GH200 SLOT}{}{}}
+\fi
+
+% Shorthands for the analytical spine (section 3). Defined once so the symbols
+% cannot drift between sections.
+\newcommand{\Xlink}{X}            % interconnect bandwidth
+\newcommand{\BW}{\mathrm{BW}}     % achieved HBM bandwidth
+\newcommand{\HBM}{\mathrm{HBM}}   % device memory
+\newcommand{\Ckv}{C}              % HBM left for KV after weights
+\newcommand{\effw}{\eta_w}        % weight-read efficiency
+\newcommand{\effkv}{\eta_{kv}}    % paged-KV-read efficiency
+
+\begin{document}
+
+\twocolumn[
+\begin{center}
+{\Large\bf Who Rides Along? Request-Level KV Tiering for Capacity-Bound Decode}\\[1ex]
+\todo{author list and affiliations --- open decision, paper/PAPER\_PLAN\_2026-09-05.md section 8}
+\end{center}
+\vspace{2ex}
+]
+
+\input{sections/00-abstract}
+\input{sections/01-intro}
+\input{sections/02-background}
+\input{sections/03-model}
+\input{sections/04-design}
+\input{sections/05-implementation}
+\input{sections/06-evaluation}
+\input{sections/07-related}
+\input{sections/08-discussion}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}
