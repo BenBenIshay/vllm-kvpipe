@@ -3,7 +3,8 @@
 %
 % STATUS: first full draft, 2026-09-05. Survives every branch of the GH200 gate.
 % Source: seven papers read end-to-end 2026-08-10; positioning table in
-% paper/PAPER_OUTLINE.md section 4.
+% paper/PAPER_OUTLINE.md section 4 (that file is RETIRED as of
+% 2026-09-06; the original is in git at 2bfc6ca5e).
 %
 % The endpoint argument is the load-bearing paragraph. Reviewers will go
 % straight to "why does DirectKV not pre-empt this" -- answer it early and in
@@ -35,9 +36,11 @@ primarily as a capacity-extension mechanism\ldots its performance advantage
 remains bounded by CPU--GPU interconnect bandwidth,'' and report NVLink-C2C
 reducing attention latency by up to $4.2\times$ relative to PCIe. Our
 \S\ref{sec:eval} finds the same boundary from the scheduling side. Their
-evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96; it does not
-include a 70B-class model, which is the configuration our gain law identifies
-as the most favourable.
+evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96, so it does not
+overlap the models we evaluate, and it does not include a 70B-class
+configuration --- which our capacity model identifies as the most favourable
+point of all, and which we therefore report as a confirmatory measurement
+(\S\ref{sec:eval}).
 
 Swap-based offloading is the prior generation and DirectKV's own baseline set:
 FlexGen places KV across GPU, CPU and disk under a linear-programming placement

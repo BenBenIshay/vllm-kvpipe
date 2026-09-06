@@ -6,7 +6,12 @@ If HBM is the binding one, there is ITL headroom -> ride-along requests can
 fill it, bounded by (a) C2C hide budget and (b) the SLO itself.
 """
 
-EFF_BW, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
+# eff_w: the fraction of peak HBM bandwidth a WEIGHT read achieves. 0.75,
+# measured on A100-80 across two models and all contexts, stable to within
+# 0.739-0.773 over the plausible eff_kv range at B=1 (paper/model/p4_*.json).
+# Named EFF_W rather than EFF_BW since 2026-09-06: it applies to the weight
+# term only. Paged KV uses eff_kv() below, which is NOT a constant.
+EFF_W, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
 
 
 class HW:
@@ -89,7 +94,7 @@ def step_ms(m, hw, S, B_res, B_off=0.0, stage=1.0, f=0.0):
     Weights and paged KV are charged at DIFFERENT efficiencies; see EFF_KV_CURVE.
     """
     kv_bytes = (B_res + stage*B_off)*m.k*S
-    t_mem = m.w/(hw.bw*EFF_BW) + kv_bytes/(hw.bw*eff_kv(kv_bytes))
+    t_mem = m.w/(hw.bw*EFF_W) + kv_bytes/(hw.bw*eff_kv(kv_bytes))
     t_cmp = 2*m.p*(B_res+B_off)/(hw.fl*EFF_FLOPS)
     return max(t_mem, t_cmp)*1e3
 
@@ -135,7 +140,7 @@ def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0):
 
 def report(hw, slo, stage=1.0):
     print(f"\n{'='*100}")
-    print(f"{hw.n}  |  ITL SLO {slo} ms  |  HBM-read time {hw.hbm/(hw.bw*EFF_BW)*1e3:.0f} ms"
+    print(f"{hw.n}  |  ITL SLO {slo} ms  |  weight-rate HBM read {hw.hbm/(hw.bw*EFF_W)*1e3:.0f} ms"
           f"  |  link {hw.x/1e9:.0f} GB/s  |  stage x{stage}")
     print('='*100)
     print(f"{'model':<22}{'ctx':>7}{'B_cap':>7}{'B_slo':>7}  {'bound':<9}"
