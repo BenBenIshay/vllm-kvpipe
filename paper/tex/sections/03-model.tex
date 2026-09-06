@@ -83,8 +83,8 @@ weight-to-KV ratio and the applicability gate in (d) is model-dependent rather
 than a property of the device.
 
 The transfer budget is still $\mathrm{ITL}\cdot\Xlink$, and most of it is still
-bought with \emph{weight-read time}. On GH200, a 70B model spends roughly
-22\,ms of a 32\,ms step reading weights, during which nothing else contends for
+bought with \emph{weight-read time}. On GH200, Qwen-32B spends roughly
+21\,ms of a 34\,ms step reading weights, during which nothing else contends for
 the interconnect. The opportunity is time, not spare bandwidth.
 
 \subsection{(c) The gain law}
@@ -121,26 +121,43 @@ surprised.
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-Model (GH200-96) & weights & $\Ckv$ & ITL$_0$ & capacity & tput \\
+Model (GH200-96) & weights & $\Ckv$ & $\HBM/\Ckv$ & ITL$_0$ & capacity & tput \\
 \midrule
-Llama-8B fp16      & 16.0\,GB & 76.0\,GB & 46.6\,ms & $\times$1.19 & $\times$1.26 \\
-Qwen-32B fp16      & 64.0\,GB & 28.0\,GB & 34.1\,ms & $\times$1.46 & $\times$1.50 \\
-Llama-70B fp8      & 72.7\,GB & 19.3\,GB & 33.0\,ms & $\times$1.68 & $\times$1.71 \\
+Llama-8B fp16        & 16.0\,GB & 76.0\,GB & 1.3 & 46.6\,ms & $\times$1.19 & $\times$1.26 \\
+Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.6 & 43.3\,ms & $\times$1.27 & $\times$1.31 \\
+Qwen-32B \textbf{fp16} & 64.0\,GB & 28.0\,GB & 3.4 & 34.1\,ms & $\times$1.46 & $\times$1.50 \\
+Llama-70B fp8        & 72.7\,GB & 19.3\,GB & 5.0 & 33.0\,ms & $\times$1.68 & $\times$1.71 \\
 \bottomrule
 \end{tabular}
-\caption{A second memory tier is an amplifier on $\HBM/\Ckv$: an 8B model
-leaves so much HBM free that there is nothing to buy. \emph{capacity} is
-$B_{\mathrm{tot}}/B_0$, which Eq.~\ref{eq:gain} approximates to within 6\%
-($\times$1.78 predicted vs $\times$1.68 for 70B, the gap being the staging
-buffer's memory cost). \emph{tput} additionally charges the step lengthening.
-The 70B weight figure is the \emph{measured} fp8 checkpoint (72.7\,GB across 15
-shards), not the nominal 70\,GB; the heavier checkpoint leaves less room for KV
-and therefore raises the gain.}
+\caption{A second memory tier is an amplifier on $\HBM/\Ckv$, and the table is
+monotone in it. \emph{capacity} is $B_{\mathrm{tot}}/B_0$, which
+Eq.~\ref{eq:gain} approximates to within 3\% for Qwen-32B fp16 ($\times$1.51
+predicted vs $\times$1.46); the residual is the staging buffer's memory cost.
+\emph{tput} additionally charges the step lengthening. \textbf{The two Qwen-32B
+rows differ only in weight precision}, which isolates $\HBM/\Ckv$ from every
+other architectural variable --- see below. The 70B weight figure is the
+\emph{measured} fp8 checkpoint (72.7\,GB across 15 shards), not the nominal
+70\,GB.}
 % src: paper/model/killer_v2.py, analyze(S=8192, GH200, slo=50, stage=0)
 \label{tab:gain}
 \end{table}
+
+\paragraph{Weight precision is the clean lever on $\HBM/\Ckv$.} Comparing
+models of different sizes moves the weight footprint, but it also moves layer
+count, KV-head count and architecture, so a trend across 8B, 32B and 70B
+confounds the quantity the law is about with three others. Halving a
+\emph{single} model's weight precision moves $\HBM/\Ckv$ and nothing else: the
+two Qwen-32B rows above share an architecture, a tokenizer and a KV geometry,
+and differ only in that fp8 weights leave 60\,GB for KV where fp16 leave
+28\,GB. The law predicts the gain should fall from $\times$1.50 to
+$\times$1.31, and \S\ref{sec:eval} tests that directly.
+
+The same observation has a practical edge, which \S\ref{sec:discussion} takes
+up: quantizing \emph{weights} is not neutral to a memory system, it actively
+removes its headroom, while quantizing \emph{KV} scales both cohorts together
+and composes.
 
 \paragraph{The model reproduces measurements it was not fitted to.} Because the
 weight and KV terms carry different efficiencies, Eq.~\ref{eq:step} predicts a
@@ -153,19 +170,20 @@ predicting equality --- reproduced at $1.46\times$ against $1.42\times$
 measured.
 
 Several of these parameters are measured with error, so it is worth asking
-which ones the projection actually depends on. For 70B on GH200-96 at 8K,
-perturbing the bandwidth efficiencies barely moves it: a $\pm20\%$ error in
-$\effkv$ spans $\times1.67$--$\times1.76$, and $\effw$ over 0.70--0.80 spans
-$\times1.65$--$\times1.74$. The reason is structural --- the gain depends on a
+which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
+8K, perturbing the bandwidth efficiencies barely moves it: a $\pm20\%$ error in
+$\effkv$ spans $\times1.47$--$\times1.55$, and $\effw$ over 0.70--0.80 spans
+$\times1.47$--$\times1.52$. The reason is structural --- the gain depends on a
 \emph{ratio}, so a bandwidth error largely cancels between the step-time
 numerator and the capacity denominator.
 
 The parameter that does matter is the \textbf{weight footprint}. Moving it from
-70.0 to 75.0\,GB spans $\times1.62$--$\times1.79$, because weights sit in
-$\Ckv = \HBM - W$ and are not cancelled by anything. This is why we use the
-measured checkpoint size rather than the nominal parameter count: for a
-quantized model the two differ by several gigabytes, and the error propagates
-undamped into the headline.
+60 to 68\,GB spans $\times1.45$--$\times1.57$, because weights sit in
+$\Ckv = \HBM - W$ and are cancelled by nothing. This is why we use measured
+checkpoint sizes rather than nominal parameter counts --- for a quantized model
+the two differ by gigabytes and the error propagates undamped into the headline
+--- and it is why halving weight precision is the sharpest lever we have on
+$\HBM/\Ckv$.
 % src: paper/model/killer_v2.py sensitivity sweep, 2026-09-06
 
 Note the direction of the $\effkv$ term, because it is our main downside risk:

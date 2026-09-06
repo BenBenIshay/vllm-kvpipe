@@ -20,11 +20,16 @@ decide in one line whether a second memory tier is worth building.}
 
 \subsection{Anti-scaling}
 
-\todo{Address head-on: the gain shrinks as HBM grows --- for 70B fp8,
-x1.71 on GH200-96 falls to x1.32 on GH200-144, because the larger device leaves
-C = 64.3 GB instead of 19.3 GB and the HBM/C amplifier collapses. This is the
-same structural decay we cite against CPU-attention offload. The answer is that weights grow faster than HBM (MoE, 405B+), so
-HBM/C trends favourably. Say it ourselves.}
+\todo{Address head-on: the gain shrinks as HBM grows, and for our primary model
+it does not merely shrink --- it switches OFF. Qwen-32B fp16 goes from x1.50 on
+GH200-96 (C = 28 GB) to x1.00 on GH200-144 (C = 73 GB), because at that C the
+workload is no longer capacity-bound at all and the applicability gate of
+Eq. 4 stops admitting. Llama-70B fp8 decays more gently, x1.71 to x1.32.
+State it in exactly those terms: this is the same structural decay we cite
+against CPU-attention offload, and the honest answer is that weights are
+growing faster than HBM (MoE, 405B+), so HBM/C trends favourably -- plus the
+gate itself is the deployment rule, so a system that switches off when it
+should is behaving correctly, not failing.}
 
 \subsection{Composition}
 

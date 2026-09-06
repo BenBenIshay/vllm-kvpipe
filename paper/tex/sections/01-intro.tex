@@ -65,11 +65,11 @@ is bounded by the sum:
 \small
 \begin{tabular}{lrr}
 \toprule
-Llama-70B fp8, 8K, GH200-96 & KV read per step & batch \\
+Qwen-32B fp16, 8K, GH200-96 & KV read per step & batch \\
 \midrule
-all-HBM (vLLM, SGLang)  & 19\,GB HBM, \textbf{0 link} & 7 \\
-all-host (DirectKV)     & \textbf{0 HBM}, 13\,GB link & 5 \\
-\textbf{both (this paper)} & 19\,GB HBM \textbf{+} 13\,GB link & \textbf{12} \\
+all-HBM (vLLM, SGLang)  & 28\,GB HBM, \textbf{0 link} & 13 \\
+all-host (DirectKV)     & \textbf{0 HBM}, 15\,GB link & 7 \\
+\textbf{both (this paper)} & 28\,GB HBM \textbf{+} 15\,GB link & \textbf{19} \\
 \bottomrule
 \end{tabular}
 \caption{Each single-memory design leaves one of the two KV paths completely
@@ -86,8 +86,10 @@ configurations. Two consequences contradict the obvious intuition. Long context
 does \emph{not} help: it shrinks the HBM-resident cohort and the affordable
 host cohort in the same proportion, leaving their ratio unchanged. And the
 value of a second tier tracks \textbf{how much of memory the weights ate},
-not model size --- an 8B model leaves so much HBM free that there is nothing to
-buy, while a 70B model leaves little and gains most.
+not model size. An 8B model leaves so much HBM free that there is nothing to
+buy; a 32B model at fp16 leaves 28\,GB and gains materially. The sharpest
+demonstration is that \emph{the same model at two weight precisions} lands at
+two different points on the curve.
 
 The model earns its place by explaining a published result its own authors do
 not. DirectKV reports being ``slightly slower than SGLang'' on Llama-3.1-8B and
