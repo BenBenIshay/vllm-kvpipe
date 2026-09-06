@@ -311,7 +311,7 @@ Red-team the draft against this list in W6. Each item names its answer.
    and goodput (real KV, `pd_decode_goodput.py`).
 3. **"You are a policy on someone else's mechanism."** → The spine ablation
    (§4.3 / C11), on one substrate. If it is not run, this criticism is correct.
-4. **"The gain shrinks as HBM grows"** (70B: ×1.59 on GH200-96 → ×1.12 on
+4. **"The gain shrinks as HBM grows"** (70B: ×1.71 on GH200-96 → ×1.32 on
    GH200-144). → Answer head-on before a reviewer does: weights are growing
    faster than HBM (MoE, 405B+), so `HBM/C` trends favourably. Structurally the
    same decay we cite against NEO, and we should say so ourselves.
