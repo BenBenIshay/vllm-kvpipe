@@ -1,13 +1,12 @@
 % ============================================================================
 % Section 8 -- discussion and limitations.
 %
-% STATUS: future-work subsection DRAFTED 2026-09-05; the rest remain skeletons
-% for W5.
-%
-% The coherence subsection exists because it is the first question a reader on
-% Grace-Hopper hardware will ask ("you have a coherent link, why are you
-% copying at all?"), and the answer is not the obvious one. Answer it in the
-% paper rather than in a rebuttal.
+% 8.5 REWRITTEN 2026-09-06. The previous version answered the wrong question --
+% it argued about demand-fetching on the READ path, which is not what was
+% proposed. The actual proposal concerns the WRITE path: use coherence to
+% eliminate the device-to-host mirroring of newly generated KV. That is correct,
+% and DirectKV's Alg. 3 already does it, which sharpens rather than weakens the
+% point.
 % ============================================================================
 
 \section{Discussion and limitations}
@@ -15,107 +14,101 @@
 
 \subsection{The applicability window is a finding}
 
-\todo{Restate the gate and the gain law as a deployment rule. The window is
-narrow and saying so precisely is a contribution: a practitioner can decide in
-one line whether this applies to them.}
+\todo{Restate the gate and the capacity multiplier as a deployment rule. The
+window is narrow and saying so precisely is a contribution: a practitioner can
+decide in one line whether a second memory tier is worth building.}
 
 \subsection{Anti-scaling}
 
-\todo{Address head-on before a reviewer raises it: the gain shrinks as HBM
-grows (70B, $\times$1.59 on GH200-96 to $\times$1.12 on GH200-144) --- the same
-structural decay we cite against CPU-attention offload. The answer is that
-weights are growing faster than HBM (MoE, 405B+), so $\HBM/\Ckv$ trends
-favourably. Say it ourselves.}
+\todo{Address head-on: the gain shrinks as HBM grows (70B, x1.63 on GH200-96 to
+x1.12 on GH200-144) --- the same structural decay we cite against CPU-attention
+offload. The answer is that weights grow faster than HBM (MoE, 405B+), so
+HBM/C trends favourably. Say it ourselves.}
 
 \subsection{Composition}
 
 \todo{KV quantization is neutral to the relative gain --- it scales the
-capacity batch and the rider count together --- so the two compose. Weight
-quantization hurts, by giving back the $\HBM/\Ckv$ amplifier. Measure rather
+capacity batch and the affordable host cohort together --- so the two compose.
+Weight quantization hurts, by giving back the HBM/C amplifier. Measure rather
 than assert.}
 
 \subsection{Limitations}
 
 \todo{Host memory pressure and the pinned mirror; the per-layer launch floor
 (\S\ref{sec:impl}); speculative decoding unsupported on the pool path; the
-prefill-node transport is emulated rather than integrated with a production
-P/D stack; multi-tier and disk untouched.}
+prefill transport is emulated rather than integrated with a production P/D
+stack; CXL and NVMe tiers untouched.}
 
-\subsection{Zero-copy, coherence, and what is actually free}
+\subsection{What coherence removes: the staging tax}
 \label{sec:discussion:coherence}
 
-Our host tier stages: each layer's rider KV is copied from a pinned host mirror
-into a rolling GPU buffer just before that layer's attention. On hardware whose
-CPU and GPU share a cache-coherent address space, the obvious question is why
-we copy at all --- if the GPU can read host memory coherently, could the mirror
-and the device tensor not simply be the same memory, kept consistent by the
-hardware at no cost? The question is worth answering carefully, because the
-intuitive answer is wrong in an instructive way.
+Our implementation pays two costs that the memory system's design does not
+require, and both are artifacts of how it moves bytes rather than of where it
+decides to put them.
 
-\paragraph{The cost splits in two, and only one half is intrinsic.} A rider
-costs us a \emph{transport} term --- the bytes that must cross the link,
-measured at 4.66\,ms per rider at 8K on PCIe --- and a \emph{staging} term: the
-rolling-slot bookkeeping, the per-layer scatter, the device-to-host write of
-each newly generated token, and the gather/scatter that splits the batch into
-two attention calls. The staging term is most of our fixed per-step cost, and
-it is an artifact of the mechanism rather than of the problem. A zero-copy
-attention kernel that reads host addresses directly~\cite{directkv} eliminates
-it by construction: there is no staging buffer to manage, and no mirror to keep
-consistent because the host copy simply \emph{is} the KV cache. The
-synchronisation cost is not something to optimise; with one copy it does not
-exist. Our measured fixed cost should therefore be read as a tax for not having
-that kernel, and \S\ref{sec:eval} reports what removing it is worth.
+The first is a \textbf{bounce buffer}. The host tier keeps $k$ rolling KV
+tensors in device memory, sized to the host cohort's working set, and streams a
+layer's KV into slot $L \bmod k$ before that layer's attention reads it. That
+buffer consumes HBM that the memory system just worked to free, and every byte
+of KV therefore lands in device memory twice.
 
-\paragraph{Coherence does not make the transport free.} What it makes it is
-\emph{implicit}. Cache coherence is a guarantee about \emph{visibility}, not a
-mechanism for cheaper \emph{transport}: when the GPU touches a line resident in
-host memory, the hardware fetches it over the interconnect at that moment, at
-link bandwidth. The bytes are the same bytes. What changes is who decides
-\emph{when} they move --- and for us that is precisely the wrong thing to give
-away. Our design overlaps a rider's layer-$L$ transfer with the compute of
-earlier layers, which is where 78\% of it disappears. A demand-fetched coherent
-read happens when the kernel touches the line: inside the attention kernel, at
-cache-line granularity, with no prefetch distance and the latency fully
-exposed. Replacing one large pipelined bulk transfer with many small
-demand-fetched ones is the classic unified-memory paging cliff, and we would
-expect it to be worse than staging, not free.
+The second is \textbf{mirroring on the write path}. Each decode step projects
+new $K,V$ for every host-tier request, and we copy them device-to-host so the
+authoritative copy stays current --- an explicit transfer per layer per step,
+plus the bookkeeping that keeps two copies consistent.
 
-The productive reading of the idea is therefore not ``let coherence
-synchronise two copies'' but ``keep one copy and let the kernel stream it
-under software control'' --- which is what a zero-copy attention kernel already
-does. Coherence is what makes that legal; it is not itself the optimisation.
+A coherent interconnect removes both, and the mechanism is the same in each
+case: \textbf{stop keeping two copies}. If a host-tier request's KV blocks are
+allocated in mapped host memory that the GPU can address directly, the
+attention kernel reads them in place --- no staging slot --- and the kernel's
+own KV write lands in host memory directly, so there is no mirror to
+synchronise and no device-to-host copy to issue. The synchronisation problem
+does not get cheaper; it ceases to exist, because there is only one copy.
 
-\paragraph{Where coherence buys something a zero-copy read does not.} One place:
-the \emph{write} path. Each decode step projects new $K,V$ for every rider, and
-we currently copy those to the host mirror explicitly to keep it authoritative.
-If a rider's KV blocks are mapped host memory, the cache-write during attention
-lands there directly and coherence handles visibility --- no explicit
-device-to-host copy, no dual write, and none of the bookkeeping that keeps two
-copies in step. The effect is small in absolute terms (we measured an
-asynchronous version of that copy at 1.6\,ms per step) but it removes a class
-of state rather than an amount of time, and that state is where migration bugs
-live.
+It is worth being precise about what this does \emph{not} buy, since coherence
+is easy to over-read. It does not make the transfer free. Coherence is a
+guarantee about \emph{visibility}, not a cheaper transport: the same bytes
+still cross the link at link bandwidth, and a KV byte the GPU reads is fetched
+when the kernel touches it. What changes is that the bytes cross once instead
+of twice, and that no separate copy engine, staging allocation, or consistency
+bookkeeping stands between them.
 
-\paragraph{A policy question this opens, which we leave open.} If a rider's KV
-exists once, coherently, then \emph{tier migration becomes nearly free in one
-direction}: demoting a request to the host tier is a policy decision rather
-than a copy. Promotion could then be lazy and partial, with the hardware's own
-page migration relocating hot blocks into device memory while the scheduler
-supplies hints rather than issuing transfers. That is an appealing division of
-labour --- placement by hardware at page granularity, policy by the scheduler
-at request granularity --- and to our knowledge nobody has evaluated it for KV
-cache.
+Nor does it require the host to observe anything. One might expect the CPU to
+need a signal when a new token's KV becomes visible, and there is no portable
+way to snoop a coherence protocol to obtain one. But in this design nothing on
+the host consumes the KV: the host copy exists so that the \emph{GPU} can read
+it back on a later step. There is no consumer to notify. Were one introduced
+--- a prefill node handing off, or a CPU-side eviction policy --- the standard
+construction is a release-ordered completion flag written after the KV with
+system-scope fencing and polled by the CPU, not coherence snooping; the
+ordering, not the notification, is the hard part.
 
-We flag two reasons it is future work rather than a result. First, we cannot
-test it: it requires a coherent platform and a kernel we do not own. Second,
-and more interesting, it risks the very failure we argue against elsewhere in
-this paper. Hardware page migration operates at 4\,KB or 2\,MB granularity and
-migrates on access, which is structurally the same reactive, fine-grained
-policy whose migration overhead dominates in the token-granularity placement
-literature~\cite{calkv}. Our own claim is that \emph{request}-granularity
-movement avoids that thrash because whole requests move once, at controlled
-moments. Handing placement back to a page-fault-driven mechanism would give
-that property up, and whether the hardware's migration is cheap enough to
-survive it is an empirical question we have not answered. It is the right next
-experiment; it is not a free win, and we would rather say so than imply the
-coherent link makes the problem disappear.
+Finally, the honest attribution: this is what DirectKV's fused decode kernel
+already does. Its Alg.~3 appends each newly projected $(k_t, v_t)$ to the KV
+cache in CPU memory from inside the kernel, and its design eliminates the
+staging buffer by construction --- ``no buffer'' is the first half of its
+title. The consequence for us is therefore specific and useful rather than
+speculative: \textbf{our bounce buffer and our device-to-host mirroring are a
+single tax, paid for running on a staged backend, and one substrate change
+removes both.} Our tier backend interface is written to allow exactly that
+substitution (\S\ref{sec:impl}), and \S\ref{sec:eval} reports what the staged
+path costs so the difference can be priced.
+
+\subsection{Placement by hardware, policy by scheduler}
+
+A further consequence, which we flag as future work because we cannot test it.
+With a single coherent copy, demoting a request to the host tier becomes a
+policy decision rather than a data movement, and promotion could be lazy and
+partial --- the hardware's page migration relocating hot blocks into device
+memory while the memory system supplies hints rather than issuing transfers.
+That is an appealing division of labour, and to our knowledge nobody has
+evaluated it for KV cache.
+
+We are wary of it for one specific reason. Hardware page migration operates at
+4\,KB or 2\,MB granularity and migrates on access, which is structurally the
+same reactive, fine-grained policy whose migration overhead dominates in the
+token-granularity placement literature~\cite{calkv}. Our own claim is that
+request-granularity movement avoids that thrash because whole requests move
+once, at controlled moments. Handing placement back to a fault-driven mechanism
+gives that property up, and whether the hardware's migration is cheap enough to
+survive it is an empirical question we have not answered.

@@ -68,28 +68,24 @@ ms). $B{=}16,S{=}4096$ and $B{=}8,S{=}8192$ both measure $17.17$ ms.
 We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
 with identical prompts in both runs --- so prefill and warmup cancel exactly.
 
-\subsection{(b) A hardware constant that is not one}
+\subsection{(b) The step time is model-dependent}
 
-We initially expected that at capacity a step reads all of HBM once, giving
-$\mathrm{ITL}_0 \approx \HBM/\BW$ --- a quantity depending only on the device,
-not the model. That would have made the applicability gate below clean and
-model-independent.
-
-\textbf{Measurement falsifies it.} Full-pool ITL on A100-80 is $79.3$ ms for
+At capacity a step reads all of device memory once, which invites the
+simplification $\mathrm{ITL}_0 \approx \HBM/\BW$: a quantity fixed by the
+device alone. It does not hold. Full-pool ITL on A100-80 is $79.3$ ms for
 Llama-8B against $55.7$ ms for Qwen2.5-32B,
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
-a $1.4\times$ spread where equality was predicted. The cause is that weights
-and paged KV do not stream at the same efficiency
-(\S\ref{sec:model:params}); a model that is mostly weights reads its HBM faster
-than one that is mostly KV. We report this because the falsified version is the
-intuitive one, and because the gate that depends on it survives only in a
-weaker, model-dependent form.
+a $1.4\times$ spread across two models on identical hardware. The cause is that
+weights and paged KV do not stream at the same efficiency
+(\S\ref{sec:model:params}): a model that is mostly weights reads device memory
+faster than one that is mostly KV, so $\mathrm{ITL}_0$ depends on the
+weight-to-KV ratio and the applicability gate in (d) is model-dependent rather
+than a property of the device.
 
-What does survive: the rider budget is still $\mathrm{ITL}\cdot\Xlink$, and most
-of it is still bought with \emph{weight-read time}. On GH200, a 70B model
-spends roughly 22\,ms of a 32\,ms step reading weights, and during that stretch
-nothing else contends for the interconnect. The free ride is real, but it is
-time, not bandwidth.
+The transfer budget is still $\mathrm{ITL}\cdot\Xlink$, and most of it is still
+bought with \emph{weight-read time}. On GH200, a 70B model spends roughly
+22\,ms of a 32\,ms step reading weights, during which nothing else contends for
+the interconnect. The opportunity is time, not spare bandwidth.
 
 \subsection{(c) The gain law}
 
