@@ -31,6 +31,10 @@ Run with --prompts to narrow to the failing prompt once identified.
 
 from __future__ import annotations
 
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
+
 import argparse
 import json
 import os
@@ -137,11 +141,11 @@ def run(port: int, arm: str, prompts: list[str]) -> list[str]:
     except Exception as e:                                   # noqa: BLE001
         return [f"<err: {e}>"] * len(prompts)
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        time.sleep(4)
+        # SIGTERM alone drained nova06/07 on 2026-09-06: a wedged
+        # engine ignores it and the survivor is what SLURM cannot
+        # kill. terminate_engine verifies the GROUP is empty and
+        # escalates. See bench_teardown.py.
+        terminate_engine(proc, label=__name__)
 
 
 def reclaim_count(arm: str) -> int:

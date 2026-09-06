@@ -1,5 +1,10 @@
 import json, os, subprocess, sys, time, signal, urllib.request
 from concurrent.futures import ThreadPoolExecutor
+
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
 sys.path.insert(0, "/mnt/beegfs/benishay/vllm-kvpipe")
 ROOT="/mnt/beegfs/benishay/vllm-kvpipe"; PY=f"{ROOT}/.venv/bin/python"
 MODEL="Qwen/Qwen2.5-0.5B-Instruct"; PROMPT="The quick brown fox jumps over the lazy dog and then"
@@ -37,9 +42,7 @@ def run(port,b_hbm_max,stream,n=8):
             outs=list(ex.map(lambda i: one(port,i), range(n)))
         return outs
     finally:
-        try: os.killpg(os.getpgid(p.pid),signal.SIGTERM)
-        except Exception: pass
-        time.sleep(3)
+        terminate_engine(p, label=__name__)
 
 print("=== MIXED batch: 8 identical prompts, b_hbm_max=4 (4 hbm + 4 cpu), stream ON ===",flush=True)
 mixed=run(9895,4,True,8)

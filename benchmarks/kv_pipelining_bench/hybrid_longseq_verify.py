@@ -39,6 +39,10 @@ TWO SETTINGS ARE LOAD-BEARING, and getting either wrong fakes a failure:
 
 from __future__ import annotations
 
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
+
 import json
 import os
 import re
@@ -119,11 +123,11 @@ def main() -> int:
             list(ex.map(one, PROMPTS))
         time.sleep(3)
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        time.sleep(3)
+        # SIGTERM alone drained nova06/07 on 2026-09-06: a wedged
+        # engine ignores it and the survivor is what SLURM cannot
+        # kill. terminate_engine verifies the GROUP is empty and
+        # escalates. See bench_teardown.py.
+        terminate_engine(proc, label=__name__)
 
     pat = re.compile(r"max\|diff\|=([0-9.eE+-]+) mismatched_rows=(\d+)/(\d+)")
     worst, checked, bad_steps, bad_rows = 0.0, 0, 0, 0

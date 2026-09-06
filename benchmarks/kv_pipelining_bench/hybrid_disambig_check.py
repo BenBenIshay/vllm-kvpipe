@@ -1,5 +1,10 @@
 import json, os, subprocess, time, signal, urllib.request
 from concurrent.futures import ThreadPoolExecutor
+
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
 PY="/mnt/beegfs/benishay/vllm-kvpipe/.venv/bin/python"; MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 PROMPT="The quick brown fox jumps over the lazy dog and then"
 def launch(port, stream, bhm):
@@ -29,9 +34,7 @@ def run(port,stream,bhm):
         if not ready(port): return None
         with ThreadPoolExecutor(max_workers=8) as ex: return list(ex.map(lambda i: one(port), range(8)))
     finally:
-        try: os.killpg(os.getpgid(p.pid),signal.SIGTERM)
-        except Exception: pass
-        time.sleep(3)
+        terminate_engine(p, label=__name__)
 r_res=run(9897,False,8)   # all resident (stream off), prefix-cache OFF
 r_str=run(9898,True,4)    # mixed streamed (4+4), prefix-cache OFF
 print("RESIDENT (stream off): distinct outputs =", len(set(r_res)) if r_res else "ERR")
