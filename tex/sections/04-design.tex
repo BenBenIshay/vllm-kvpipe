@@ -1,40 +1,156 @@
-% STATUS: skeleton, 2026-09-05. Write in W1. Branch-independent.
+% ============================================================================
+% Section 4 -- design. First full draft 2026-09-06.
+%
+% Framed as the design of a MEMORY SYSTEM with four components, not as a bag of
+% policies. Everything described here is implemented and unit-tested; section 5
+% covers how, and what it cost.
+%
+% Two design decisions here came from measurements that contradicted the
+% obvious choice, and both are stated as such because they are the parts a
+% reviewer cannot get from the architecture diagram: context length does not
+% discriminate between tiers, and an open-loop cost model is not a sufficient
+% migration gate.
+% ============================================================================
+
 \section{Design}
 \label{sec:design}
 
-\subsection{Which requests ride}
-\todo{Tier assignment from observable per-request state. The key analytical
-finding, which is negative and worth reporting: CONTEXT LENGTH DOES NOT
-DISCRIMINATE between tiers -- a long request frees $S\cdot k$ of HBM but spends
-$S\cdot k$ per step of interconnect, the same cancellation as design rule (a)
-in \S\ref{sec:model}. The discriminating signal is TEMPORAL: an idle request
-holds HBM while consuming no bandwidth. Contrast with OmniServe's external
-LS/BE label.}
+The memory system has four components: an \emph{allocator} that lets a
+host-tier request hold no device blocks, a \emph{placement} rule that decides
+which requests are host-tier, an \emph{admission} controller that bounds how
+much interconnect traffic a step may carry, and a \emph{migration} controller
+that moves requests between tiers as load changes. We describe each in terms of
+the property it must guarantee, since that is what constrains the design.
 
-\subsection{How many ride: SLO-targeted admission}
-\todo{B1, the seq-length-aware roofline. A per-admission cumulative check
-against a hide budget, re-evaluated on each admission, rather than a static
-count. Two things that had to be fixed and are worth stating because they are
-the kind of error a roofline invites: the per-token transfer constant must be
-DERIVED from the model (ours was 2x wrong for 20 runs, charging every rider
-half its real cost), and the hide budget must be MEASURED from steps carrying
-no rider -- using the live EMA is circular.}
-\todo{B2, the closed-loop guardrail: EMA of observed step time with hysteresis
-against the SLO, gating new admissions only.}
+\subsection{Allocation: tiered requests must be additive}
+\label{sec:design:alloc}
 
-\subsection{When a request moves: migration as a probe}
-\todo{THE INTERESTING PART, and it came from a failure. An open-loop cost model
-is necessary but NOT SUFFICIENT: the roofline sees transfer bytes and cannot
-see the host path's fixed per-step cost, so it approved a demotion that made
-ITL worse (24\,ms against a 6\,ms SLO). The fix is to treat a demotion as a
-PROBE -- record the best recent steady-state ITL, demote, wait, and promote
-back with exponential backoff if ITL regressed beyond a margin.}
-\todo{Two details only measurement revealed, both worth a sentence: the
-baseline must be a recent MINIMUM rather than the instantaneous EMA (the EMA
-picks up startup transients and scores a harmful demotion as beneficial), and
-the loop needs a warmup or the first demotion fires before any steady state
-exists.}
-\todo{Contrast with the CAL letter's token-level reactive migration, whose own
-results show overhead dominating below ~60\% sparsity. Our testable claim:
-request granularity avoids that thrash. Adversarial-oscillation test measured
-0.0925 migrations/step against a 0.0938 bound.}
+The interior point of Table~\ref{tab:endpoints} is only reachable if a
+host-tier request is served \emph{in addition to} a full device-resident
+cohort. If it instead displaces a resident, the served total is bounded by
+whichever memory is larger and there is nothing to gain --- and this is not
+hypothetical, since it is what our first implementation did
+(\S\ref{sec:eval:capacity}).
+
+The requirement is therefore sharp: \textbf{a host-tier request must own zero
+blocks in the device KV pool}, not merely fewer. Three mechanisms are needed
+together, and the third only became apparent under test.
+
+\emph{Zero-block admission.} The scheduler admits a host-tier request without
+allocating device blocks. Its KV is delivered directly into host memory by the
+prefill transport (\S\ref{sec:background:pd}), and the request is admitted only
+after the worker confirms that the KV is present --- the scheduler cannot
+observe a device-to-host transfer itself, and guessing would lose a request's
+history whenever delivery failed.
+
+\emph{No prefill allocation.} A rider's prompt is declared already computed, so
+the scheduler schedules no prefill for it and allocates nothing even
+transiently. Without this, a request's KV lands in device memory before being
+reclaimed, and peak residency --- not steady-state residency --- is what bounds
+the batch.
+
+\emph{Head-of-line release.} The waiting queue stops at the first request it
+cannot allocate for. Since a host-tier request needs no blocks, a
+block-starved request ahead of it in the queue would block admissions that
+require nothing at all. A request that cannot be allocated is deferred so the
+scan continues.
+
+For requests already resident when the system decides to demote them, the
+allocator additionally supports reclaiming a request's entire block list in
+place and refilling it on promotion. Reclaim is all-or-nothing and is driven by
+a worker acknowledgement, for the same reason zero-block admission is.
+
+\subsection{Placement: which requests are host-tier}
+\label{sec:design:placement}
+
+Given that some requests must be host-tier, which? The intuitive answer is the
+long ones, since KV grows with context and long requests are what exhaust
+memory. \textbf{That intuition is wrong, and the reason is the cancellation of
+\S\ref{sec:model}.} A request of context $S$ frees $S\!\cdot\!k$ bytes of
+device memory by moving to the host tier, and spends $S\!\cdot\!k$ bytes of
+interconnect on every subsequent step. Both scale identically in $S$, so
+context length shifts a request's cost and its benefit by the same factor and
+cannot discriminate between tiers. Ranking by context length is therefore no
+better than ranking arbitrarily, which our ablation confirms
+(\S\ref{sec:eval:ablation}).
+
+What does discriminate is \textbf{temporal}: a request that is not generating
+holds device memory while consuming no bandwidth at all. Idle time between
+turns in a multi-turn session, and requests near the end of their generation,
+are the cases where the two costs come apart. Placement therefore scores a
+request on its expected remaining generation and its idle time rather than its
+size, and we deliberately keep the rule a transparent threshold so that the
+paper can explain it; a learned variant is only worth introducing if the simple
+rule leaves measurable headroom.
+
+We note what this rule does \emph{not} require. It uses only state the serving
+system already has, so it needs no externally supplied service class ---
+unlike prior mixed-tier scheduling, which is driven by a
+latency-sensitive/best-effort label the deployment must provide. Our target is
+a single-class deployment where no such label exists.
+
+\subsection{Admission: how much the interconnect can absorb}
+\label{sec:design:admission}
+
+Each host-tier request costs $S\!\cdot\!k$ bytes of interconnect per step. If
+the sum exceeds what a step can hide, the resident cohort's latency degrades
+and the system has traded a latency violation for capacity it did not need.
+Admission therefore enforces a per-step transfer budget.
+
+The budget is the product of the step time and the achieved interconnect
+bandwidth, with a margin. Two details matter more than the formula, and both
+are places where an earlier version of this controller was wrong in a way that
+measurement caught.
+
+\emph{The budget must be measured, not declared.} We derive the step time from
+steps that carry no host-tier traffic, rather than from a configured constant
+or from the running latency average. A configured constant is stale the moment
+the workload changes; the running average is circular, because host-tier
+traffic is precisely what it is being used to bound.
+
+\emph{The per-request cost must be derived from the model.} KV bytes per token
+follow from layer count, KV-head count and head dimension, and taking them from
+configuration invites a mismatch that is silent --- a value for a 32-layer
+model applied to a 64-layer one charges every request half its true cost and
+admits twice as many as the link can carry.
+
+A second, closed-loop guard sits behind the budget: an exponentially weighted
+average of observed step time, compared against the latency objective with
+hysteresis, gates new admissions when the system is already over. The budget
+bounds what should fit; the guard reacts to what actually happened.
+
+\subsection{Migration: a probe, not a prediction}
+\label{sec:design:migration}
+
+Load changes, so placement must be revisable. Demotion moves a resident
+request to the host tier and promotion moves it back, with hysteresis on both
+edges and a cooldown to bound thrash.
+
+The interesting part is the gate, and it exists because the obvious gate is
+insufficient. An open-loop cost model --- does the request's transfer fit the
+remaining budget? --- is \emph{necessary but not sufficient}, and we measured
+it approving a demotion that made latency four times worse. The reason is
+structural rather than a tuning error: the budget accounts for transfer bytes,
+and the host path also carries a per-step cost that is independent of how many
+bytes move (\S\ref{sec:impl}). A model that sees only bytes cannot see that
+cost, and no amount of margin repairs the omission.
+
+We therefore treat a demotion as a \textbf{probe}. The controller records the
+best recent steady-state latency, performs the demotion, waits a settling
+period, and compares. If latency regressed beyond a margin the request is
+promoted back and the cooldown grows exponentially; otherwise the placement
+stands. The system learns by measurement what the cost model cannot predict.
+
+Two details were forced by measurement rather than by design. The baseline must
+be a recent \emph{minimum} rather than the instantaneous average: using the
+average at demotion time picks up startup transients and can score a harmful
+demotion as beneficial. And the loop needs a warmup, because the first
+demotion otherwise fires before any steady state exists to compare against.
+
+The probe is single-variable attribution in a system where requests arrive and
+finish during the settling window, so its verdict is noisy; the margin and the
+backoff bound the damage rather than eliminating it. Its value is that it is
+\emph{directionally} correct where the cost model is not, and
+\S\ref{sec:eval:ablation} reports it reaching opposite conclusions on the two
+interconnects --- which is the behaviour a policy should have when the
+hardware changes underneath it.

@@ -146,7 +146,11 @@ failure cases is far more credible than one that only predicts wins.}
 \subsection{Correctness}
 \label{sec:eval:correct}
 
-\todo{The lossless claim, promoted from hygiene to a result. Bitwise gates
+\todo{DEMOTED 2026-09-06 from a claimed contribution to a setup paragraph.
+Exact placement is what moving bytes does and needs no argument; report the
+gates briefly as correctness hygiene, and keep the bf16 near-tie methodology
+here (not in the background) because it is a real trap for anyone reproducing
+this. Bitwise gates
 (host pool round-trip, two-pass attention self-verify at 576 mixed decode
 layer-steps with $\max|\mathrm{diff}|=0$, prefill-stash round-trip across block
 boundaries and after the producer's extent is recycled); token-identical

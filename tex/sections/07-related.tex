@@ -91,14 +91,15 @@ make the testable counter-claim that \emph{request}-granularity migration
 avoids that thrash, because whole requests move once at controlled moments
 rather than pages chasing shifting token importance.
 
-\paragraph{Trading accuracy for capacity.} ShadowKV~\cite{shadowkv} keeps a
-low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely, reporting a
-$6\times$ footprint reduction and $3.04\times$ throughput. It is lossy, as are
-KV quantization, Quest and H2O. These achieve larger headline numbers than any
-lossless method can, and the honest comparison is not throughput but the
-exchange rate: what does exactness cost at matched effective capacity? We
-report bit-exact output, and \S\ref{sec:eval} measures that exchange rate
-rather than asserting it.
+\paragraph{Reducing the KV instead of relocating it.} ShadowKV~\cite{shadowkv}
+keeps a low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely,
+reporting a $6\times$ footprint reduction and $3.04\times$ throughput; KV
+quantization, Quest and H2O likewise shrink what must be stored. These change
+the model's output, and they compose with a memory system rather than competing
+with it: a smaller KV scales both the device-resident cohort and the affordable
+host cohort, leaving the ratio between them --- and hence the value of a second
+tier --- unchanged. \S\ref{sec:eval} measures that composition on KV
+quantization rather than assuming it.
 
 \paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
 \emph{compute} to the CPU to grow the batch --- the same problem statement as
