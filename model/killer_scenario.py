@@ -27,7 +27,10 @@ GH200 = HW("GH200-96 (H100 HBM3 + C2C)", 96, 4000, 450, 495e12)
 GH200_2 = HW("2xGH200 (TP=2, per-GPU view)", 96, 4000, 450, 495e12)
 A100 = HW("A100-80 + PCIe4", 80, 2039, 25, 312e12)
 
-EFF_BW = 0.75      # achieved fraction of peak HBM BW
+EFF_W = 0.75       # eff_w: achieved fraction of peak HBM BW on a WEIGHT read,
+                   # measured A100-80 (paper/model/p4_*.json). NOTE this script
+                   # charges KV at the same rate; killer_v2.py is the current
+                   # model and uses the measured eff_kv(working set) curve.
 EFF_FLOPS = 0.70   # achieved fraction of dense peak on decode GEMMs
 OVERHEAD = 4e9     # activations / cudagraph / workspace
 
@@ -69,13 +72,13 @@ def analyze(m, S, hw, stage=2.0, kwin=4, double_buffer=True):
     f = (kwin * (2 if double_buffer else 1)) / m.layers  # HBM frac per rider
 
     B_max = C / u                                   # capacity-limited batch
-    T0 = (m.w + C) / (hw.bw * EFF_BW)               # baseline step time (s)
+    T0 = (m.w + C) / (hw.bw * EFF_W)               # baseline step time (s)
 
     # compute roof: decode GEMM arithmetic intensity == batch (FLOP/byte)
-    B_star = (hw.flops * EFF_FLOPS) / (hw.bw * EFF_BW)
+    B_star = (hw.flops * EFF_FLOPS) / (hw.bw * EFF_W)
 
     # self-consistent rider count: riders inflate T, which enlarges hide budget
-    denom = 1.0 - hw.x * (stage - f) / (hw.bw * EFF_BW)
+    denom = 1.0 - hw.x * (stage - f) / (hw.bw * EFF_W)
     if denom <= 0:
         return None                                  # runaway: cannot hide
     T = T0 / denom
