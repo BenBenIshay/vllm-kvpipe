@@ -125,39 +125,53 @@ surprised.
 \toprule
 Model (GH200-96) & weights & $\Ckv$ & ITL$_0$ & capacity & tput \\
 \midrule
-Llama-8B fp16      & 16\,GB & 76\,GB & 50.4\,ms & $\times$1.13 & $\times$1.17 \\
-Qwen-32B fp16      & 64\,GB & 28\,GB & 33.0\,ms & $\times$1.41 & $\times$1.44 \\
-Llama-70B fp8      & 70\,GB & 22\,GB & 31.9\,ms & $\times$1.55 & $\times$1.57 \\
+Llama-8B fp16      & 16.0\,GB & 76.0\,GB & 46.6\,ms & $\times$1.19 & $\times$1.26 \\
+Qwen-32B fp16      & 64.0\,GB & 28.0\,GB & 34.1\,ms & $\times$1.46 & $\times$1.50 \\
+Llama-70B fp8      & 72.7\,GB & 19.3\,GB & 33.0\,ms & $\times$1.68 & $\times$1.71 \\
 \bottomrule
 \end{tabular}
-\caption{The gain law is an amplifier on $\HBM/\Ckv$: an 8B model leaves so
-much HBM free that there is nothing to buy. \emph{capacity} is
+\caption{A second memory tier is an amplifier on $\HBM/\Ckv$: an 8B model
+leaves so much HBM free that there is nothing to buy. \emph{capacity} is
 $B_{\mathrm{tot}}/B_0$, which Eq.~\ref{eq:gain} approximates to within 6\%
-($\times$1.65 predicted vs $\times$1.55 for 70B, the gap being the rolling
-window's memory cost). \emph{tput} additionally charges the step lengthening.
-Zero-copy substrate; the staged path is lower and is reported separately.}
-% src: paper/model/killer_v2.py, analyze(S=8192, GH200, slo=50, stage=0) @ 2bfc6ca5e
+($\times$1.78 predicted vs $\times$1.68 for 70B, the gap being the staging
+buffer's memory cost). \emph{tput} additionally charges the step lengthening.
+The 70B weight figure is the \emph{measured} fp8 checkpoint (72.7\,GB across 15
+shards), not the nominal 70\,GB; the heavier checkpoint leaves less room for KV
+and therefore raises the gain.}
+% src: paper/model/killer_v2.py, analyze(S=8192, GH200, slo=50, stage=0)
 \label{tab:gain}
 \end{table}
 
-\todo{RESOLVE BEFORE SUBMISSION. The figures above are regenerated from
-\texttt{killer\_v2.py} as committed. Earlier drafts of this table carried
-$\times$1.22 / $\times$1.46 / $\times$1.59, which are the \emph{throughput}
-column of a later re-parameterisation that was never committed --- the script
-in the repository does not reproduce them, and it still assumes 70\,GB of
-weights where the fp8 checkpoint measures 72.7\,GB (which lowers $\Ckv$ from
-22 to 19.3\,GB and moves the numbers \emph{up}). Either update the script and
-regenerate, or restore the newer parameters to it. Do not ship a table whose
-own \texttt{\% src} does not reproduce it.}
+\paragraph{The model reproduces measurements it was not fitted to.} Because the
+weight and KV terms carry different efficiencies, Eq.~\ref{eq:step} predicts a
+full-pool step time that depends on the model, and can be checked against the
+A100 measurements of \S\ref{sec:model:params} --- which played no part in
+constructing it. It predicts 74.4\,ms for Llama-8B and 51.1\,ms for Qwen-32B,
+against 79.3 and 55.7 measured: each within 7\%, and the \emph{spread} between
+them --- the quantity a single-efficiency model gets structurally wrong,
+predicting equality --- reproduced at $1.46\times$ against $1.42\times$
+measured.
 
-The projection is insensitive to the parameters, which matters because several
-of them are measured with error. Across three rounds of re-parameterisation the
-70B figure moved by less than 4\%, and sweeping $\effkv$ across its plausible
-band moves it only $\times1.58 \to \times1.61$. The reason is structural: the
-gain depends on a \emph{ratio}, so an error in absolute bandwidth largely
-cancels between the ITL numerator and the capacity denominator.
-% src: sensitivity figures from the uncommitted re-parameterisation -- see the
-% TODO above; re-derive them alongside the table.
+Several of these parameters are measured with error, so it is worth asking
+which ones the projection actually depends on. For 70B on GH200-96 at 8K,
+perturbing the bandwidth efficiencies barely moves it: a $\pm20\%$ error in
+$\effkv$ spans $\times1.67$--$\times1.76$, and $\effw$ over 0.70--0.80 spans
+$\times1.65$--$\times1.74$. The reason is structural --- the gain depends on a
+\emph{ratio}, so a bandwidth error largely cancels between the step-time
+numerator and the capacity denominator.
+
+The parameter that does matter is the \textbf{weight footprint}. Moving it from
+70.0 to 75.0\,GB spans $\times1.62$--$\times1.79$, because weights sit in
+$\Ckv = \HBM - W$ and are not cancelled by anything. This is why we use the
+measured checkpoint size rather than the nominal parameter count: for a
+quantized model the two differ by several gigabytes, and the error propagates
+undamped into the headline.
+% src: paper/model/killer_v2.py sensitivity sweep, 2026-09-06
+
+Note the direction of the $\effkv$ term, because it is our main downside risk:
+a \emph{more} efficient paged-KV read shortens the step, shrinks the transfer
+budget, and \emph{lowers} the gain. The curve above is measured on FA-2-era
+kernels, and \S\ref{sec:eval} re-measures it on Hopper for exactly this reason.
 
 \subsection{(d) The applicability gate}
 

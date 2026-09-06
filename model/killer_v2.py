@@ -21,26 +21,75 @@ H100 = HW("H100-80(PCIe5)", 80, 3350, 55, 495e12)
 
 
 class M:
-    def __init__(s, n, L, kvh, hd, pb, wb=2, tp=1, kvb=2):
+    """A model's memory and compute footprint.
+
+    `wgb` overrides the weight bytes with a MEASURED checkpoint size. It exists
+    because parameter count and checkpoint size are not the same number: a
+    quantized checkpoint also carries scales and zero-points, so deriving the
+    weight footprint from `pb * wb` understates it. Compute still uses `pb`,
+    since the FLOP count follows the parameter count, not the file size.
+    """
+
+    def __init__(s, n, L, kvh, hd, pb, wb=2, tp=1, kvb=2, wgb=None):
         s.n, s.L, s.tp = n, L, tp
         s.k = L*2*(kvh/tp)*hd*kvb
-        s.w = pb*1e9*wb/tp
+        s.w = (wgb*1e9/tp) if wgb is not None else (pb*1e9*wb/tp)
         s.p = pb*1e9/tp
 
 
 MODELS = [
+    # MEASURED weight footprints carry wgb=; the rest are nominal (params x
+    # bytes) and should be measured before anything depends on them, because
+    # the weight term sits in the capacity denominator: a heavier checkpoint
+    # leaves LESS room for KV and therefore raises the projected gain.
     M("Llama-8B  fp16",      32, 8, 128,  8),
     M("Qwen-32B  fp16",      64, 8, 128, 32),
-    M("Llama-70B fp8",       80, 8, 128, 70, wb=1),
+    # RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8: 72.7 GB across 15 shards,
+    # measured from the checkpoint 2026-08-12 (paper/GH200_EXPERIMENT_PLAN.md
+    # section 2). Nominal 70x1 byte = 70 GB understates it by 2.7 GB.
+    M("Llama-70B fp8",       80, 8, 128, 70, wb=1, wgb=72.7),
     M("Llama-70B fp16 TP2",  80, 8, 128, 70, tp=2),
     M("Llama-405B fp8 TP4", 126, 8, 128, 405, wb=1, tp=4),
 ]
 
 
+# Measured paged-KV read efficiency against KV working set, A100-80 / FA-2 era
+# (paper/model/p4_*.json, n=3 repeats). It is NOT a constant: it degrades ~1.6x
+# across the range, and it degrades WORST exactly at the capacity-bound
+# operating point this model is about.
+#
+# Charging weights and KV at one efficiency -- as this script did until
+# 2026-09-06 -- makes a full pool take HBM/BW seconds regardless of model, i.e.
+# it predicts a model-INDEPENDENT full-pool ITL. Measurement says otherwise
+# (79.3 ms for Llama-8B vs 55.7 ms for Qwen-32B on A100), and the paper reports
+# that as a finding. The script has to model what the paper claims.
+EFF_KV_CURVE = [(4.3, 0.77), (8.6, 0.72), (17.2, 0.55),
+                (34.4, 0.55), (43.0, 0.49), (51.5, 0.46)]
+
+
+def eff_kv(ws_bytes):
+    """Interpolate the measured curve in log(working set); clamp at the ends."""
+    import math
+    gb = max(ws_bytes, 1.0)/1e9
+    pts = EFF_KV_CURVE
+    if gb <= pts[0][0]:
+        return pts[0][1]
+    if gb >= pts[-1][0]:
+        return pts[-1][1]
+    for (g0, e0), (g1, e1) in zip(pts, pts[1:]):
+        if g0 <= gb <= g1:
+            t = (math.log(gb) - math.log(g0))/(math.log(g1) - math.log(g0))
+            return e0 + t*(e1 - e0)
+    return pts[-1][1]
+
+
 def step_ms(m, hw, S, B_res, B_off=0.0, stage=1.0, f=0.0):
-    """max(memory, compute) time for one decode step, ms."""
-    byts = m.w + (B_res + stage*B_off)*m.k*S
-    t_mem = byts/(hw.bw*EFF_BW)
+    """max(memory, compute) time for one decode step, ms.
+
+    Weights and paged KV are charged at DIFFERENT efficiencies; see EFF_KV_CURVE.
+    """
+    kv_bytes = (B_res + stage*B_off)*m.k*S
+    t_mem = m.w/(hw.bw*EFF_BW) + kv_bytes/(hw.bw*eff_kv(kv_bytes))
     t_cmp = 2*m.p*(B_res+B_off)/(hw.fl*EFF_FLOPS)
     return max(t_mem, t_cmp)*1e3
 

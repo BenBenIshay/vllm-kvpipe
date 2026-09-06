@@ -20,9 +20,10 @@ decide in one line whether a second memory tier is worth building.}
 
 \subsection{Anti-scaling}
 
-\todo{Address head-on: the gain shrinks as HBM grows (70B, x1.63 on GH200-96 to
-x1.12 on GH200-144) --- the same structural decay we cite against CPU-attention
-offload. The answer is that weights grow faster than HBM (MoE, 405B+), so
+\todo{Address head-on: the gain shrinks as HBM grows --- for 70B fp8,
+x1.71 on GH200-96 falls to x1.32 on GH200-144, because the larger device leaves
+C = 64.3 GB instead of 19.3 GB and the HBM/C amplifier collapses. This is the
+same structural decay we cite against CPU-attention offload. The answer is that weights grow faster than HBM (MoE, 405B+), so
 HBM/C trends favourably. Say it ourselves.}
 
 \subsection{Composition}
