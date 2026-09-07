@@ -1,15 +1,17 @@
 % ============================================================================
-% Section 4 -- design. REWRITTEN 2026-09-07.
+% Section 4 -- design. SECOND REWRITE 2026-09-07.
 %
-% The previous draft described POLICIES and never described the SYSTEM: a reader
-% could not tell where a host-tier request's KV physically lives, what happens
-% on a decode step, or how attention reads it. For a memory-system paper the
-% architecture IS the contribution. It also narrated a superseded implementation
-% ("our first version displaced residents"), which is lab notebook, not design.
+% The first rewrite added an architecture figure but was still hard to read:
+% one static component diagram, dense prose, nothing concrete. A reader could
+% not picture the compaction, could not see why k slots hide the transfer, and
+% could not follow a request through the system.
 %
-% This version: architecture first, with a figure and a worked step; then the
-% policies that drive it. Every mechanism here exists in the implementation --
-% see the file/function names in section 5 -- so it can be checked against code.
+% This version leads with four figures that carry the explanation:
+%   fig:arch      the data path (components + who talks to whom)
+%   fig:compact   the compaction, WORKED WITH REAL BLOCK IDS
+%   fig:pipeline  the per-layer timeline -- why k>1 hides the transfer
+%   fig:lifecycle a request's states and what triggers each transition
+% Prose is trimmed to what the figures do not already say.
 % ============================================================================
 
 \section{Design}
@@ -18,17 +20,33 @@
 \subsection{Overview}
 \label{sec:design:overview}
 
-The system presents device memory (HBM) and host memory (DRAM) as a single KV
-store. Each request is assigned a \emph{tier}. A \textbf{device-tier} request is
-served exactly as in stock vLLM: its KV blocks live in the paged device pool and
-attention reads them there. A \textbf{host-tier} request holds \emph{no blocks
-in the device pool at all}; its KV lives in host DRAM, and the bytes each layer
-needs are streamed across the interconnect just before that layer's attention
-consumes them.
+The system presents device memory (HBM) and host memory (DRAM) as one KV store.
+Each request has a \emph{tier}. A \textbf{device-tier} request behaves exactly
+as in stock vLLM: its KV blocks live in the paged device pool and attention
+reads them there. A \textbf{host-tier} request holds \textbf{no blocks in the
+device pool at all}; its KV lives in host DRAM, and each layer's bytes are
+streamed across the interconnect just before that layer's attention consumes
+them. Both tiers are served in one forward pass, so the weights are read once
+per step however the batch is split.
 
-Both tiers are served in the \emph{same} forward pass, so weights are read once
-per step regardless of how the batch is split. Figure~\ref{fig:arch} shows the
-four components.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+symbol & meaning \\
+\midrule
+$L$ & layers in the model \\
+$b$ & tokens per KV block (vLLM block size) \\
+$k$ & rolling slots, $k \ll L$ (we use 4) \\
+$W$ & blocks the \emph{active} host-tier cohort occupies this step \\
+$S$ & context length \\
+$\kappa$ & KV bytes per token, $= 2 L\,n_{kv}\,d_h \cdot \mathrm{sizeof(dtype)}$ \\
+\bottomrule
+\end{tabular}
+\caption{Notation used in the design and in \S\ref{sec:model}.}
+\label{tab:notation}
+\end{table}
 
 \begin{figure*}[t]
 \centering
@@ -40,15 +58,12 @@ four components.
   lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
   arr/.style={-{Latex[length=2mm]}, thick},
 ]
-
-% ---------- host ----------
 \node[mem, minimum width=3.2cm] (hk) at (0,0)
      {\texttt{host\_k}[$\ell$]\ \ \texttt{host\_v}[$\ell$]};
 \node[lbl] (hkl) at (0,-0.85) {one pinned pair per layer,\\block-major, addressed by\\\textbf{host block id}};
 \node[draw, dashed, rounded corners=3pt, fit=(hk)(hkl), inner sep=2.5mm] (hostbox) {};
 \node[font=\bfseries\small] at (0,1.15) {Host DRAM};
 
-% ---------- device ----------
 \node[mem, minimum width=3.6cm] (pool) at (8.0,0.95)
      {paged KV pool\\[-1pt]{\scriptsize device-tier requests}};
 \node[hot, minimum width=3.6cm] (roll) at (8.0,-0.95)
@@ -56,11 +71,9 @@ four components.
 \node[draw, dashed, rounded corners=3pt, fit=(pool)(roll), inner sep=2.5mm] (devbox) {};
 \node[font=\bfseries\small] at (8.0,2.3) {GPU HBM};
 
-% ---------- attention ----------
 \node[box, minimum width=2.5cm] (attn) at (14.0,0)
      {attention\\layer $\ell$\\[-1pt]{\scriptsize one forward pass}};
 
-% ---------- flows ----------
 \draw[arr, blue!65] (hostbox.east|-hk) -- (4.4,0) -- (4.4,-0.95) -- (roll.west);
 \node[lbl, text=blue!70] at (3.3,1.15)
      {\texttt{stream\_layer}($\ell$)\\refresh slot $\ell \bmod k$\\contiguous runs, H2D};
@@ -75,199 +88,274 @@ four components.
 \node[lbl, text=red!70] at (7.0,-3.25)
      {\texttt{write\_token}($\ell$): this step's new $K,V$ $\rightarrow$ host mirror (authoritative) \emph{and} the current slot};
 \end{tikzpicture}
-\caption{Architecture. A host-tier request's KV lives in per-layer pinned host
-mirrors addressed by an independent \emph{host block id} space. Once per step
-the active cohort's blocks are compacted into a rolling region of $k$ device
-slots; once per layer the slot for $\ell \bmod k$ is refreshed from the mirror.
-Attention runs over both tiers in one forward pass, each tier reading its own
-block table. The rolling region is sized to the \emph{active} cohort ($W$
-blocks), not to the host pool, and is shared across all layers --- which is why
-a host-tier request's device footprint is $O(1/k)$ of a resident one rather
-than proportional to its context.}
+\caption{\textbf{Data path.} A host-tier request's KV lives in per-layer pinned
+host mirrors addressed by an independent \emph{host block id} space. Once per
+step the active cohort's blocks are compacted into a rolling region of $k$
+device slots (Fig.~\ref{fig:compact}); once per layer the slot for
+$\ell \bmod k$ is refreshed (Fig.~\ref{fig:pipeline}). Attention runs over both
+tiers in one forward pass, each tier reading its own block table.}
 \label{fig:arch}
 \end{figure*}
 
-\paragraph{Components.}
-\begin{enumerate}
-\item \textbf{Host KV pool.} Two pinned host tensors per layer, one for $K$ and
-      one for $V$, laid out block-major. They are addressed by a \emph{host
-      block id} drawn from a space of the system's own, unrelated to device
-      block ids (\S\ref{sec:design:spaces}).
-\item \textbf{Rolling region.} $k$ pairs of device tensors of $W$ blocks each.
-      Layer $\ell$ reads slot $\ell \bmod k$, so $k$ slots cover the whole
-      model and the device cost is independent of layer count.
-\item \textbf{Tier-aware attention.} One forward pass; the batch's rows are
-      partitioned by tier and each partition attends its own memory with its own
-      block table.
-\item \textbf{Tier manager.} Placement (\S\ref{sec:design:placement}), admission
-      (\S\ref{sec:design:admission}) and migration
-      (\S\ref{sec:design:migration}), plus the scheduler-side allocation rules
-      that keep host-tier requests off the device pool.
-\end{enumerate}
-
-\subsection{Two address spaces}
+\subsection{Where KV lives, and why the host has its own addresses}
 \label{sec:design:spaces}
 
-The single most consequential design decision is that the host mirror is
-\textbf{not} indexed by device block id.
+The host mirror is \textbf{not} indexed by device block id, and the rest of the
+design rests on that.
 
 The reason is a lifetime mismatch. The point of the host tier is that a
-host-tier request's device blocks can be released and reused by another
-request. Under vLLM's allocator, releasing a block nulls the owner's block-table
-entry and returns the id to a free list, from which it is promptly reissued. A
-mirror indexed by device block id would therefore (i) lose the mapping needed to
-find the request's own KV, since its block table no longer records where the
-data was, and (ii) alias: the reissued id now denotes a different request's
-data, so one request's stream would overwrite another's.
+host-tier request's device blocks are released for others to use. Under vLLM's
+allocator, releasing a block nulls the owner's block-table entry and returns the
+id to a free list, from which it is promptly reissued. A mirror keyed by device
+block id would therefore \emph{lose the read mapping} --- the request's block
+table no longer records where its data was --- and \emph{alias}, because the
+reissued id now denotes a different request's data.
 
-The system therefore assigns each \emph{(request, logical block)} a host block
-id from its own space, held until the request finishes. Device ids may churn
-freely underneath; the host mapping is unaffected. Growth needs no device
-allocation either --- a new logical block is given a fresh host block, and its
-tokens arrive through the per-layer write path rather than through a resident
-write.
+Each \emph{(request, logical block)} is therefore given a host block id from a
+private space, held until the request finishes. Device ids may churn freely
+underneath. Growth needs no device allocation either: a new logical block gets a
+fresh host block and its tokens arrive through the per-layer write path.
 
-\subsection{The life of a decode step}
+The price of a private space is that the active cohort's host ids are scattered
+while the rolling region is a small dense array. Bridging them is the
+\emph{compaction} of Figure~\ref{fig:compact}, run once per step.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  blk/.style={draw, minimum width=6mm, minimum height=5mm, inner sep=0pt},
+  used/.style={blk, fill=blue!12, draw=blue!50},
+  free/.style={blk, fill=black!3, draw=black!20},
+  dst/.style={blk, fill=blue!25, draw=blue!60},
+  lbl/.style={font=\scriptsize\itshape, text=black!60, align=left},
+  arr/.style={-{Latex[length=1.4mm]}, blue!55},
+]
+\node[font=\bfseries\scriptsize, anchor=west] at (0,1.75) {host mirror, addressed by host block id};
+\foreach \i in {0,1,4,5,7} \node[free] at (\i*0.63,1.15) {};
+\foreach \i/\t in {2/7,3/8,6/23,8/40,9/41,10/42}
+  \node[used] (h\i) at (\i*0.63,1.15) {\tiny \t};
+
+\node[lbl, anchor=west] at (0,0.62)
+  {A:\,$\{7,8\}$\quad B:\,$\{23\}$\quad C:\,$\{40,41,42\}$};
+
+\node[font=\bfseries\scriptsize, anchor=west] at (0,-0.55) {rolling slot $\ell \bmod k$ \ ($W{=}6$, 3 runs)};
+\foreach \i in {0,...,5} \node[dst] (d\i) at (\i*0.63,-1.2) {\tiny \i};
+
+\draw[arr] (h2.south) -- (d0.north);
+\draw[arr] (h3.south) -- (d1.north);
+\draw[arr] (h6.south) -- (d2.north);
+\draw[arr] (h8.south) -- (d3.north);
+\draw[arr] (h9.south) -- (d4.north);
+\draw[arr] (h10.south) -- (d5.north);
+
+\node[anchor=north west, font=\scriptsize] at (4.5,-0.45)
+  {\begin{tabular}{@{}l@{\ }l@{}}
+     \multicolumn{2}{@{}l}{\bfseries compacted block table}\\
+     A & $[0,\,1]$\\
+     B & $[2]$\\
+     C & $[3,\,4,\,5]$\\
+   \end{tabular}};
+\end{tikzpicture}
+\caption{\textbf{Compaction, once per step.} Three host-tier requests hold
+scattered host blocks. Their union is sorted and mapped onto $[0,W)$, giving
+both the rolling region's size for this step and a block table expressed in
+rolling indices. The sorted set decomposes into three maximal \emph{runs}, so
+the per-layer transfer is three contiguous slice copies rather than six
+scattered ones; with the mirror laid out block-major, each run is one contiguous
+byte range on both sides, so the DMA engine performs the compaction and no
+host-side gather is required.}
+\label{fig:compact}
+\end{figure}
+
+\subsection{A decode step, end to end}
 \label{sec:design:step}
 
 Two granularities matter, and separating them is what keeps the per-layer work
-small.
+small: \textbf{addresses} are fixed for the whole step, while slot
+\textbf{contents} change every layer.
 
-\paragraph{Once per step: compaction.} Given the active host-tier cohort, the
-system takes the union of their host blocks, sorts it, and builds a bijection
-onto $[0, W)$. This yields (i) the rolling region's size $W$ for this step, and
-(ii) a \emph{compacted block table}: for each host-tier row, its logical blocks
-expressed as rolling-region indices. The block table is built once and reused by
-every layer, because the \emph{addresses} a request reads are fixed for the step
---- only the \emph{contents} of the slot change as layers advance.
-
-Compaction also computes the maximal contiguous runs of host block ids in the
-active set. A run is one contiguous byte range on both sides, so the per-layer
-transfer is a handful of slice copies rather than a gather. This is why the host
-mirror is block-major with $K$ and $V$ separated: with the block dimension
-innermost, a run of blocks is strided, no pinned DMA is possible, and the
-transfer degrades into a host-side copy.
-
-\paragraph{Once per layer: refresh, write, attend.} For layer $\ell$:
 \begin{enumerate}
-\item \emph{Refresh.} Issue the runs from the host mirror into rolling slot
-      $\ell \bmod k$. With $k > 1$ these can be issued a layer ahead, so the
-      transfer overlaps the previous layer's compute.
-\item \emph{Attend.} Device-tier rows attend the paged pool with the ordinary
-      block table; host-tier rows attend slot $\ell \bmod k$ with the compacted
-      block table. Both happen inside one forward pass over the shared weights.
-\item \emph{Write.} The token generated this step projects new $K,V$. For
-      host-tier rows these are written to the host mirror --- which is
-      authoritative --- and into the current rolling slot, so that this step's
-      own attention sees them.
+\item \textbf{Once per step --- compact} (Fig.~\ref{fig:compact}). Union the
+      active cohort's host blocks, sort, map onto $[0,W)$, emit the compacted
+      block table and the run list. Every layer reuses that block table.
+\item \textbf{Per layer --- refresh.} Issue the runs into rolling slot
+      $\ell \bmod k$. With $k>1$ this is issued ahead, so the transfer for layer
+      $\ell{+}1$ overlaps the compute of layer $\ell$ (Fig.~\ref{fig:pipeline}).
+\item \textbf{Per layer --- attend.} Device-tier rows read the paged pool with
+      the ordinary block table; host-tier rows read slot $\ell \bmod k$ with the
+      compacted block table. One forward pass, shared weights.
+\item \textbf{Per layer --- write.} The token generated this step projects new
+      $K,V$. For host-tier rows these go to the host mirror, which is
+      authoritative, \emph{and} into the current slot so this step's own
+      attention sees them.
 \end{enumerate}
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  cmp/.style={draw, fill=black!8, minimum height=5mm, inner sep=1pt},
+  xfer/.style={draw, fill=blue!15, draw=blue!50, minimum height=4.5mm, inner sep=1pt},
+  lbl/.style={font=\scriptsize\itshape, text=black!60},
+]
+\node[lbl, anchor=east] at (-0.1,0.2) {compute};
+\foreach \i/\x in {0/0,1/1.75,2/3.5,3/5.25}
+  \node[cmp, minimum width=1.65cm] at (\x+0.825,0.2) {layer $\i$};
+
+\node[lbl, anchor=east] at (-0.1,-0.6) {H2D};
+\foreach \i/\x/\s in {1/0/1,2/1.75/2,3/3.5/3,4/5.25/0}
+  \node[xfer, minimum width=1.3cm] at (\x+0.70,-0.6) {$\ell{=}\i\rightarrow$s\s};
+
+\foreach \x in {1.75,3.5,5.25} \draw[dashed, black!30] (\x,0.5) -- (\x,-0.95);
+\draw[->, black!50] (-0.1,-1.15) -- (7.1,-1.15) node[right, font=\tiny] {time};
+
+\node[lbl, anchor=west, align=left] at (0,-1.75)
+  {slot $= \ell \bmod k$ ($k{=}4$): a slot survives $k$ layers, so\\
+   layer $\ell{+}1$'s refresh is in flight while layer $\ell$ reads.};
+\end{tikzpicture}
+\caption{\textbf{Per-layer pipeline.} The refresh for layer $\ell{+}1$ is issued
+while layer $\ell$ computes. $k$ slots give a transfer $k{-}1$ layers of slack
+before its destination is reused, which is what allows it to be hidden;
+$k{=}1$ would serialise transfer against compute. \S\ref{sec:eval:cost}
+measures the fraction actually hidden.}
+\label{fig:pipeline}
+\end{figure}
+
 \paragraph{Why the device footprint is small.} A device-tier request's KV
-occupies $L$ layers' worth of blocks. A host-tier request occupies host blocks,
-plus its share of a rolling region that is $k$ slots deep regardless of $L$. Its
-device footprint is therefore roughly $k/L$ of a resident request's: with
-$k = 4$ and $L = 64$, about 6\%. That ratio, not the interconnect, is what
-converts host DRAM into device capacity.
+occupies $L$ layers of blocks. A host-tier request occupies host blocks plus its
+share of a rolling region that is $k$ slots deep \emph{regardless of $L$}, so
+its device footprint is about $k/L$ of a resident request's --- roughly 6\% at
+$k{=}4$, $L{=}64$. That ratio, not the interconnect, is what converts host DRAM
+into device capacity.
 
-\subsection{Keeping host-tier requests off the device pool}
-\label{sec:design:additive}
+\subsection{The life of a request}
+\label{sec:design:lifecycle}
 
-The capacity argument of \S\ref{sec:intro} requires host-tier requests to be
-served \emph{in addition to} a full device-resident cohort rather than in place
-of part of it. That holds only if a host-tier request never occupies a device
-block, and three separate scheduler behaviours have to agree for that to be true.
+Figure~\ref{fig:lifecycle} shows the states and what triggers each transition.
+Several transitions are driven by the \emph{worker} rather than the scheduler,
+and that is not incidental: the scheduler cannot observe a host-side write, so
+anything conditioned on KV having reached the host must wait for an
+acknowledgement rather than assume.
 
-\emph{Admission without allocation.} A host-tier request is admitted with an
-empty block list. Its KV is delivered into the host pool by the prefill
-transport (\S\ref{sec:background:pd}), and admission is contingent on the worker
-confirming the KV is present --- the scheduler cannot observe a host-side write,
-and admitting before it lands would leave a request with no KV anywhere.
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  st/.style={draw, rounded corners=2pt, align=center, minimum height=7.5mm,
+             minimum width=1.95cm, inner sep=1.2mm, fill=black!3},
+  hs/.style={st, fill=blue!10, draw=blue!45},
+  arr/.style={-{Latex[length=1.5mm]}},
+  ed/.style={font=\scriptsize\itshape, text=black!60, align=center},
+]
+\node[st] (wait) at (0,0) {waiting};
+\node[hs] (adm)  at (2.9,1.35) {admitted host-tier\\{\scriptsize 0 device blocks}};
+\node[hs] (dec)  at (6.0,1.35) {decoding\\host-tier};
+\node[st] (res)  at (6.0,-1.35) {decoding\\device-tier};
+\node[st] (fin)  at (9.6,0) {finished};
 
-\emph{No prefill allocation.} The request's prompt is marked already computed,
-so no prefill is scheduled and no blocks are allocated even transiently. This
-matters because the batch is bounded by \emph{peak} device residency: a design
-that allocates during prefill and reclaims afterwards still pays the peak.
+\draw[arr] (wait) -- node[ed, above, sloped] {tier $=$ host} (adm);
+\draw[arr] (wait) -- node[ed, below, sloped] {tier $=$ device} (res);
+\draw[arr] (adm)  -- node[ed, above, align=center] {\textbf{worker ack}\\KV present} (dec);
+\draw[arr] (dec)  -- node[ed, above, sloped] {done} (fin);
+\draw[arr] (res)  -- node[ed, below, sloped] {done} (fin);
+
+% migration: two vertical arrows, separated so their labels never meet
+\draw[arr] ([xshift=-7mm]res.north) -- ([xshift=-7mm]dec.south);
+\node[ed, anchor=east, align=right] at (5.15,0)
+     {\textbf{demote}\\on seed ack:\\release blocks};
+\draw[arr, dashed] ([xshift=7mm]dec.south) -- ([xshift=7mm]res.north);
+\node[ed, anchor=west, align=left] at (6.85,0)
+     {\textbf{promote}\\atomic refill};
+\end{tikzpicture}}
+\caption{\textbf{Request lifecycle.} A request admitted directly to the host
+tier never allocates a device block. A resident request that is demoted releases
+its blocks only after the worker acknowledges that its KV reached the host ---
+releasing on the assumption that it did would destroy the request's history.
+Promotion refills the block list atomically; a partial refill is treated as a
+failed promotion and the request stays on the host tier.}
+\label{fig:lifecycle}
+\end{figure}
+
+Three scheduler behaviours must agree for a host-tier request to hold no device
+blocks, and all three are necessary.
+
+\emph{Admission without allocation.} The request is admitted with an empty block
+list, its KV having been delivered into the host pool by the prefill transport
+(\S\ref{sec:background:pd}), contingent on the worker's acknowledgement.
+
+\emph{No prefill allocation.} Its prompt is marked already computed, so no
+prefill is scheduled and nothing is allocated even transiently. The batch is
+bounded by \emph{peak} device residency, so allocating during prefill and
+reclaiming afterwards still pays the peak.
 
 \emph{Queue bypass.} vLLM's waiting queue stops at the first request it cannot
-allocate for. A host-tier request needs nothing, so a block-starved request
-ahead of it would block an admission that requires no resources. Requests that
-cannot be allocated are deferred so the scan continues.
-
-For a request that is already resident when the system decides to move it, the
-allocator additionally supports releasing its whole block list and, on the
-return path, refilling it atomically. Release is triggered by a worker
-acknowledgement that the KV reached the host, for the same reason admission is.
+allocate for. Since a host-tier request needs nothing, a block-starved request
+ahead of it would otherwise block an admission that requires no resources.
 
 \subsection{Placement}
 \label{sec:design:placement}
 
 Which requests should be host-tier? The intuitive answer is the long ones, since
-KV grows with context. \textbf{Context length cannot discriminate}, and the
-reason is the cancellation of \S\ref{sec:model}: moving a request of context $S$
-to the host frees $S\!\cdot\!k$ bytes of device memory and costs $S\!\cdot\!k$
-bytes of interconnect on every subsequent step. Both scale identically, so
-ranking by context is equivalent to ranking arbitrarily --- which
-\S\ref{sec:eval:ablation} confirms.
+KV grows with context. \textbf{Context length cannot discriminate}, by the
+cancellation of \S\ref{sec:model}: moving a request of context $S$ to the host
+frees $S\kappa$ bytes of device memory and costs $S\kappa$ bytes of interconnect
+every subsequent step. Both scale identically, so ranking by context is
+equivalent to ranking arbitrarily --- which \S\ref{sec:eval:ablation} confirms.
 
 The discriminating signal is \textbf{temporal}. A request that is not currently
-generating holds device memory while consuming no interconnect bandwidth at all,
-so the two costs come apart exactly when a request is idle or near the end of
-its generation. Placement scores requests on estimated remaining generation and
-time since last activity, and we keep the rule a transparent threshold so that
-its behaviour can be explained; a learned variant is worth introducing only if
-the simple rule leaves measurable headroom.
-
-The rule uses only state the serving system already holds, so it needs no
-externally supplied service class and applies in single-class deployments.
+generating holds device memory while consuming no bandwidth at all, so the two
+costs come apart exactly when a request is idle or near the end of its
+generation. Placement scores requests on estimated remaining generation and time
+since last activity, using only state the serving system already holds --- so it
+needs no externally supplied service class. We keep the rule a transparent
+threshold so that its behaviour can be explained.
 
 \subsection{Admission}
 \label{sec:design:admission}
 
-Each host-tier request costs $S\!\cdot\!k$ bytes of interconnect per step.
-Admission enforces a budget on their sum: the step time multiplied by the
-achieved interconnect bandwidth, less a margin.
+Each host-tier request costs $S\kappa$ bytes of interconnect per step. Admission
+bounds their sum by a budget: the step time times the achieved interconnect
+bandwidth, less a margin.
 
 Two properties of that budget matter more than its form. It is \textbf{measured,
-not declared}: the step time comes from steps that carried no host-tier traffic.
-A configured constant goes stale as the workload changes, and the running
-latency average is circular, since host-tier traffic is exactly what it is being
-used to bound. And the per-request cost is \textbf{derived from the model} ---
-layer count, KV-head count, head dimension --- rather than configured, because a
-configured value that disagrees with the running model is silently wrong in
-whichever direction it disagrees.
+not declared} --- the step time comes from steps carrying no host-tier traffic,
+since a configured constant goes stale and the running latency average is
+circular (host-tier traffic is exactly what it is being used to bound). And the
+per-request cost is \textbf{derived from the model} ($L$, $n_{kv}$, $d_h$)
+rather than configured, since a configured value that disagrees with the running
+model is silently wrong.
 
-A second, closed-loop guard sits behind the budget: an exponentially weighted
-average of observed step time, compared against the latency objective with
-hysteresis, gates new admissions when the system is already over. The budget
-bounds what should fit; the guard responds to what did.
+A closed-loop guard sits behind the budget: an exponentially weighted average of
+observed step time, compared against the latency objective with hysteresis,
+gates new admissions when the system is already over. The budget bounds what
+should fit; the guard responds to what did.
 
 \subsection{Migration}
 \label{sec:design:migration}
 
-Load changes, so placement must be revisable: requests move to the host tier
-under pressure and back when headroom appears, with hysteresis on both edges and
-a cooldown bounding thrash.
+Placement must be revisable, so requests move between tiers with hysteresis on
+both edges and a cooldown bounding thrash.
 
-The gate on those moves is measured rather than predicted, and this is a
-deliberate departure. A cost model that asks whether a request's transfer fits
-the remaining budget is \emph{necessary but not sufficient}, because the budget
-accounts for transfer bytes while the host path also carries a per-step cost
-independent of how many bytes move (\S\ref{sec:impl}). A gate that sees only
-bytes cannot see that cost, and widening the margin does not repair the
-omission.
+The gate on those moves is measured rather than predicted. A cost model asking
+whether a request's transfer fits the remaining budget is \emph{necessary but
+not sufficient}: the budget accounts for transfer bytes, while the host path
+also carries a per-step cost independent of how many bytes move
+(\S\ref{sec:impl}). A gate that sees only bytes cannot see that cost, and
+widening the margin does not repair the omission.
 
 A demotion is therefore a \textbf{probe}. The controller records the best recent
-steady-state latency, performs the move, waits a settling period, and compares.
-If latency regressed beyond a margin the request is promoted back and the
-cooldown grows exponentially; otherwise the placement stands. Two details are
-forced by the noise floor: the baseline must be a recent \emph{minimum} rather
-than the instantaneous average, which would otherwise absorb startup transients,
-and the loop needs a warmup so the first probe has a steady state to compare
-against.
+steady-state latency, performs the move, waits a settling period, and compares;
+if latency regressed beyond a margin the request is promoted back and the
+cooldown grows exponentially. Two details are forced by the noise floor: the
+baseline must be a recent \emph{minimum} rather than the instantaneous average,
+which would otherwise absorb startup transients, and the loop needs a warmup so
+the first probe has a steady state to compare against.
 
 The probe is single-variable attribution in a system where requests arrive and
-depart during the settling window, so its verdict is noisy; the margin and the
+depart during the settling window, so its verdict is noisy, and the margin and
 backoff bound the cost of a wrong one. Its value is that it is \emph{correct in
-direction} where a byte-counting model is not, and \S\ref{sec:eval:ablation}
-reports it reaching opposite verdicts on the two interconnects --- which is the
-behaviour a placement policy should have when the hardware changes under it.
+direction} where a byte-counting model is not: \S\ref{sec:eval:ablation} reports
+it reaching opposite verdicts on the two interconnects, which is what a
+placement policy should do when the hardware changes under it.
