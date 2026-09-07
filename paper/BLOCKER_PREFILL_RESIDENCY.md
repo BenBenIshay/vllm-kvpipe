@@ -867,3 +867,55 @@ halves; the case itself does not change.
 **Rule going forward:** never write 900 in a bandwidth calculation. The GH200
 plan's Phase 0 already says to measure the link rather than trust a spec
 figure, and the measured value will land below 450 as well.
+
+## 2026-09-07: the handover cost, measured properly
+
+`PAPER_PLAN` section 6.1 calls this the objection that decides the paper's
+reception -- "your riders skip prefill, you are measuring a decode node with
+free input" -- and requires the handover cost be measured, not assumed away.
+It had never been measured. `handover_cost.py` now does, split by who pays:
+`seed` (an artefact of the LOCAL emulation producing its own KV; a real decode
+node never does it), `stash`, and **`preload` -- the phase a real P/D decode
+node actually pays**.
+
+Two things had to be fixed before the number meant anything.
+
+**1. It was Python-bound, not memory-bound.** The first measurement gave
+2.84 GB/s *flat across every context*, which is not a bandwidth curve. The
+copies went block by block: 128 blocks x 64 layers = 8192 small copies per
+request. With per-request contiguous extents -- which the pool already
+guarantees -- a layer is ONE copy. Both directions now take that fast path,
+guarded by an explicit contiguity check with the loop kept for the scattered
+case. 2.2x on the same host.
+
+**2. It was measured on a contended node.** The first A100 run landed on
+nova05 while two other users' jobs were running and reported 132 ms /
+4.06 GB/s at ctx 2048. Re-run **exclusive on an idle nova06**, two repeats:
+
+| ctx | preload | GB/s | per decode step |
+|---|---|---|---|
+| 512 | 5.8 ms | 23 | 0.090 |
+| 2048 | **14.2 ms** | **38** | **0.221** |
+| 4096 | 24.8 ms | 43 | 0.39 |
+
+Reproducible within 1-3% across repeats. That is a **9.4x** difference from
+contention alone, same code and same machine type.
+
+**The result: at ctx 2048 the handover costs 0.22 ms per decode step against a
+4.45 ms per-rider cost -- about 5% overhead, not the 46% the contended run
+implied.** Taking the first A100 number at face value would have put a figure
+nearly ten times too pessimistic about our own design into the paper.
+
+Note the shape: GB/s RISES with context (23 -> 43), which is fixed per-layer
+cost amortising over larger copies. A flat curve was the tell that the first
+measurement was overhead-dominated; a rising one is the tell that this one is
+not.
+
+**NOT measured, and the paper must say so** rather than invent a number: the
+prefill-node -> decode-node NETWORK transfer, which is deployment-dependent.
+
+**Follow-up.** The frozen A100 dataset in `paper/data/` was taken on a
+non-exclusive allocation. Decode ITL is GPU-bound so it is far less exposed
+than a pure host memcpy, and both arms of each comparison ran back to back on
+the same node so the RATIOS are robust -- but any absolute figure quoted from
+it should be re-taken with `--exclusive` before it goes in the paper.
