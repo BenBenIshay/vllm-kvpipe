@@ -76,6 +76,28 @@
   note    = {Trace-driven; the premise this paper builds on},
 }
 
+% VERIFIED 2026-09-09 against the PDF (local copy:
+% /mnt/beegfs/benishay/papers/pie-arxiv-2411.09317.pdf). Closest prior work on
+% MECHANISM: same hardware, staged GPU buffers, per-layer prefetch. Differs on
+% the axis of partition -- layer, not request.
+@article{pie,
+  title   = {Pie: Pooling {CPU} Memory for {LLM} Inference},
+  author  = {Xu, Yi and Mao, Ziming and Mo, Xiangxi and Liu, Shu and
+             Stoica, Ion},
+  journal = {arXiv preprint arXiv:2411.09317},
+  year    = {2024},
+  note    = {UC Berkeley. Measures GH200 NVLink-C2C at 419\,GB/s CPU$\to$GPU
+             and 371\,GB/s GPU$\to$CPU},
+}
+
+@inproceedings{flexgen,
+  key       = {flexgen},
+  title     = {{FlexGen}: High-Throughput Generative Inference of Large
+               Language Models with a Single {GPU}},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2023},
+}
+
 % ---------------------------------------------------------------------------
 % Substrate and baselines
 % ---------------------------------------------------------------------------

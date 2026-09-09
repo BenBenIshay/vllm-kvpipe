@@ -97,6 +97,80 @@ tiers in one forward pass, each tier reading its own block table.}
 \label{fig:arch}
 \end{figure*}
 
+\subsection{Where the two tiers run}
+\label{sec:design:exec}
+
+Before the memory layout, the execution model --- because the answer is simpler
+than the phrase ``two tiers'' suggests, and it is what makes the design pay.
+
+\textbf{There is no partition of the GPU.} The two tiers are not separate
+streams, not separate kernels over separate SMs, not separate forward passes.
+They are \emph{rows of the same batch}, and the model runs over all of them. The
+only operation that distinguishes them is attention, and only in \emph{where it
+reads keys and values from}. Figure~\ref{fig:exec} shows one layer.
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  op/.style={draw, rounded corners=2pt, align=center, minimum height=7mm,
+             minimum width=2.2cm, inner sep=1.2mm, fill=black!5},
+  at1/.style={op, fill=black!8, minimum width=2.8cm},
+  at2/.style={op, fill=blue!12, draw=blue!45, minimum width=2.8cm},
+  lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
+  arr/.style={-{Latex[length=1.5mm]}},
+]
+\node[op] (qkv) at (0,0) {QKV projection\\{\scriptsize all $B$ rows}};
+\node[at1] (a1)  at (3.5,0.8) {flash \#1: all rows\\{\scriptsize vs paged pool}};
+\node[at2] (a2)  at (3.5,-0.8) {flash \#2: host rows\\{\scriptsize vs slot $\ell\bmod k$}};
+\node[op] (o)   at (7.0,0) {O-proj, MLP\\{\scriptsize all $B$ rows}};
+\draw[arr] (qkv) -- (a1);
+\draw[arr] (qkv) -- (a2);
+\draw[arr] (a1) -- (o);
+\draw[arr] (a2) -- (o);
+\node[lbl] at (0,-1.1) {weights read once};
+\node[lbl] at (7.0,-1.1) {weights read once};
+\node[lbl, text=blue!70] at (3.5,-1.85)
+     {\#1 masks host rows to a single key;\\
+      \#2 gathers them, attends the slot, scatters back};
+\end{tikzpicture}}
+\caption{\textbf{One layer, one forward pass.} Every operation except attention
+runs once over the whole batch, so a host-tier request adds a row to GEMMs that
+are memory-bound on the weights regardless. Attention is two \emph{sequential}
+kernel launches over disjoint row subsets of the same tensors --- not a spatial
+partition of the device.}
+\label{fig:exec}
+\end{figure}
+
+Three consequences follow, and the first is the economic argument for the whole
+design.
+
+\emph{Everything but attention is shared.} QKV projection, the output projection
+and the MLP execute once over the whole batch. A host-tier request costs nothing
+extra in any of them: it is one more row in a GEMM whose cost is dominated by
+reading the weights, which happens regardless.
+
+\emph{The two attention calls are sequential on the same hardware.} The second
+begins after the first retires; they do not compete for SMs. Its cost scales
+with the number of host-tier rows and their context, not with the batch.
+
+\emph{The first call does no wasted work for host-tier rows.} Their
+\texttt{seqused\_k} is masked to 1, so they attend a single key rather than
+their whole history, and their output is overwritten by the second call.
+Without that mask those rows are attended twice in full; adding it was worth
+22\% of wall time.
+
+\paragraph{What a host-tier request rides on.} A decode step has a cost paid
+once regardless of batch size --- reading every weight --- and a cost per
+request, reading its KV. A device-tier request pays the second out of HBM
+bandwidth. A host-tier request pays it out of \emph{interconnect} bandwidth,
+which is otherwise idle for the tens of milliseconds the step spends reading
+weights. It occupies a row in a step that was happening anyway, consumes
+bandwidth nothing else wants, and holds device memory only for its share of the
+rolling region. That is the sense in which such a request rides along, and
+\S\ref{sec:eval:cost} measures what the ride actually costs.
+
 \subsection{Where KV lives, and why the host has its own addresses}
 \label{sec:design:spaces}
 
