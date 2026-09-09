@@ -42,13 +42,40 @@ configuration --- which our capacity model identifies as the most favourable
 point of all, and which we therefore report as a confirmatory measurement
 (\S\ref{sec:eval}).
 
-Swap-based offloading is the prior generation and DirectKV's own baseline set:
-FlexGen places KV across GPU, CPU and disk under a linear-programming placement
-search with compression, and Pie stages KV blocks through large GPU buffers
-over NVLink-C2C. Both pay the staging cost that zero-copy removes, and neither
-decides tier per request.
-DAK~\cite{dak} pushes host-resident tensors to shared memory via TMA and
-chooses per-\emph{operation} offload ratios by greedy search --- but takes a
+\paragraph{The closest prior mechanism: partitioning by layer.}
+Pie~\cite{pie} is the nearest neighbour of our transfer path and deserves a
+precise comparison. It targets the same hardware, stages KV through GPU buffers
+as we do, and prefetches per layer through a FIFO queue so that the transfer
+overlaps compute --- our rolling region and its swap buffers are cousins, and it
+reports up to $1.9\times$ throughput over vLLM.
+
+\textbf{The difference is the axis of partition.} Pie relocates $m$ of a model's
+$n$ \emph{layers} of KV to host memory, ``using per-layer KV cache as the basic
+management unit'', and that split applies to \emph{every request identically};
+its single control is a global expansion factor, tuned adaptively so that
+swap time stays inside compute time. Two consequences follow directly. First,
+\textbf{no request's KV is ever fully absent from the device} --- every request
+retains $(n-m)/n$ of its cache in HBM, always, so there is no configuration in
+which one request is entirely host-resident while its neighbours are entirely
+device-resident. Second, \textbf{interconnect bandwidth is spent uniformly}: the
+per-step volume is a fixed fraction of \emph{every} request's KV, whereas ours
+is the KV of the requests we select, which is what makes \emph{which requests}
+a decision at all.
+
+The two axes are orthogonal rather than competing, and we say so deliberately: a
+layer-split of the kind Pie performs could operate \emph{within} our device
+tier. We also adopt one of its measurements --- Pie reports GH200 NVLink-C2C at
+419\,GB/s CPU$\to$GPU and 371\,GB/s GPU$\to$CPU, an independent confirmation
+that the widely quoted 900\,GB/s is a bidirectional figure and that a
+host-to-device KV stream should be budgeted well below it.
+
+FlexGen~\cite{flexgen} is the earlier generation of the same family, placing KV
+across GPU, CPU and disk by a linear-programming search with compression; it is
+offline-profiled rather than adaptive. Both pay the staging cost that a
+zero-copy kernel removes, and neither decides a tier per request.
+
+DAK~\cite{dak} pushes host-resident tensors to shared memory via TMA and chooses
+per-\emph{operation} offload ratios by greedy search --- but takes a
 \emph{global} offload ratio as an input, which is precisely the quantity a
 policy has to produce.
 
@@ -112,8 +139,33 @@ makes the CPU's arithmetic relatively worse. Streaming KV to the GPU has the
 opposite dependence: it improves as the interconnect improves, which is the
 direction hardware is moving.
 
-\paragraph{Summary of the gap.} The mechanism for reading host-resident KV
-efficiently is solved. What is unsolved is which requests should live in which
-tier, how many host-tier requests a step can absorb without breaking the
-resident cohort's latency, and when a request should move. Three of the papers
-above name that layer as out of scope or future work.
+\paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems that
+share our hardware assumption on the two questions that matter: what unit of KV
+is placed, and who decides.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+ & placement unit & decided by & device KV \\
+\midrule
+vLLM, SGLang & --- & --- & all of it \\
+Pie~\cite{pie} & layer, uniform & global factor & $(n{-}m)/n$ each \\
+DirectKV~\cite{directkv} & none (all host) & nothing & none \\
+\textbf{this paper} & \textbf{request} & \textbf{placement,} & resident \\
+ & & \textbf{admission,} & cohort \\
+ & & \textbf{migration} & only \\
+\bottomrule
+\end{tabular}
+\caption{The mechanism for reading host-resident KV efficiently is solved; the
+open question is which requests should live where. Systems either place nothing
+(both endpoints) or place a fixed fraction of everything (Pie), and none decides
+per request.}
+\label{tab:axes}
+\end{table}
+
+What is unsolved is which requests should live in which tier, how many host-tier
+requests a step can absorb without breaking the resident cohort's latency, and
+when a request should move. Three of the papers above name that layer as out of
+scope or future work.
