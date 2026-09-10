@@ -55,6 +55,17 @@ previously exist and which no existing KV policy governs --- continuous
 batching, prefix reuse, eviction and hierarchical caching all decide the
 residency of blocks belonging to requests that are not currently running.
 
+It also changes what the movement should be. \emph{Swapping} relocates
+ownership: a unit of KV lives on one side, is brought over to be used, and must
+be written back if it changed --- so every offloaded byte crosses the link twice
+per generated token, once in each direction. \emph{Streaming} keeps the host
+copy authoritative and treats the device-side copy as a cache, so the return
+leg carries only the token just produced. The distinction costs a factor of two
+in interconnect pressure on the resource that bounds the whole technique, and
+it follows from what the offloaded unit \emph{is} rather than from any
+optimisation; \S\ref{sec:related} works it through against the systems that
+made each choice.
+
 \subsection{System model: a disaggregated decode node}
 \label{sec:background:pd}
 
