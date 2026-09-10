@@ -169,10 +169,35 @@ longer on the critical path; do not let them consume pre-flight time.
       the GH200 weights-bound floor alone is ~24 ms. Instead measure the
       all-HBM median ITL in hour 1 (`T0`) and run `T0 x {1.0,1.2,1.5,2.0,3.0}`.
 
-## 2b. KNOWN OPEN ISSUE — the `all_host` arm stalls at scale (2026-08-12)
+## 2b. BLOCKER — the `all_host` arm stalls at scale (2026-08-12, still open)
 
-Found during pre-flight, **not yet resolved**. Must be fixed or scoped before
-4.1 is trusted, because `all_host` is one of the three decisive arms.
+**Raised to a pre-flight BLOCKER on 2026-09-10 (Ben).** An unoptimised endpoint
+is not an endpoint: "our mixture beats our broken arm" is not a finding, and
+4.1's kill criterion is stated against *both* endpoints, so a crippled arm B
+makes the gate unevaluable rather than merely pessimistic.
+
+**Fix it on the A100, where debugging costs nothing.** Two further reasons not
+to defer it to the rental:
+
+* **The numbers say bug, not bandwidth.** 20 x 1024 ctx is 5.4 GB/step, which on
+  ~25 GB/s PCIe is ~216 ms/step, so 64 output tokens should take ~14 s. It did
+  not finish in 900 s. That is a **>60x** unexplained gap at ~0% GPU
+  utilisation, and the one hypothesis tested (B1 starving admissions) was
+  disproved.
+* **C2C would HIDE it, not fix it.** The same 5.4 GB/step is ~12 ms at
+  450 GB/s, so the arm may appear to work on the rented machine while the
+  defect is still there, and every all_host number would be quietly wrong.
+
+**Prime suspect, from the 2026-09 hoist work:** `_issue_runs` issues two copies
+per contiguous run per layer. With 20 riders whose host extents have fragmented
+that is thousands of memcpy launches per step, and the same species of
+launch-bound cost accounted for ~21 ms/step elsewhere. `seed_req` is a lesser
+suspect: measured at 115 ms/request at ctx 2048 on an idle node, so ~2 s for 20
+requests -- real but nowhere near the gap.
+
+**Bring-up gate:** all_host must reach its bandwidth bound (~7 requests at 8K on
+C2C). If it cannot, report all_host from the model and say plainly that it was
+not measured -- do not present a win over an arm that did not run.
 
 **Symptom.** Qwen-32B, 20 requests x 1024 ctx on A100: `all_hbm` completes in
 **45 s**; `all_host` does not finish in **900 s** at ~0% GPU utilisation. At
@@ -260,6 +285,26 @@ which their own design makes true by construction.
 failed bring-up is a cheap lesson; a week of debugging on the meter is not.
 
 ## 4. The experiments, in priority order
+
+### 4.0 DOES THE FEATURE WORK AT ALL — saturation test  (4 GPU-h, RUN FIRST)
+
+**Added 2026-09-10 at Ben's direction, and it goes before everything.** 4.1 is a
+24 GPU-h grid whose every cell is conditional on one thing being true: that
+admitting riders raises throughput on this link. Measure that first, cheaply,
+with a harness already validated on A100 (`pd_decode_goodput.py`).
+
+1. Saturate the GPU with all-HBM at ctx >= 2K: raise offered load until tok/s
+   stops rising. Record tok/s, ITL and GPU utilisation. That is the ceiling
+   this machine can do WITHOUT us.
+2. Turn the feature on, admit riders on top, and re-measure.
+
+**tok/s must go UP.** On A100 it did not (-2.3%) because only 2 riders fit; here
+the budget allows ~7 at 8K and ~28 at 2K. If tok/s does not rise, the transfer
+is not hiding and 4.1 cannot produce a win no matter how its grid is set —
+stop and diagnose rather than spending the 24 h to learn the same thing slower.
+
+Gate: **tok/s(mixture) > tok/s(all-HBM) at matched or better ITL.** Everything
+after this assumes it passed.
 
 ### 4.1 THE DECISIVE ONE — endpoint comparison  (24 GPU-h)
 
@@ -386,27 +431,33 @@ On one substrate:
   survives a fast link — important either way.
 - Burst recovery end-to-end, which on A100 could only converge by doing nothing.
 
-### 4.4 Negative control — Llama-8B  (4 GPU-h)
+### 4.4 Negative control — Llama-8B  (MOVED TO A100, 0 GPU-h here)
 
-Our model says ×1.22 and DirectKV published that 8B does not benefit. Running it
-costs little and **a model that predicts its own failure cases is far more
-credible than one that only predicts wins.**
+**Moved off the rental 2026-09-10.** The model predicts x1.22 -- i.e. no
+meaningful benefit -- and DirectKV published that 8B does not benefit either, so
+this arm is expected to be null. Ben's objection is right that a predicted null
+does not justify metered hours.
 
-### 4.4b Second HBM/C point — Qwen-32B fp8  (6 GPU-h)
+It is still worth running, because reviewers do ask whether a model only fits
+where it wins, and a model that predicts its own failure cases is worth more
+than one that only predicts wins. So run it on the A100, where it is free. The
+prediction is weaker there (less bandwidth) but the direction -- no benefit --
+is the whole point.
 
-**Added 2026-09-06.** Same model, same tokenizer, same KV geometry, half the
-weight footprint: C goes 28.0 -> 60.0 GB and HBM/C 3.4 -> 1.6. The gain law
-predicts the benefit falls from x1.50 to x1.31.
+### 4.4b Qwen-32B fp8 — DROPPED (2026-09-10)
 
-This is the cleanest validation of the law we can run, because it moves the
-weight footprint and **nothing else**. A model-size sweep confounds it with
-layer count, KV-head count and architecture. It also converts the paper's
-current assertion that weight quantization *hurts* a memory system -- by giving
-back the HBM/C headroom -- into a measurement.
+Ben's objection, and it is fair: the claim this was to prove -- that quantizing
+weights gives back HBM/C headroom and therefore shrinks our benefit -- is
+straightforward once the gain law is granted, not counterintuitive, and does not
+need 6 GPU-h.
 
-Run the same arms as 4.1 at one context (8K) and one SLO; the quantity of
-interest is the gain RATIO between the two precisions, not the absolute
-numbers, so it does not need the full grid.
+**What we give up, so the paper does not overclaim.** This was the only second
+point on the **HBM/C axis**. Without it the gain law is validated across
+BANDWIDTH (A100 vs C2C, via 4.2b) and its HBM/C term is **asserted, not
+measured**. Section 3 must say so rather than presenting the law as validated in
+both dimensions. If a reviewer attacks the HBM/C dependence, this is the
+experiment we chose not to run, and the honest answer is that we traded it for
+the bandwidth axis.
 
 ### 4.5 If time remains — DirectKV head-to-head  (16 GPU-h)
 
