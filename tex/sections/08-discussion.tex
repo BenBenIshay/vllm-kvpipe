@@ -45,60 +45,75 @@ than assert.}
 prefill transport is emulated rather than integrated with a production P/D
 stack; CXL and NVMe tiers untouched.}
 
-\subsection{What coherence removes: the staging tax}
+\subsection{Staging versus zero-copy: two hiding windows}
 \label{sec:discussion:coherence}
 
-Our implementation pays two costs that the memory system's design does not
-require, and both are artifacts of how it moves bytes rather than of where it
-decides to put them.
+Our host tier stages: a layer's KV is copied from a pinned host mirror into a
+device rolling slot before attention reads it. DirectKV's kernel instead reads
+CPU-resident KV directly, with no staging buffer at all. It is tempting to read
+our buffer as a tax that their kernel would simply remove. That reading is
+wrong, and the reason is worth setting out because it determines which
+mechanism belongs at which operating point.
 
-The first is a \textbf{bounce buffer}. The host tier keeps $k$ rolling KV
-tensors in device memory, sized to the host cohort's working set, and streams a
-layer's KV into slot $L \bmod k$ before that layer's attention reads it. That
-buffer consumes HBM that the memory system just worked to free, and every byte
-of KV therefore lands in device memory twice.
+\paragraph{The two designs hide the transfer behind different things.} A
+zero-copy kernel overlaps its fetch with the arithmetic of the \emph{attention
+tile it is already computing} --- warp-level pipelining, a window of one tile.
+Decode attention's arithmetic intensity is the GQA group size, 4--8 FLOP/byte
+against a hardware balance point near 116, so there is almost no arithmetic
+there to hide behind: the kernel is bandwidth-bound on the fetch it is trying
+to hide. Staging overlaps the fetch for layer $\ell{+}1$ with the \emph{entire
+compute of layer $\ell$}, which includes the QKV, output and MLP projections.
+Those are weight-bound and long --- about 21 of a 34\,ms step for Qwen-32B on
+GH200. \textbf{The staging buffer is not overhead; it is what buys a
+layer-sized hiding window instead of a tile-sized one.}
 
-The second is \textbf{mirroring on the write path}. Each decode step projects
-new $K,V$ for every host-tier request, and we copy them device-to-host so the
-authoritative copy stays current --- an explicit transfer per layer per step,
-plus the bookkeeping that keeps two copies consistent.
+\paragraph{What staging costs, and hence where the crossover is.} Staging pays
+two extra HBM passes per byte --- the write into the slot and the read out of
+it --- plus the slot's own device footprint. Zero-copy pays neither. So the
+comparison is not one design dominating the other but a crossover in the
+\emph{offload ratio}:
 
-A coherent interconnect removes both, and the mechanism is the same in each
-case: \textbf{stop keeping two copies}. If a host-tier request's KV blocks are
-allocated in mapped host memory that the GPU can address directly, the
-attention kernel reads them in place --- no staging slot --- and the kernel's
-own KV write lands in host memory directly, so there is no mirror to
-synchronise and no device-to-host copy to issue. The synchronisation problem
-does not get cheaper; it ceases to exist, because there is only one copy.
+\begin{itemize}
+\item When the per-step transfer \textbf{fits inside the layer compute window},
+      staging hides it almost entirely and pays only the extra HBM traffic,
+      which at $\Xlink/\BW \approx 0.15$ is a small fraction of a transfer that
+      is itself hidden. Staging wins.
+\item When the transfer \textbf{exceeds that window}, it is exposed under either
+      design, and zero-copy wins by avoiding the extra HBM passes and the
+      buffer's footprint.
+\end{itemize}
 
-It is worth being precise about what this does \emph{not} buy, since coherence
-is easy to over-read. It does not make the transfer free. Coherence is a
-guarantee about \emph{visibility}, not a cheaper transport: the same bytes
-still cross the link at link bandwidth, and a KV byte the GPU reads is fetched
-when the kernel touches it. What changes is that the bytes cross once instead
-of twice, and that no separate copy engine, staging allocation, or consistency
-bookkeeping stands between them.
+That is precisely why the two systems make opposite choices, and both are
+right. DirectKV places 100\% of KV on the host for every request, so its
+per-step transfer is the entire KV working set and can never fit a compute
+window --- zero-copy is the correct mechanism for that design point, and its
+CPU-memory-aware tiling is aimed at shifting the residual bottleneck back to
+HBM. We place a \emph{selected subset} of requests on the host, and admission
+sizes that subset so its transfer fits the window by construction
+(\S\ref{sec:design:admission}). \textbf{The offload ratio is not a fixed
+property of the system here; it is the quantity our policy controls} --- which
+means the choice of mechanism follows from the policy rather than constraining
+it.
 
-Nor does it require the host to observe anything. One might expect the CPU to
-need a signal when a new token's KV becomes visible, and there is no portable
-way to snoop a coherence protocol to obtain one. But in this design nothing on
-the host consumes the KV: the host copy exists so that the \emph{GPU} can read
-it back on a later step. There is no consumer to notify. Were one introduced
---- a prefill node handing off, or a CPU-side eviction policy --- the standard
-construction is a release-ordered completion flag written after the KV with
-system-scope fencing and polled by the CPU, not coherence snooping; the
-ordering, not the notification, is the hard part.
+\paragraph{Where a coherent link helps regardless: the write path.} One cost of
+ours is not about hiding at all. Each step projects new $K,V$ for every
+host-tier request and we copy them device-to-host to keep the mirror
+authoritative. If those blocks were mapped host memory the kernel could write
+them in place, removing the copy and the bookkeeping that keeps two copies
+consistent. The effect is small in time --- an asynchronous version of that
+copy measured 1.6\,ms --- but it removes a class of state rather than an amount
+of time, and that state is where migration bugs live. DirectKV's Alg.~3 already
+does exactly this, appending newly projected $K,V$ to CPU memory from inside
+the kernel.
 
-Finally, the honest attribution: this is what DirectKV's fused decode kernel
-already does. Its Alg.~3 appends each newly projected $(k_t, v_t)$ to the KV
-cache in CPU memory from inside the kernel, and its design eliminates the
-staging buffer by construction --- ``no buffer'' is the first half of its
-title. The consequence for us is therefore specific and useful rather than
-speculative: \textbf{our bounce buffer and our device-to-host mirroring are a
-single tax, paid for running on a staged backend, and one substrate change
-removes both.} Our tier backend interface is written to allow exactly that
-substitution (\S\ref{sec:impl}), and \S\ref{sec:eval} reports what the staged
-path costs so the difference can be priced.
+\paragraph{What coherence does not buy.} It does not make the transfer free; it
+makes it implicit. Coherence is a guarantee about \emph{visibility}, not a
+cheaper transport --- the same bytes cross the link at link bandwidth, fetched
+when the kernel touches them. Nor does anything need to poll for completion:
+nothing on the host consumes the KV, since the host copy exists so that the
+\emph{GPU} can read it back later. Were a consumer introduced, the construction
+is a release-ordered flag with system-scope fencing, and the ordering rather
+than the notification is the hard part.
 
 \subsection{Placement by hardware, policy by scheduler}
 
