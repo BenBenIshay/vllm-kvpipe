@@ -18,7 +18,8 @@
 \subsection{Setup}
 
 \todo{A100-80 PCIe (Qwen2.5-32B) for the cost decomposition and capacity
-results; GH200-96 (Llama-3.1-70B fp8) for the endpoint comparison. Report
+results; GH200-96 (Qwen2.5-32B, at fp16 and fp8) for the endpoint comparison,
+with Llama-3.1-70B fp8 as a confirmatory point where time allows. Report
 measured link bandwidth in both cases rather than the spec figure --- on A100
 we measure 25.1\,GB/s against a 25.1 nominal, but assume nothing.}
 
@@ -139,14 +140,29 @@ per-step cost that survives a fast link.}
 
 \subsection{Negative control}
 
-\needsgh{Llama-8B, GH200 plan 4.4. Our model says $\times$1.22 and DirectKV
+\needsgh{Llama-8B, GH200 plan 4.4. Our model says $\times$1.26 and DirectKV
 published that 8B does not benefit. 4 GPU-hours. A model that predicts its own
 failure cases is far more credible than one that only predicts wins.}
+
+\subsection{The weight-precision pair}
+\label{sec:eval:precision}
+
+\needsgh{GH200 plan 4.4b, 6 GPU-h. Qwen-32B at fp8 and fp16: same architecture,
+same tokenizer, same KV geometry, half the weight footprint. $\Ckv$ goes
+28.0 to 60.0\,GB and $\HBM/\Ckv$ 3.4 to 1.6, and the law predicts the benefit
+falls $\times$1.50 to $\times$1.31. This is the cleanest validation available
+to us because it moves the weight footprint and NOTHING else --- a model-size
+sweep confounds it with layer count, KV-head count and architecture. Report the
+RATIO between precisions, not the absolute numbers.}
 
 \subsection{Correctness}
 \label{sec:eval:correct}
 
-\todo{The lossless claim, promoted from hygiene to a result. Bitwise gates
+\todo{DEMOTED 2026-09-06 from a claimed contribution to a setup paragraph.
+Exact placement is what moving bytes does and needs no argument; report the
+gates briefly as correctness hygiene, and keep the bf16 near-tie methodology
+here (not in the background) because it is a real trap for anyone reproducing
+this. Bitwise gates
 (host pool round-trip, two-pass attention self-verify at 576 mixed decode
 layer-steps with $\max|\mathrm{diff}|=0$, prefill-stash round-trip across block
 boundaries and after the producer's extent is recycled); token-identical

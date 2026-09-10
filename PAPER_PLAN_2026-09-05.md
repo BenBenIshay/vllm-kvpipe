@@ -1,14 +1,18 @@
 # Paper construction plan — target MLSys 2027
 
-Written 2026-09-05. Supersedes the *scheduling* half of `PAPER_OUTLINE.md`
-(2026-08-11), which predates everything from 2026-08-13 onward. The outline's
-§3 (analytical spine) and §4 (positioning) survive intact and are still the
-best text we have; its §6 (assets) and §7 (development plan) are stale and are
-replaced below.
+Written 2026-09-05, updated through 2026-09-06. **This is the live planning
+document.** `PAPER_OUTLINE.md` was fully **retired 2026-09-06** — four of its
+load-bearing claims are now false and it is written under a framing the paper
+no longer uses; that file is a tombstone and the original is in git at
+`2bfc6ca5e`.
 
-Companion docs: `PAPER_OUTLINE.md` (spine + positioning),
-`GH200_EXPERIMENT_PLAN.md` (the rental), `BLOCKER_PREFILL_RESIDENCY.md` (the
-full measurement narrative Aug-12 → Sep-04).
+Companion docs: `GH200_EXPERIMENT_PLAN.md` (the rental),
+`GH200_HANDOFF.md` (brief for the GH200 track), `BLOCKER_PREFILL_RESIDENCY.md`
+(the measurement narrative Aug-12 → Sep-06), `paper/tex/` (the paper).
+
+**Framing note (2026-09-06):** the paper is a **heterogeneous memory system for
+LLM decode** — HBM and host DRAM managed as one KV memory — not "a policy layer
+for host-memory KV". Every section below should be read under that framing.
 
 ---
 
@@ -183,15 +187,17 @@ headline of §5. That split is what makes a 55-day schedule feasible.
 
 ### W0 — Sep 5–12: write what GH200 cannot change; book the box
 
-- [ ] **`PAPER_OUTLINE.md` → v2.** Fold in §2 above; retire the stale asset
-      table and P1; restate the system model as P/D decode node.
+- [x] **`PAPER_OUTLINE.md` retired** (2026-09-06) rather than revised — the
+      framing changed, so a v2 would have been a rewrite. Tombstone in place,
+      original in git at `2bfc6ca5e`.
 - [ ] **LaTeX scaffold** in `paper/tex/` with the MLSys 2027 style, section
       skeleton, and a `data/` → figure build (`make figs`).
 - [ ] **§3 analytical spine — written to completion.** It is done work: the gain
       law, context-cancels, the applicability gate, the eff_kv curve, and the
       P4 validation. This is the section that survives every branch below.
 - [ ] **§7 related work — written to completion.** Seven papers read; the
-      positioning table in `PAPER_OUTLINE.md` §4 is already near-final prose.
+      positioning is written, and every DirectKV quote is now verified against
+      the published PDF (`/mnt/beegfs/benishay/papers/`).
 - [ ] **Freeze the A100 dataset.** One clean re-run on current HEAD of
       `rider_hide_efficiency.py`, `hybrid_preload_capacity.py`,
       `pd_decode_goodput.py`, `p4_itl_model_validation.py` → `paper/data/*.json`
@@ -311,7 +317,7 @@ Red-team the draft against this list in W6. Each item names its answer.
    and goodput (real KV, `pd_decode_goodput.py`).
 3. **"You are a policy on someone else's mechanism."** → The spine ablation
    (§4.3 / C11), on one substrate. If it is not run, this criticism is correct.
-4. **"The gain shrinks as HBM grows"** (70B: ×1.59 on GH200-96 → ×1.12 on
+4. **"The gain shrinks as HBM grows"** (70B: ×1.71 on GH200-96 → ×1.32 on
    GH200-144). → Answer head-on before a reviewer does: weights are growing
    faster than HBM (MoE, 405B+), so `HBM/C` trends favourably. Structurally the
    same decay we cite against NEO, and we should say so ourselves.

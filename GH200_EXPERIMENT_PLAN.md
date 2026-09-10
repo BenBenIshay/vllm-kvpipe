@@ -14,7 +14,7 @@ can fail at bring-up gets a hard time-box and a defined fallback.
 
 | Claim | Status |
 |---|---|
-| **Mixture > both endpoints (8 / 5 / 13 for 70B@8K)** | **MODELLED, never measured. This is the rental.** |
+| **Mixture > both endpoints (13 / 7 / 19 for Qwen-32B fp16 @8K)** | **MODELLED, never measured. This is the rental.** |
 | Adaptive probe verdict flips harmful → beneficial on C2C | measured *harmful* on PCIe; expected to flip |
 | eff_kv under FA3 on Hopper | measured 0.46–0.77 on A100/FA2 only. **Sits in the capacity denominator — if FA3 closes the gap, our projected gain FALLS** |
 | FA2/Triton crossover at B≈50 | A100 only; FA3 + buildable FlashInfer change the picture |
@@ -22,24 +22,77 @@ can fail at bring-up gets a hard time-box and a defined fallback.
 
 ## 1. Hardware and model choice
 
-**Recommend: 1× GH200-96, Llama-3.1-70B FP8.**
+**REVISED 2026-09-06. Primary is now Qwen2.5-32B, not Llama-70B.** The previous
+recommendation (70B fp8 as the headline) is superseded; 70B is demoted to a
+confirmatory arm. Reasoning below, because the reversal matters.
 
-Weights ~70 GB leave C ≈ 22 GB for KV — the exact configuration our gain law
-targets (`HBM/C ≈ 4.4`, predicted ×1.59). One GPU keeps the measurement clean.
+**Recommend: 1× GH200-96, Qwen2.5-32B, evaluated at fp16 and fp8.**
 
-Rejected alternatives, with reasons:
+| arm | W | C | HBM/C | B_cap@8K | B_cap@4K | predicted |
+|---|---|---|---|---|---|---|
+| **Qwen-32B fp16** (primary) | 64 GB | 28.0 GB | 3.4 | **13.0** | 26.1 | ×1.50 |
+| **Qwen-32B fp8** (second point) | 32 GB | 60.0 GB | 1.6 | 27.9 | 55.9 | ×1.31 |
+| Llama-8B fp16 (negative control) | 16 GB | 76.0 GB | 1.3 | 70.8 | 141.6 | ×1.26 |
+| ~~Llama-70B fp8~~ (DROPPED 2026-09-10) | 72.7 GB | 19.3 GB | 5.0 | **7.2** | 14.4 | ×1.71 |
+
+**Why 70B lost the headline — statistical resolution.** At C = 19.3 GB, 70B
+gives `B_cap = 7.2` at 8K. The decisive experiment claims the mixture serves
+more requests, against a **15% kill threshold**. With a baseline of 7, one
+request is 14%: the entire go/no-go decision would turn on resolving a single
+request. Qwen-32B fp16 gives 13 at 8K and 26 at 4K, where one request is 4%.
+The rental exists to make one measurement; it should be made where it can be
+resolved.
+
+**Why the fp8/fp16 pair is a better experiment than a model-size sweep.**
+Comparing 8B/32B/70B moves the weight footprint *and* layer count, KV-head
+count and architecture — four variables for a law about one. The two Qwen-32B
+arms share architecture, tokenizer and KV geometry and **differ only in weight
+precision**, so they move `HBM/C` and nothing else. They also test directly the
+claim that weight quantization *hurts* a memory system by giving back its
+headroom, which the paper currently only asserts.
+
+**Practical:** every harness and correctness gate we have is validated on
+Qwen2.5-32B, and it is already in the HF cache. 70B means re-validating the
+whole ladder on the meter, against this document's own rule that rental time is
+for measuring, not debugging.
+
+Rejected or demoted, with reasons:
+- **Llama-70B fp8** — DROPPED entirely on 2026-09-10 (§4.6), not merely
+  demoted. Its unique
+  value is real: it is the configuration the gain law most favours and the one
+  DirectKV never evaluated (they use 8B and OPT-13B/30B). Worth having, not
+  worth risking the trip on. Requires: 72.7 GB pre-staged, ~19 min per load,
+  and fp8 kernels working on SM90 (unverified).
 - **70B fp16 TP=2** — doubles cost and injects ~160 all-reduces/step as a
-  confound in exactly the metric we are measuring. Keep as fallback only if the
-  fp8 checkpoint misbehaves.
-- **Llama-8B** — our own model says ×1.22, and DirectKV published that it does
-  not benefit. Useless as the headline; keep only as the *negative control*
-  (§4.4), which is genuinely valuable.
-- **GH200-144** — larger HBM makes C bigger and the effect *smaller* (70B drops
-  to ×1.12). Actively worse for us.
+  confound in exactly the metric we are measuring. Fallback only.
+- **Llama-8B** — ×1.26, and DirectKV published that it does not benefit.
+  Useless as a headline; genuinely valuable as the *negative control* (§4.4).
+- **GH200-144** — larger HBM makes C bigger and the effect *smaller*. For
+  Qwen-32B it does not merely shrink, it **switches off** (×1.00 at C = 73 GB,
+  below the applicability gate). Actively worse for us, and a clean
+  demonstration of the gate if anyone asks.
+
+**Known counter-argument, recorded rather than buried:** a reviewer may want a
+70B-class headline because that is what people deploy, and may read 32B as a
+convenience choice. The answer is that the fp8/fp16 pair demonstrates the law
+across `HBM/C` more rigorously than a single heavy model does — but if §4.6
+lands, quote it.
 
 ## 2. Pre-flight — do ALL of this before renting
 
 Every item here is free and removes rental risk.
+
+- [ ] **NEW (2026-09-06): source a Qwen2.5-32B fp8 checkpoint** for the second
+      HBM/C point. It must share the fp16 model's architecture exactly — same
+      64 layers, 8 kv-heads, head_dim 128 — or the pair stops isolating weight
+      precision, which is the entire reason for running it. Verify the config
+      before renting, the same way the 70B checkpoint was verified.
+- [ ] **NEW: confirm Qwen2.5-32B fp16 is staged** (it is in the A100 HF cache;
+      it still has to reach the rented box).
+
+The next two items concerned **§4.6, the 70B arm, which is now DROPPED**, so
+they are moot and kept only as a record. They were no
+longer on the critical path; do not let them consume pre-flight time.
 
 - [x] **fp8 70B checkpoint checked (2026-08-12) — largely de-risked.**
       `RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8`: 80 layers, 8 kv-heads,
@@ -60,11 +113,12 @@ Every item here is free and removes rental risk.
       | HBM/C | 4.4 | **4.96** |
 
       A smaller C makes the effect **larger** (gain tracks `HBM/C`), so the
-      prediction moves slightly in our favour — but the arithmetic in §4.1
-      should be restated as **7 / 5 / 12**, not 8 / 5 / 13.
-- [ ] **Pre-stage the checkpoint** (~70 GB). Downloading it on a metered rented
-      box is wasted money; stage to object storage or plan the download into
-      hour 0 explicitly.
+      prediction moves in our favour: **7 / 5 / 12** for 70B, and the model now
+      reproduces it (§4.6).
+- [x] **Pre-staging the 70B checkpoint: NOT NEEDED — §4.6 is dropped.**
+      Decided 2026-09-10: skip Llama-70B entirely. Qwen-32B is the primary
+      model and every harness and correctness gate is already validated on
+      it, so nothing on the meter depends on a 72.7 GB download.
 - [x] **Dry-run on A100 with Qwen-0.5B — done 2026-09-05.** `transfer_bw_probe`
       25.16 GB/s vs the 25.1 assumed. `endpoint_comparison` runs three arms x
       two SLOs end to end; its first dry run came back VACUOUS (all-HBM
@@ -213,11 +267,11 @@ The whole point of the trip. Same model, same HBM, same workload, **same
 substrate** (our `StagedHostBackend`) — so this is a *policy* comparison, not a
 mechanism comparison.
 
-| arm | configuration | model predicts (70B@8K) |
+| arm | configuration | model predicts (Qwen-32B fp16 @8K) |
 |---|---|---|
-| A | all-HBM (tiers off, stock vLLM) | ~7 requests |
-| B | all-host (every request CPU-tier) | ~5 |
-| C | **mixture** (our policy) | **~12** |
+| A | all-HBM (tiers off, stock vLLM) | ~13 requests |
+| B | all-host (every request host-tier) | ~7 |
+| C | **mixture** (our memory system) | **~19** |
 
 (Updated from 8/5/13 after measuring the real fp8 checkpoint at 72.7 GB, which
 leaves C = 19.3 GB rather than the assumed 22 GB.)
@@ -228,19 +282,20 @@ per-direction link — see `BLOCKER_PREFILL_RESIDENCY.md`'s correction entry):
 
 | quantity | value |
 |---|---|
-| KV bytes/token, 70B (80 layers x 8 kv-heads x 128 x 2 x fp16) | 0.33 MB |
-| a rider at 8K ctx, per step | **2.68 GB** |
-| hide budget = ITL_0 x X x 0.9 = 31.9 ms x 450 GB/s x 0.9 | **12.9 GB** |
-| riders the link can carry | **~4.8** |
-| arm C = B_cap + riders = 7.2 + 4.8 | **~12** |
+| KV bytes/token, Qwen-32B (64 layers x 8 kv-heads x 128 x 2 x fp16) | 0.26 MB |
+| a host-tier request at 8K ctx, per step | **2.15 GB** |
+| hide budget = ITL_0 x X x 0.9 = 34.1 ms x 450 GB/s x 0.9 | **13.8 GB** |
+| host-tier requests the link can carry | **~6.9** |
+| arm C = B_cap + host-tier = 13.0 + 6.9 | **~19** |
 
-So the 7 / 5 / 12 table IS consistent at 450 GB/s -- the gain law already used
-450 (`paper/model/killer_v2.py` sets `x=450`), which is why the endpoint
-predictions did not move when the narrative arithmetic was corrected.
+The 13 / 7 / 19 table reproduces from `paper/model/killer_v2.py` as committed
+(`analyze(S=8192, GH200, slo=50, stage=0)`), which is the gate a table has to
+pass before it goes in the paper.
 
-**Use ~5 riders as the live sanity check.** If B1 admits ~2, the link constant
-is still 25.1 somewhere -- run `gh200_preflight.py` and pass the MEASURED
-`--hybrid-pcie-gbps`. If it admits ~40, `b_tok` is wrong for an 80-layer model.
+**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2, the
+link constant is still 25.1 somewhere -- run `gh200_preflight.py` and pass the
+MEASURED `--hybrid-pcie-gbps`. If it admits ~30, `b_tok` is wrong for a
+64-layer model.
 Either way, stop and fix before spending hours on arms that cannot mean
 anything.
 
@@ -337,6 +392,22 @@ Our model says ×1.22 and DirectKV published that 8B does not benefit. Running i
 costs little and **a model that predicts its own failure cases is far more
 credible than one that only predicts wins.**
 
+### 4.4b Second HBM/C point — Qwen-32B fp8  (6 GPU-h)
+
+**Added 2026-09-06.** Same model, same tokenizer, same KV geometry, half the
+weight footprint: C goes 28.0 -> 60.0 GB and HBM/C 3.4 -> 1.6. The gain law
+predicts the benefit falls from x1.50 to x1.31.
+
+This is the cleanest validation of the law we can run, because it moves the
+weight footprint and **nothing else**. A model-size sweep confounds it with
+layer count, KV-head count and architecture. It also converts the paper's
+current assertion that weight quantization *hurts* a memory system -- by giving
+back the HBM/C headroom -- into a measurement.
+
+Run the same arms as 4.1 at one context (8K) and one SLO; the quantity of
+interest is the gain RATIO between the two precisions, not the absolute
+numbers, so it does not need the full grid.
+
 ### 4.5 If time remains — DirectKV head-to-head  (16 GPU-h)
 
 Only now possible (SM90a). Two things worth knowing:
@@ -346,6 +417,28 @@ Only now possible (SM90a). Two things worth knowing:
   `S_past % 64 == 0` gate. **Frame any result as characterisation, never as a
   takedown** — the artifact has constraints (no radix cache, head_dim 128, bf16)
   that make a naive head-to-head unfair and unpublishable.
+
+### 4.6 Llama-70B fp8 — DROPPED (2026-09-10)
+
+Not run. Decided with Ben: skip the 70B entirely and spend the window on the
+models the claim actually rests on.
+
+The reasoning was already in this plan before the decision. `B_cap = 7.2` at 8K
+means a single request is 14% against a 15% kill threshold, so this arm could
+never have carried the decision -- and §1 had already demoted it for exactly
+that. What remained was 10 GPU-h for a confirmatory point plus a 72.7 GB
+download on a metered box, to re-validate a harness ladder that is verified on
+Qwen-32B and nowhere else.
+
+What we give up, stated rather than glossed: HBM/C = 5.0 is the configuration
+the law most favours (predicted x1.71), and DirectKV never evaluated a
+70B-class model, so this was non-overlapping evidence. **§4.4b replaces it
+properly** -- Qwen-32B at fp8 vs fp16 moves HBM/C while holding architecture,
+tokenizer and KV geometry fixed, which is a cleaner test of the same law than
+changing model families would have been.
+
+Consequence for the budget: 10 GPU-h freed, and the pre-flight no longer needs
+the 72.7 GB pre-stage.
 
 ### Model-load accounting (matters at 72.7 GB)
 
@@ -367,13 +460,19 @@ FS we measured Llama-8B (15 GB) at 237 s -- ~63 MB/s -- which extrapolates to
 | phase | GPU-h |
 |---|---|
 | 0 bring-up | 8 |
-| 4.1 endpoint comparison | 24 |
+| 4.1 endpoint comparison (Qwen-32B fp16) | 24 |
 | 4.2 re-parameterisation | 8 |
 | **4.2b rider cost curve (F8)** | **6** |
 | 4.3 policy ablation | 16 |
-| 4.4 negative control | 4 |
+| 4.4 negative control (Llama-8B) | 4 |
+| **4.4b second HBM/C point (Qwen-32B fp8)** | **6** |
 | 4.5 DirectKV (optional) | 16 |
-| **total** | **66–82** |
+| **4.6 confirmatory 70B (optional, LAST)** | **10** |
+| **total** | **72–98** |
+
+Model loads are cheaper than the old plan: Qwen-32B is ~64 GB rather than
+72.7 GB, and the fp8 arm ~32 GB, so §4.4b costs little beyond its own runs.
+The 10 h for §4.6 includes the 72.7 GB stage-in and two ~19 min loads.
 
 At typical GH200 on-demand rates that is roughly **$250–450**, plus the 70 GB
 checkpoint transfer. Call it **a 5–7 day reservation** to absorb model-load time
@@ -405,8 +504,11 @@ Everything after 4.2b is genuinely optional.
 ## 8. Decisions
 
 **AGREED 2026-08-12:**
-2. **1× GH200-96 with Llama-70B FP8.** TP=2 fp16 is the fallback only if the
-   fp8 checkpoint misbehaves.
+2. **1× GH200-96.** Model choice REVISED 2026-09-06: **Qwen2.5-32B fp16 is the
+   primary** (see §1) with fp8 as the second HBM/C point; Llama-70B fp8 is
+   demoted to the optional confirmatory arm §4.6. The original decision was 70B
+   fp8 as headline, superseded on statistical-resolution grounds — B_cap = 7
+   against a 15% kill threshold means one request decides the trip.
 3. **15% is the kill threshold** for 4.1. Mixture must beat both endpoints by
    >=15% at matched SLO, or we fall back to the characterization paper.
 
