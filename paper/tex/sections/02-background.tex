@@ -88,51 +88,9 @@ away: \S\ref{sec:impl:stash} implements the handover and \S\ref{sec:eval}
 reports what it costs, so the reader can price the assumption rather than
 accept it.
 
-\subsection{What ``lossless'' means, and how we test it}
-\label{sec:background:lossless}
-
-We claim bit-exact output, so we owe the reader a precise account of how that
-is verified --- and the naive test does not work.
-
-Attention reductions in \texttt{bf16} are not associative, so their result
-depends on the order in which a batch is reduced. Stock vLLM therefore produces
-\emph{different text for the same prompt} at concurrency 1 and concurrency 6,
-reproducibly at each. Such prompts contain a near-tie between two candidate
-tokens somewhere in the generation, and which one wins depends on batch
-composition; in one six-prompt set we examined, three behaved this way. We do
-not claim that fraction is representative --- the point is only that such
-prompts are common enough that a correctness gate must account for them. Any
-system that changes batching --- as a tier does, necessarily --- will diverge
-on them without being wrong.
-
-A single comparison against a baseline therefore cannot establish correctness,
-and a same-configuration control cannot rescue it: a control at fixed
-concurrency proves the baseline is reproducible, not that a divergence in an
-arm which \emph{changes} concurrency is a defect. We use two gates together,
-and neither alone suffices:
-
-\begin{itemize}
-\item \textbf{Serial.} Batch of one on both sides, which removes batch-order
-      dependence entirely. This gate catches data loss but not block reuse
-      under load, since nothing is contended.
-\item \textbf{Concurrent, screened.} Full load, but compared only on prompts
-      pre-screened as batching-stable --- those where vanilla at concurrency
-      matches vanilla serial. This gate exercises reuse and eviction, and its
-      screen is what makes a divergence attributable.
-\end{itemize}
-
-Below the token level we verify numerically: the host pool's round trip, the
-two-pass attention against a single-pass reference over the same KV, and the
-prefill handover across block boundaries and after the producer's memory has
-been recycled and overwritten. These are exact comparisons
-($\max|\mathrm{diff}| = 0$) and they are what the token-level gates rest on.
-
-One measurement puts the token-level divergences in proportion. On a serial
-greedy comparison our host tier matched vanilla on 6 of 6 prompts in the first
-generation round and 4 of 6 in a second round, while enabling \emph{vanilla's
-own prefix cache} --- changing nothing else --- matched on only 2 of 6. Our
-divergences are a strict subset of those a stock, universally deployed vLLM
-feature already introduces, which is the honest frame for a losslessness claim
-in bf16: exactness is established numerically
-(\S\ref{sec:eval:correct}), and token-level agreement is reported with the
-baseline's own instability alongside it rather than in isolation.
+% NOTE: a subsection defining "lossless" and describing how we verify it was
+% removed 2026-09-06. Exact placement is a property of moving bytes rather than
+% approximating them, and no comparable systems paper argues for it -- doing so
+% invites the doubt it was meant to settle. The bf16 near-tie methodology, which
+% is a real gotcha, now lives as one paragraph in the evaluation setup where it
+% belongs.

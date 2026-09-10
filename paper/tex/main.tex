@@ -28,6 +28,8 @@
 }
 
 \usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -63,7 +65,12 @@
 % points at the title, not at the real cause. Use \par\vspace instead.
 \twocolumn[
 \begin{center}
-{\Large\bf Who Rides Along? Request-Level KV Tiering for Capacity-Bound Decode}
+% Retitled 2026-09-06 for the heterogeneous-memory-system framing. Alternatives
+% kept for the co-authors to argue over:
+%   "Two Memories, One Pool: Heterogeneous KV Memory for LLM Decode"
+%   "Managing HBM and Host DRAM as One KV Memory for LLM Decode"
+%   (old, subordinate) "Who Rides Along? Request-Level KV Tiering ..."
+{\Large\bf Heterogeneous KV Memory for Capacity-Bound LLM Decode}
 \par\vspace{1ex}
 \todo{author list and affiliations --- open decision, paper/PAPER\_PLAN\_2026-09-05.md section 8}
 \par\vspace{2ex}
