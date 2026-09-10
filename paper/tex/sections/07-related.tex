@@ -103,6 +103,15 @@ a whole layer's cache cannot be left dirty on the device when the buffer is
 reclaimed for the next layer. It does mean that comparisons of interconnect
 pressure between these systems must count both directions.
 
+\paragraph{On comparing directly.} Pie has no public artifact --- its paper
+lists no repository, and we found none --- so a head-to-head against their
+implementation is not available to us. Nor would it isolate what we want:
+running two engines compares implementations, whereas the question here is
+whether \emph{choosing} which requests to offload beats spreading the same
+interconnect budget uniformly. \S\ref{sec:eval:ablation} therefore holds the
+mechanism fixed and varies the policy, and reports Pie's published figures
+alongside rather than reproducing them.
+
 The two axes are orthogonal rather than competing, and we say so deliberately: a
 layer-split of the kind Pie performs could operate \emph{within} our device
 tier. We also adopt one of its measurements --- Pie reports GH200 NVLink-C2C at
