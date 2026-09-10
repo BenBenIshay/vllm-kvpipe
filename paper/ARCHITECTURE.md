@@ -402,6 +402,37 @@ Why that matters, concretely:
    layer-split within our device tier. We should say so rather than claim the
    territory.
 
+**A third consequence, verified 2026-09-10: Pie pays a return leg, we don't.**
+Their swap controller "initiates a swap-out for the *coldest layer*, defined as
+**the last layer that finished computation**" — i.e. the layer that has just had
+this token's K,V appended. Their mapping table swaps whole CPU/GPU pointers per
+layer, so the unit that moves is the entire layer buffer, in both directions,
+once per generated token. Their FIFO timing agrees: swap-out costs the same as
+swap-in.
+
+This is structural, not an oversight. In Pie a layer's KV **lives** on one side;
+the GPU buffer it occupies is needed by the next layer arriving, so a dirty
+layer must be persisted. Our rolling slot is a **cache** — the host mirror stays
+authoritative and `write_token` puts the new token into *both* — so a slot can
+be overwritten with nothing to save. DirectKV has the same property (Alg. 3
+appends only the new K,V to CPU memory).
+
+| per generated token | to device | to host |
+|---|---|---|
+| Pie | offloaded KV | **the same KV again** |
+| DirectKV | all KV | one token's K,V |
+| **Ours** | selected requests' KV | one token's K,V |
+
+Per byte of offloaded KV, **Pie moves two where we move one**, and its return
+leg is the slower direction (371 vs 419 GB/s, their own measurement). For
+Qwen-32B that write-back is a whole layer's KV for the whole batch against our
+~4 KB per layer per rider.
+
+**NB — what this is *not* claiming:** not that Pie moves KV twice *within* a
+step (once for projection, once for attention). It is one round trip of the
+whole layer per token: swap in → project the new token into it and attend it →
+swap out.
+
 **One number of theirs we should use.** Pie *measures* GH200 C2C at
 **419 GB/s CPU→GPU and 371 GB/s GPU→CPU** — an independent confirmation that the
 900 GB/s headline figure is bidirectional and that ~450 GB/s per direction is

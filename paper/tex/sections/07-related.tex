@@ -62,6 +62,47 @@ per-step volume is a fixed fraction of \emph{every} request's KV, whereas ours
 is the KV of the requests we select, which is what makes \emph{which requests}
 a decision at all.
 
+\paragraph{A consequence of the layer unit: the return leg.} Choosing the layer
+as the unit of management has a second effect, on traffic rather than on
+policy. In Pie a layer's KV \emph{lives} on one side or the other, and the
+GPU-side buffer it occupies is needed by the next layer arriving, so a layer
+that has just been computed --- and has therefore just had this token's $K,V$
+appended to it --- must be written back in full. Their swap controller says so
+directly: it initiates ``a swap-out for the `coldest layer', defined as the last
+layer that finished computation''. Every offloaded byte therefore crosses the
+interconnect \textbf{twice per generated token}, and the return leg is the
+slower direction (371 vs 419\,GB/s by their own measurement).
+
+Our rolling region is not the home of the data but a cache of it: the host
+mirror stays authoritative and each step's new $K,V$ is written to it directly,
+so a slot can be overwritten without persisting anything. DirectKV's kernel has
+the same property, appending only the newly projected $K,V$ to CPU memory. The
+resulting difference in per-token traffic is not marginal:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+per generated token & to device & to host \\
+\midrule
+Pie~\cite{pie} & offloaded KV & \textbf{the same KV again} \\
+DirectKV~\cite{directkv} & all KV & one token's $K,V$ \\
+\textbf{this paper} & selected requests' KV & one token's $K,V$ \\
+\bottomrule
+\end{tabular}
+\caption{Per byte of offloaded KV, a design whose offloaded unit is \emph{owned}
+by one side must return it; one whose device-side copy is a \emph{cache} need
+not. Pie moves two bytes where the other two move one, and its return leg uses
+the slower direction of the link.}
+\label{tab:traffic}
+\end{table}
+
+This is not a criticism of Pie's design so much as a property of its unit:
+a whole layer's cache cannot be left dirty on the device when the buffer is
+reclaimed for the next layer. It does mean that comparisons of interconnect
+pressure between these systems must count both directions.
+
 The two axes are orthogonal rather than competing, and we say so deliberately: a
 layer-split of the kind Pie performs could operate \emph{within} our device
 tier. We also adopt one of its measurements --- Pie reports GH200 NVLink-C2C at
