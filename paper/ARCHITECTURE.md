@@ -428,10 +428,44 @@ So the three systems sit at different points:
 | **DirectKV** | none (all host) | nothing | 0% |
 | **Ours** | **request** | placement + admission + migration | resident cohort only |
 
-DirectKV's kernel would **remove our staging buffer and our device-to-host
-mirroring in one substitution** — both are artifacts of running on a staged
-backend, not of the placement design. `KVTierBackend` exists to allow exactly
-that swap.
+**Correction (2026-09-10, Ben's challenge — the earlier version of this
+paragraph was wrong).** It is tempting to say DirectKV's kernel would remove our
+staging buffer as pure overhead. It would not, because the two designs hide the
+transfer behind *different things*:
+
+| | hides the fetch behind | window size |
+|---|---|---|
+| DirectKV (zero-copy) | the attention tile it is computing (warp pipelining) | one tile |
+| **Ours (staged)** | **the entire compute of the previous layer** | **QKV + attn + O + MLP** |
+
+Decode attention's arithmetic intensity is the GQA group size — 4–8 FLOP/byte
+against a balance point near 116 — so there is essentially **no arithmetic
+inside the attention kernel to hide a CPU fetch behind**. The layer's GEMMs, by
+contrast, are weight-bound and long (~21 ms of a 34 ms step for Qwen-32B on
+GH200). **The rolling region is not a tax; it is what buys a layer-sized hiding
+window instead of a tile-sized one.**
+
+The real relationship is a **crossover in the offload ratio**:
+
+- Transfer **fits** the layer compute window → staging hides it, paying only 2
+  extra HBM passes per byte (~0.15× the link time each). **Staged wins.**
+- Transfer **exceeds** the window → exposed either way; zero-copy avoids the
+  extra HBM passes and the buffer footprint. **Zero-copy wins.**
+
+DirectKV offloads **100% of KV for every request**, so its per-step transfer is
+the whole working set and can never fit a compute window — zero-copy is correct
+*for their design point*, and their CPU-memory-aware tiling exists to shift the
+residual bottleneck back to HBM. We offload a **selected subset**, sized by
+admission to fit the window. **The offload ratio is the thing our policy
+controls**, so the mechanism follows from the policy rather than constraining
+it.
+
+What a coherent link *does* buy us regardless is the **write path**: new $K,V$
+could be written straight into mapped host memory, removing the explicit D2H
+and the two-copy bookkeeping. DirectKV's Alg. 3 already does this.
+
+`KVTierBackend` still exists to allow the swap — but as a choice to make at a
+measured crossover, not an upgrade to take unconditionally.
 
 ---
 
