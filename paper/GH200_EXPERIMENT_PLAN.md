@@ -429,8 +429,31 @@ critical path at our operating point and the §7 claim must be softened to a
 statement about traffic rather than performance.** That is a real possible
 outcome and the honest version is cheap to state.
 
-Validated on A100 by `writeback_unit.py`: disabled is a true no-op, enabled
-moves exactly the extent the refresh read, and the round trip is lossless.
+**Apparatus validated on A100 (2026-09-11), both levels:**
+
+*Unit* (`writeback_unit.py`): disabled is a true no-op — it does not propagate
+even a deliberately corrupted slot; enabled moves exactly the extent the
+refresh read (6144 = 6144 bytes); the round trip is lossless.
+
+*Integration* (`policy_ablation.py --arms scored,scored_swapback`,
+Qwen2.5-0.5B, ctx 512, 8 offered — `paper_runs/20260911_ablation_smoke.json`):
+
+| arm | tok/s | link in | link back | total |
+|---|---|---|---|---|
+| streaming | 323.2 | 0.602 GB | 0.000 GB | 0.602 GB |
+| swap-back | 300.0 | 0.602 GB | 0.602 GB | **1.205 GB (2.00×)** |
+
+Both arms read identical volume, and the return leg is **exactly 2.00×** total
+traffic — the factor-of-two the paper claims for swap semantics, now measured
+on our own hardware rather than inferred from someone else's protocol. Token
+output is identical across the two arms, so the emulation is lossless end to
+end and not only in the unit test.
+
+**Do not quote the −7.2% tok/s as a result.** A 0.5B model over a 0.6 s window
+is a smoke test, not a measurement: the step is short enough that the extra
+copy is a large fraction of it, and the sample is 25 steps. The *traffic* ratio
+is structural and does transfer; the *throughput* cost is what §4.3b measures
+at a real operating point.
 
 ### 4.4 Negative control — Llama-8B  (4 GPU-h)
 
