@@ -169,108 +169,44 @@ longer on the critical path; do not let them consume pre-flight time.
       the GH200 weights-bound floor alone is ~24 ms. Instead measure the
       all-HBM median ITL in hour 1 (`T0`) and run `T0 x {1.0,1.2,1.5,2.0,3.0}`.
 
-## 2b. BLOCKER — the `all_host` arm stalls at scale (2026-08-12, still open)
+## 2b. RESOLVED — the `all_host` stall does not reproduce (2026-09-11)
 
-**Raised to a pre-flight BLOCKER on 2026-09-10 (Ben).** An unoptimised endpoint
-is not an endpoint: "our mixture beats our broken arm" is not a finding, and
-4.1's kill criterion is stated against *both* endpoints, so a crippled arm B
-makes the gate unevaluable rather than merely pessimistic.
+**Was a blocker; measured and closed.** `byte_volume_stall.py` walked BOTH arms
+up the byte-volume axis on an idle exclusive A100:
 
-**Fix it on the A100, where debugging costs nothing.** Two further reasons not
-to defer it to the rental:
-
-* **The numbers say bug, not bandwidth.** 20 x 1024 ctx is 5.4 GB/step, which on
-  ~25 GB/s PCIe is ~216 ms/step, so 64 output tokens should take ~14 s. It did
-  not finish in 900 s. That is a **>60x** unexplained gap at ~0% GPU
-  utilisation, and the one hypothesis tested (B1 starving admissions) was
-  disproved.
-* **C2C would HIDE it, not fix it.** The same 5.4 GB/step is ~12 ms at
-  450 GB/s, so the arm may appear to work on the rented machine while the
-  defect is still there, and every all_host number would be quietly wrong.
-
-**Prime suspect, from the 2026-09 hoist work:** `_issue_runs` issues two copies
-per contiguous run per layer. With 20 riders whose host extents have fragmented
-that is thousands of memcpy launches per step, and the same species of
-launch-bound cost accounted for ~21 ms/step elsewhere. `seed_req` is a lesser
-suspect: measured at 115 ms/request at ctx 2048 on an idle node, so ~2 s for 20
-requests -- real but nowhere near the gap.
-
-**Bring-up gate:** all_host must reach its bandwidth bound (~7 requests at 8K on
-C2C). If it cannot, report all_host from the model and say plainly that it was
-not measured -- do not present a win over an arm that did not run.
-
-**Symptom.** Qwen-32B, 20 requests x 1024 ctx on A100: `all_hbm` completes in
-**45 s**; `all_host` does not finish in **900 s** at ~0% GPU utilisation. At
-Qwen-0.5B the same arm completes in 1.6 s, so it is scale-dependent, not a
-logic error in the arm's configuration.
-
-**First hypothesis, tested and WRONG.** With `hybrid_b_hbm_max=0` every request
-must be host-tier, and B1's transfer budget admitted only ~5 of 20 (268 MB each
-against a 1.5 GB budget) with no fallback tier — so the rest would queue
-forever. Disabling B1 and B2 for this arm (correct modelling anyway: DirectKV
-does not gate admission) **did not fix it**.
-
-**Remaining suspects, in order:**
-1. **Seeding cost.** `seed_req` does a D2H `index_select(...).to("cpu")` per
-   layer per request. For 20 requests x 64 layers that is ~5.4 GB of *unpinned*
-   D2H, one time — minutes, not seconds.
-2. **Per-step transfer volume.** The rolling window streams the whole active set
-   every layer: ~84 MB/layer x 64 layers = **5.4 GB per decode step** over
-   ~24 GB/s PCIe = ~224 ms/step *at best*. That is the A100 physics, and it is
-   precisely why this arm is only meaningful on C2C (18x faster).
-3. Pinned-host allocation of the 5.8 GB mirror at engine build.
-
-**PROFILED 2026-08-12 (`profile_host_tier.py`).** Per-phase breakdown at
-Qwen-32B / 512 ctx, scaling 4 -> 16 requests:
-
-| phase | calls | time | verdict |
+| config | GB/step | mixture | all_host |
 |---|---|---|---|
-| `seed_layer` (one-time resident->host) | 4.0x | 4.1x | linear, correct |
-| `build_step` (per-step compaction) | 1.0x | 3.5x | linear in requests, tiny (12 ms) |
-| **`stream_layer`** (per-layer H2D) | 1.0x | **5.1x** | dominant: **48% of wall at n=16** |
-| `write_token` | 1.0x | 1.7x | sublinear |
+| 4 x 1024 | 1.07 | ok 4s | ok 4s |
+| 8 x 1024 | 2.15 | ok 7s | ok 7s |
+| 12 x 1024 | 3.22 | ok 9s | ok 9s |
+| 8 x 2048 | 4.29 | ok 12s | ok 12s |
+| **20 x 1024** | **5.37** | **ok 15s** | **ok 14s** |
 
-Wall scaled 3.6x for 4x requests. **Nothing pathological at this scale** — the
-transfer dominates, which is exactly the PCIe physics (~5.4 GB/step at ~24 GB/s
-= ~224 ms/step). So the stall is NOT in the host tier's transfer path.
+**20 x 1024 is the exact configuration that did not finish in 900 s on
+2026-08-12. It now completes in 14 s** -- a >64x improvement -- and neither arm
+has a knee: the ratio to the link's own bound is flat-to-decreasing (5.4x ->
+4.3x) as volume rises, which is fixed overhead amortising rather than a defect
+emerging.
 
-**TWO HYPOTHESES TESTED AND BOTH WRONG.** (i) B1 admitting only ~5 of 20 with
-no fallback tier — disabling B1/B2 did not fix it. (ii) The pool's rolling slots
-and pinned mirror sitting outside vLLM's `gpu_memory_utilization` budget —
-running at util 0.92 **and** 0.82 both still stalled, so it is not headroom.
+**Why it is fixed:** the symptom was ~0% GPU utilisation, which is a CPU-bound
+launch storm, and the four loop-invariant hoists of 2026-09-04/05 removed
+~21 ms/step of exactly that (`int(_crr.max())` per layer, per-layer scatter
+index rebuilds, `int(seqused_k.max())` per layer, per-layer `seqused` clone).
+No fix was written for 2b itself: there was nothing left to fix, and a
+speculative change could not have been verified.
 
-**Still unexplained.** The break is somewhere between 16 requests x 512 ctx
-(works, 7.5 s) and 20 x 1024 (stalls > 360 s) — only ~5x the work. Leading
-remaining suspect: the *resident* KV pool cannot hold 20 x 1024 = 20,480 tokens
-of PREFILL, because the host tier frees decode GROWTH but prefill blocks stay
-resident; the scheduler then thrashes. That is a real design limit worth
-understanding, not just a benchmark artifact.
+**Two caveats that survive this result.**
+1. The highest volume tested is **5.37 GB/step**. The rental's mixture arm at
+   8K runs at **~15 GB/step**, ~2.8x higher. Passing at 5.4 does not prove 15 is
+   safe -- 4.0 should watch for it on the machine.
+2. The "ratio to link" column is a LOWER bound that ignores prefill and compute
+   entirely, so 4.3x is not a measure of overhead. It is used here only to show
+   the ratio does not grow with volume.
 
-**Decision: stop chasing it here.** This arm is only meaningful on C2C, is slow
-on PCIe by construction, and is not the load-bearing comparison. Item 1
-(does the harness detect a difference?) is being closed with `all_hbm` vs
-`mixture`, which both work.
-
-**RESOLVED (partly): it is NOT a deadlock.** The smaller probe — 6 requests,
-512 ctx — completes in **3.2 s**. So the arm works; it scales badly. But the
-scaling is *superlinear and still unexplained*: 20x1024 is ~13x the work of
-6x512, which should be ~40 s, yet it exceeded 900 s. Suspect #1 (one-time
-seeding: 1280 separate unpinned D2H copies, each an implicit sync) and #2
-(per-step volume) do not obviously produce a >20x superlinear factor. **This
-needs one focused profiling pass before 4.1 is trusted.**
-
-Note the arm is *expected* to be slow on PCIe — 5.4 GB/step over ~24 GB/s is
-~224 ms/step at best. On C2C that same step is ~12 ms, so the regime that makes
-this arm painful here is exactly the one the rental removes.
-
-**Mitigation regardless:** `--arm-timeout-s` (default 3600) now fails a stalled
-arm fast instead of silently burning metered hours. That watchdog worked.
-
-**If unresolved at bring-up:** run 4.1 as `all_hbm` vs `mixture` only, and
-report `all_host` from the model plus DirectKV's published behaviour rather than
-from a broken measurement. The `mixture` vs `all_hbm` comparison is the one that
-carries the paper; `all_host` mainly establishes that DirectKV leaves HBM idle,
-which their own design makes true by construction.
+**Consequence for 4.1:** `all_host` is no longer a broken arm, so the objection
+that it cannot be learned from is answered on the merits. The separate
+objection -- that it is still OUR host tier rather than a published system --
+stands, and is what 4.5 exists for.
 
 ## 3. Phase 0 — bring-up  (time-box: 8 GPU-hours, HARD)
 
