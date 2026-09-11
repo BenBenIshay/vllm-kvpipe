@@ -340,17 +340,97 @@ win, because it bounds the technique for everyone.
 Also record achieved C2C bandwidth per step, so "the transfer hides" is
 measured rather than inferred from ITL.
 
+### 4.2c PRE-FLIGHT BLOCKER — the heterogeneous workload  (0 GPU-h, build on A100)
+
+**Found 2026-09-11 while auditing coverage. Without this, §4.3 produces a null
+result that means nothing, and we would burn 16 GPU-hours concluding our own
+policy is decoration.**
+
+`host_affinity` scores requests on **temporal** signals — idle time since the
+last token, and estimated remaining generation — because context length
+provably cannot discriminate between tiers (the cancellation of design rule
+(a)). Every harness we have generates **identical** requests: same prompt
+length, `max_tokens=out_len` with `min_tokens=out_len` and `ignore_eos`, all
+arriving in one burst. So:
+
+- `idle_score` = 0 for every request (nothing ever idles), and
+- `rem_score` is identical for every request at the same point in the run.
+
+⇒ `host_affinity` returns **the same value for everyone**, so the `scored` arm
+is byte-for-byte the `arrival` arm. **The ablation cannot show a difference
+that exists, because the workload contains nothing to choose between.**
+
+**What to build (A100, no rental time):** a generator with
+1. **mixed remaining generation** — e.g. `max_tokens` drawn from a wide
+   distribution rather than fixed, so "this request will hold memory for a long
+   time" is true of some requests and not others;
+2. **multi-turn idle gaps** — requests that stop generating, wait, and resume,
+   which is the case the policy is actually designed for (agentic and
+   conversational sessions) and the only one where holding memory and consuming
+   bandwidth come apart;
+3. **staggered arrivals** (Poisson), since a burst admits everyone before any
+   gate engages — a trap that has already produced two inconclusive runs.
+
+**Gate before §4.3 runs:** on the new workload, `host_affinity` must have a
+spread (report its min/median/max across the running set). If the spread is
+near zero the workload is still inert and §4.3 must not be run.
+
+This is also what the paper needs independently: §6.1 now states that a
+homogeneous workload makes scored placement degenerate to arrival *by
+construction*, so a reviewer will look for the heterogeneous one.
+
 ### 4.3 Policy ablation — is the policy load-bearing?  (16 GPU-h)
 
 On one substrate:
-- **uniform offload vs our tiered admission** — this is `(c) − (b)` from the
-  original plan, the thing that justifies a *policy* paper.
+- **uniform offload vs our tiered admission** — the `(c) − (b)` comparison that
+  justifies a *policy* paper at all.
 - `VLLM_KVPIPE_TIER_POLICY=arrival` vs `scored`.
 - **Adaptive probe verdict.** On PCIe it measured *harmful* and correctly
   reverted. Here it should measure *beneficial* and keep the demotion. If it
-  still says harmful, our host path has a fixed per-step overhead problem that
-  survives a fast link — important either way.
+  still says harmful, our host path has a fixed per-step overhead that survives
+  a fast link — important either way.
 - Burst recovery end-to-end, which on A100 could only converge by doing nothing.
+
+**MATCH THE BYTES, NOT THE REQUEST COUNT (added 2026-09-11).** The `uniform_*`
+arms cap `b_hbm_max` at a fraction of the offered load, which fixes how many
+requests are host-tier but *not* how much they move — the policies select
+requests of different contexts, so part of any delta would really be a
+difference in offload ratio. `policy_ablation.py` now counts bytes on both
+directions per arm and prints GB/step; the verdict flags any pair whose traffic
+differs by more than 1.25× as **UNMATCHED** rather than reporting a throughput
+delta that means something else. **A result where the arms are unmatched is not
+reportable** — re-run with `b_hbm_max` adjusted until the traffic lines up.
+
+**Report tok/s, never `steady_concurrency`** — it is a mean over sampled steps,
+so a slower arm holds requests longer and scores higher. It produced a claim we
+retracted, and it was the headline of this harness's own verdict until
+2026-09-11.
+
+### 4.3b The return leg — swap semantics vs streaming  (4 GPU-h)
+
+**Added 2026-09-11.** The paper claims that an offload design whose unit is
+*owned* by one side must write that unit back once per generated token, while
+one whose device-side copy is a *cache* need not — a factor of two on the
+resource that bounds the whole technique (§7, and Pie's swap controller swaps
+out "the last layer that finished computation"). That claim currently rests on
+reading someone else's protocol. This measures it on ours.
+
+`policy_ablation.py --arms scored,scored_swapback`. The two arms are identical
+except that `scored_swapback` sets `VLLM_KVPIPE_RUNGD_WRITEBACK=1`, which writes
+each layer's whole rolling slot back to the host mirror — the exact inverse of
+the refresh, same runs, same granularity, opposite direction. Policy held fixed,
+so the delta is the return leg and nothing else.
+
+What to report: tok/s for both, total link bytes for both, and the ratio. The
+prediction is that the swap arm moves ~2× the bytes and loses throughput
+accordingly *once the link is the binding constraint* — on C2C, at high rider
+counts. **If the two arms perform the same, the return leg is not on the
+critical path at our operating point and the §7 claim must be softened to a
+statement about traffic rather than performance.** That is a real possible
+outcome and the honest version is cheap to state.
+
+Validated on A100 by `writeback_unit.py`: disabled is a true no-op, enabled
+moves exactly the extent the refresh read, and the round trip is lossless.
 
 ### 4.4 Negative control — Llama-8B  (4 GPU-h)
 
@@ -417,6 +497,56 @@ FS we measured Llama-8B (15 GB) at 237 s -- ~63 MB/s -- which extrapolates to
   vLLM does not release the CUDA context in-process, and at 70B the next
   engine's memory profiling then fails.
 
+## 4.7 Coverage audit — is this enough benchmarking?
+
+Added 2026-09-11, asked as a reviewer would: for each claim the paper makes,
+which experiment establishes it, and what is still missing.
+
+| # | Claim in the paper | Experiment | Status |
+|---|---|---|---|
+| C1 | Capacity, not compute, binds the batch | cited + pool occupancy | done |
+| C2 | Capacity law and applicability gate | §4.2 + A100 P4 | A100 done; Hopper pending |
+| C3 | `eff_kv` degrades with working set | §4.2 | **downside risk** — re-measure early |
+| C4 | The law explains DirectKV's 8B/OPT-30B inversion | their numbers + our law | done, free |
+| C5 | Host-tier requests are additive | §4.1 + A100 preload | A100 done (synthetic KV) |
+| C6 | Transfer hides; cost = fixed + per-request | §4.2b | A100 done; C2C pending |
+| C7 | Break-even count, and the crossover | §4.2b | **needs ≥10 counts, not 3** |
+| C8 | Residual fixed cost is launch overhead | operator trace | done |
+| C9 | Placement is exact | correctness ladder | done; re-run on Hopper |
+| C10 | **Mixture > both endpoints** | **§4.1** | **the rental** |
+| C11 | **Policy is load-bearing** | **§4.3** | **blocked on §4.2c workload** |
+| C12 | Probe verdict flips on C2C | §4.3 | pending |
+| C13 | Weight precision moves the gain as predicted | §4.4b | pending |
+| C14 | Swap semantics costs a return leg | §4.3b | unit-tested; pending |
+
+**Gaps we are accepting, and why.** Stating them here so they are choices
+rather than oversights, and so §8 can list them as limitations:
+
+- **No real request traces** (ShareGPT, LongBench). Our workloads are
+  synthetic. The capacity and cost results do not depend on token content, but
+  *SLO attainment under a realistic arrival process* does, and we report it
+  only under Poisson arrivals. A reviewer may reasonably ask for a trace; the
+  honest answer is that §4.2c's heterogeneous generator is shaped to match the
+  *structure* a trace would provide (mixed generation lengths, idle gaps)
+  without claiming to be one.
+- **KV quantization composition is asserted, not measured.** §3 claims KV
+  quantization is neutral to the relative gain because it scales both cohorts
+  together. That is a one-line argument and probably right, but it is currently
+  untested. Cheap to add if fp8 KV works out of the box; drop the claim if not.
+- **No sensitivity sweep on `k`** (rolling slots). `k` sets the hiding window
+  and the device footprint, and we fixed it at 4 by construction. A sweep would
+  strengthen §4, and costs little — add if hours remain.
+- **Host memory pressure is not characterised.** The pinned mirrors are real
+  memory sized to `max_num_seqs × ceil(max_model_len / block_size)`; we report
+  the number but do not explore the regime where the host is the constraint.
+- **No multi-GPU.** Single-device throughout. TP would inject all-reduces into
+  exactly the metric we measure, and we say so rather than sweeping it.
+
+**What would make the evaluation insufficient**, as opposed to incomplete:
+§4.1 without §4.3 (a result with no attribution), or §4.3 on a homogeneous
+workload (an attribution that cannot detect its own subject). Those two are
+the load-bearing pair.
+
 ## 5. Budget
 
 | phase | GPU-h |
@@ -425,12 +555,14 @@ FS we measured Llama-8B (15 GB) at 237 s -- ~63 MB/s -- which extrapolates to
 | 4.1 endpoint comparison (Qwen-32B fp16) | 24 |
 | 4.2 re-parameterisation | 8 |
 | **4.2b rider cost curve (F8)** | **6** |
-| 4.3 policy ablation | 16 |
+| 4.3 policy ablation (matched bytes) | 16 |
+| **4.3b return leg: swap vs streaming** | **4** |
+| 4.2c heterogeneous workload (built on A100) | 0 |
 | 4.4 negative control (Llama-8B) | 4 |
 | **4.4b second HBM/C point (Qwen-32B fp8)** | **6** |
 | 4.5 DirectKV (optional) | 16 |
 | **4.6 confirmatory 70B (optional, LAST)** | **10** |
-| **total** | **72–98** |
+| **total** | **76–102** |
 
 Model loads are cheaper than the old plan: Qwen-32B is ~64 GB rather than
 72.7 GB, and the fp8 arm ~32 GB, so §4.4b costs little beyond its own runs.
