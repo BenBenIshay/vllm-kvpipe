@@ -242,68 +242,58 @@ stop and diagnose rather than spending the 24 h to learn the same thing slower.
 Gate: **tok/s(mixture) > tok/s(all-HBM) at matched or better ITL.** Everything
 after this assumes it passed.
 
-### 4.1 THE DECISIVE ONE — endpoint comparison  (24 GPU-h)
+### 4.1 THE DECISIVE ONE — mixture vs stock vLLM  (16 GPU-h)
 
-The whole point of the trip. Same model, same HBM, same workload, **same
-substrate** (our `StagedHostBackend`) — so this is a *policy* comparison, not a
-mechanism comparison.
+**`all_host` DROPPED as an arm (Ben, 2026-09-11).** Nobody deploys it, its
+capacity is arithmetic rather than a discovery (budget / bytes-per-request), and
+the system that *is* the all-host endpoint — DirectKV — is a substrate we
+compose with, not a rival (its §8.1 says so). Measuring our own all-host arm and
+beating it proves nothing about anyone else's system. Two arms:
 
 | arm | configuration | model predicts (Qwen-32B fp16 @8K) |
 |---|---|---|
-| A | all-HBM (tiers off, stock vLLM) | ~13 requests |
-| B | all-host (every request host-tier) | ~7 |
+| A | all-HBM (tiers off, **stock vLLM**) | ~13 requests |
 | C | **mixture** (our memory system) | **~19** |
 
-(Updated from 8/5/13 after measuring the real fp8 checkpoint at 72.7 GB, which
-leaves C = 19.3 GB rather than the assumed 22 GB.)
+The baseline is stock vLLM, which is also Pie's baseline — so the numbers are
+comparable to their published 1.9x if the workload matches (see
+`COMPETITORS_AND_BENCHMARKS.md`).
 
-**The rider arithmetic behind arm C, written out so a wrong run is obvious
-within minutes** (checked 2026-09-05 against the corrected 450 GB/s
-per-direction link — see `BLOCKER_PREFILL_RESIDENCY.md`'s correction entry):
+**The rider arithmetic behind arm C, so a wrong run is obvious in minutes:**
 
 | quantity | value |
 |---|---|
-| KV bytes/token, Qwen-32B (64 layers x 8 kv-heads x 128 x 2 x fp16) | 0.26 MB |
+| KV bytes/token, Qwen-32B (64L x 8kv x 128 x 2 x fp16) | 0.26 MB |
 | a host-tier request at 8K ctx, per step | **2.15 GB** |
 | hide budget = ITL_0 x X x 0.9 = 34.1 ms x 450 GB/s x 0.9 | **13.8 GB** |
 | host-tier requests the link can carry | **~6.9** |
 | arm C = B_cap + host-tier = 13.0 + 6.9 | **~19** |
 
-The 13 / 7 / 19 table reproduces from `paper/model/killer_v2.py` as committed
-(`analyze(S=8192, GH200, slo=50, stage=0)`), which is the gate a table has to
-pass before it goes in the paper.
-
-**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2, the
-link constant is still 25.1 somewhere -- run `gh200_preflight.py` and pass the
+**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2 the link
+constant is still 25.1 somewhere — run `gh200_preflight.py` and pass the
 MEASURED `--hybrid-pcie-gbps`. If it admits ~30, `b_tok` is wrong for a
-64-layer model.
-Either way, stop and fix before spending hours on arms that cannot mean
-anything.
+64-layer model. Either way stop and fix before spending hours.
 
-- Primary metric: **requests served at a fixed ITL SLO**. Secondary: tokens/s,
-  p99 ITL, achieved C2C bandwidth (to confirm the transfer actually hides).
-- SLO grid fixed in advance: **{30, 40, 50, 75, 100} ms**. Our gate says
-  capacity only binds above the full-pool ITL (~32 ms predicted here), so the
-  30 ms point should show *no* benefit — that is a prediction, and worth as much
-  as the positive result.
-- Contexts {4K, 8K, 16K} — our rule says the *ratio* is S-independent, which
-  P4 validated on A100. Confirming it on Hopper is nearly free here.
-- **Token-identical verification in every arm**, not just arm C.
+- Primary metric: **SLO-attaining goodput**. Secondary: tokens/s, p99 ITL,
+  achieved C2C bandwidth (so "the transfer hides" is measured, not inferred).
+- SLO grid anchored to the MEASURED baseline, not absolutes — see
+  `SLO_GRID_DECISION.md`. A target below the arm's own step time is
+  unsatisfiable by every arm and measures nothing at full price.
+- Contexts {4K, 8K, 16K}; the ratio is predicted S-independent and P4 confirmed
+  that on A100, so confirming on Hopper is nearly free.
+- **Token-identical verification in both arms.**
 
-**Kill criteria:**
-- C ≤ max(A, B) → **direction A is dead.** Write the characterization paper.
-- C > both but by < 15% → fall back to characterization, with this as a section.
-- C > both by ≥ 15% → proceed; this is the paper.
+**Kill criteria (restated for two arms):**
+- C <= A -> the mixture does not beat stock vLLM. Direction is dead.
+- C > A by < 15% -> characterization paper, with this as a section.
+- C > A by >= 15% -> this is the paper.
 
-**Set `b_hbm_max` = the MEASURED all-HBM ceiling from arm A, with riders on
-top.** `BLOCKER_PREFILL_RESIDENCY.md`'s setup-trap #2 says to set it *below*
-capacity; that rule is **superseded and now backwards** — it predates zero-block
-preload admission, after which riders never own a block and therefore add
-rather than displace. Capping the resident cohort below what HBM holds now
-handicaps arm C. The surviving half of that trap is the diagnostic: **if the
-mixture's tier histogram shows no `cpu` entries, no rider was created and the
-arms are identical by construction.** Check the histogram before believing any
-comparison.
+**Set `b_hbm_max` = the MEASURED all-HBM ceiling from arm A, riders on top.**
+The old rule to set it *below* capacity is superseded and now backwards: it
+predates zero-block preload admission, after which riders never own a block and
+therefore add rather than displace. **Diagnostic that survives: if the tier
+histogram shows no `cpu` entries, no rider was created and the arms are
+identical by construction.** Check it before believing any comparison.
 
 ### 4.2 Re-parameterize the model under FA3  (8 GPU-h)
 
@@ -395,15 +385,37 @@ both dimensions. If a reviewer attacks the HBM/C dependence, this is the
 experiment we chose not to run, and the honest answer is that we traded it for
 the bandwidth axis.
 
-### 4.5 If time remains — DirectKV head-to-head  (16 GPU-h)
+### 4.5 Head-to-head with Pie — the only real competitor  (12 GPU-h)
 
-Only now possible (SM90a). Two things worth knowing:
-- staged (ours) vs zero-copy (theirs) at matched offload ratio — is there a
-  crossover by offload ratio, as we hypothesised?
-- how much of their decode actually takes the fast path, given the
-  `S_past % 64 == 0` gate. **Frame any result as characterisation, never as a
-  takedown** — the artifact has constraints (no radix cache, head_dim 128, bf16)
-  that make a naive head-to-head unfair and unpublishable.
+**Reframed 2026-09-11.** `COMPETITORS_AND_BENCHMARKS.md` works through the nine
+cited systems and concludes the competitor set is **Pie, and only Pie**:
+DirectKV is a substrate by its own account, OmniServe computes attention on the
+CPU in a different regime, FlexGen is offline, DAK takes the offload ratio as an
+input, and NEO/ShadowKV/CALKV shrink KV rather than relocate it.
+
+Pie is the nearest neighbour: same hardware, same goal, **different axis of
+partition** — it splits KV by *layer* uniformly across all requests, we split by
+*request*. It reports **1.9x over vLLM** on ShareGPT/Alpaca with Poisson
+arrivals.
+
+Run **our system on Pie's workload**: ShareGPT and Alpaca, Poisson arrivals,
+throughput plus queuing/compute latency reported separately as they do. If Pie
+builds on the box, run it directly; if not, compare against their published
+figure over a shared vLLM baseline and state plainly that the vLLM versions
+differ.
+
+**Prerequisite, and it is not free:** our harnesses use synthetic fixed-length
+prompts and closed-loop arrivals. Pie's numbers cannot be compared to ours until
+we run their workload shape. `vllm bench serve` already ships ShareGPT, Poisson
+`--request-rate` and SLO-aware `--goodput` in our own tree — use it for serving
+claims and keep the bespoke harnesses for mechanism claims.
+
+### 4.6 DirectKV — composition, not competition  (8 GPU-h, if time remains)
+
+Not a rival: DirectKV removes the staging buffer beneath us. The question is
+whether our policy *composes* with it — riders served through a zero-copy kernel
+instead of `StagedHostBackend`. A win here is additive to both papers. Requires
+`nvcc` (SM90a CUTLASS/CuTe source).
 
 ### 4.6 Llama-70B fp8 — DROPPED (2026-09-10)
 
