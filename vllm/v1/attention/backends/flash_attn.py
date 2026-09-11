@@ -643,6 +643,14 @@ class FlashAttentionImpl(AttentionImpl):
             out_sub,
         )
         out.index_copy_(0, cpu_idx, out_sub)
+        # Swap-semantics emulation, off by default. A swap design must persist
+        # this layer's whole slot before the buffer is reused; a streaming one
+        # (ours) has already written the only new bytes to the authoritative
+        # host mirror in write_token above. Measured, not assumed -- see
+        # RungdHostPool.writeback_layer.
+        wb = getattr(pool, "writeback_layer", None)
+        if wb is not None:
+            wb(lidx)
 
     def _maybe_hybrid_two_pass(
         self,

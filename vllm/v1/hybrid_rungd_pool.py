@@ -95,6 +95,15 @@ class RungdHostPool:
         # No staging buffers: the copies now come straight from the pinned
         # mirrors, so there is nothing to double-buffer but the stream itself.
         import os as _os
+        # Swap-semantics emulation (see writeback_layer). Off by default: this
+        # is measurement apparatus, not part of the design.
+        self._writeback = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_WRITEBACK", "0") == "1"
+        )
+        self.writeback_bytes = 0
+        # Bytes pulled host->device by the per-layer refresh. Counted so a
+        # harness can compare arms on TRAFFIC rather than on request counts.
+        self.stream_bytes = 0
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
@@ -455,9 +464,58 @@ class RungdHostPool:
         hk, hv = self.host_k[ln_name], self.host_v[ln_name]
         kslot = self.rolling_k[layer_idx % self.k]
         vslot = self.rolling_v[layer_idx % self.k]
+        moved = 0
         for hs, cs, n in self._runs:
             kslot.narrow(0, cs, n).copy_(hk.narrow(0, hs, n), non_blocking=True)
             vslot.narrow(0, cs, n).copy_(hv.narrow(0, hs, n), non_blocking=True)
+            moved += 2 * kslot.narrow(0, cs, n).numel() * kslot.element_size()
+        self.stream_bytes += moved
+
+    def writeback_layer(self, layer_idx: int) -> int:
+        """SWAP-SEMANTICS EMULATION. Write this layer's whole rolling slot back
+        to the host mirrors, and report the bytes moved.
+
+        This is NOT part of the streaming design and is off by default. It
+        exists to measure, on our own hardware, the cost of the return leg that
+        a *swap*-based offload pays and a *streaming* one does not.
+
+        The distinction is structural rather than an optimisation. If the
+        offloaded unit is OWNED by one side -- as a layer's KV cache is in a
+        swap design, where the device-side buffer is reclaimed for the next
+        layer arriving -- then a unit that has just had this token's K,V
+        appended is dirty and must be persisted before the buffer is reused. So
+        every offloaded byte crosses the interconnect twice per generated
+        token, and the return leg uses the slower direction of the link. If the
+        device-side copy is a CACHE, as ours is (the host mirror stays
+        authoritative and `write_token` writes the new token to both), a slot
+        can be overwritten with nothing to save, and only the new token travels
+        back.
+
+        Enabling this makes our per-token traffic match a swap design's at the
+        same offload volume, so the two policies can be compared with the
+        mechanism difference removed -- or the mechanism difference measured
+        with the policy held fixed.
+
+        Returns bytes written (0 when disabled or the cohort is empty), so a
+        harness can report traffic rather than infer it.
+        """
+        if not self._writeback or self._w_cur == 0:
+            return 0
+        ln_name = self.layers[layer_idx]
+        hk, hv = self.host_k[ln_name], self.host_v[ln_name]
+        kslot = self.rolling_k[layer_idx % self.k]
+        vslot = self.rolling_v[layer_idx % self.k]
+        moved = 0
+        # Exactly the inverse of _issue_runs: same runs, same granularity, same
+        # contiguity, opposite direction. Anything cheaper would understate the
+        # cost we are trying to measure.
+        for hs, cs, n in self._runs:
+            hk.narrow(0, hs, n).copy_(kslot.narrow(0, cs, n), non_blocking=True)
+            hv.narrow(0, hs, n).copy_(vslot.narrow(0, cs, n), non_blocking=True)
+            moved += (kslot.narrow(0, cs, n).numel()
+                      + vslot.narrow(0, cs, n).numel()) * kslot.element_size()
+        self.writeback_bytes += moved
+        return moved
 
     def _launch_prefetch(self, layer_idx: int) -> None:
         """Issue layer_idx's host->rolling copies on the side stream, so they

@@ -43,7 +43,14 @@ os.environ.setdefault("VLLM_USE_V1", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
-ARMS = ("uniform_25", "uniform_50", "arrival", "scored", "scored_migrate")
+ARMS = ("uniform_25", "uniform_50", "arrival", "scored", "scored_migrate",
+        "scored_swapback")
+
+# Arms that emulate SWAP semantics: the whole rolling slot is written back to
+# the host mirror after each layer, as a design whose offloaded unit is OWNED
+# by one side must do. See RungdHostPool.writeback_layer. Everything else is
+# identical, so the delta is the return leg and nothing else.
+SWAPBACK_ARMS = ("scored_swapback",)
 
 
 def configure(arm: str, args, slo_ms: float) -> dict:
@@ -55,13 +62,17 @@ def configure(arm: str, args, slo_ms: float) -> dict:
     os.environ["VLLM_KVPIPE_HYBRID_TWOPASS"] = "1"
     # migration only in the last arm
     os.environ["VLLM_KVPIPE_TIER_POLICY"] = (
-        "scored" if arm in ("scored", "scored_migrate") else "arrival")
+        "scored" if arm in ("scored", "scored_migrate", "scored_swapback")
+        else "arrival")
     if arm == "scored_migrate":
         os.environ["VLLM_KVPIPE_MIGRATE_WARMUP"] = str(args.migrate_warmup)
         os.environ["VLLM_KVPIPE_PROBE_STEPS"] = str(args.probe_steps)
     else:
         # disable migration by making warmup unreachable
         os.environ["VLLM_KVPIPE_MIGRATE_WARMUP"] = "100000000"
+
+    os.environ["VLLM_KVPIPE_RUNGD_WRITEBACK"] = (
+        "1" if arm in SWAPBACK_ARMS else "0")
 
     extra = dict(enable_transfer_aware_admission=True,
                  enable_hybrid_kv_tiers=True,
@@ -75,6 +86,23 @@ def configure(arm: str, args, slo_ms: float) -> dict:
     else:
         extra["hybrid_b_hbm_max"] = args.b_hbm_max
     return extra
+
+
+def _find_pool(llm):
+    """Reach the worker's RungdHostPool to read its traffic counters.
+
+    In-process only (V1 multiprocessing is disabled above), and deliberately
+    tolerant: if the path changes, the harness reports 0 bytes rather than
+    dying mid-sweep. A missing counter shows up as an obviously-wrong zero in
+    the output, which is safer than an exception after an hour of GPU time.
+    """
+    try:
+        core = llm.llm_engine.engine_core
+        inner = getattr(core, "engine_core", core)
+        runner = inner.model_executor.driver_worker.worker.model_runner
+        return getattr(runner, "_rungd_pool", None)
+    except Exception:
+        return None
 
 
 def _teardown(llm) -> None:
@@ -145,12 +173,24 @@ def run_arm(arm: str, args, slo_ms: float) -> dict:
     toks = sum(len(o.outputs[0].token_ids) for o in outs)
     warm = conc[len(conc) // 4:] if len(conc) > 8 else conc
     probes = list(getattr(ctl, "_probe_results", [])) if ctl else []
+    # BYTES, not request counts. "Uniform vs selective at the same offload
+    # ratio" is only a controlled comparison if the two arms actually move
+    # comparable volume; matching the NUMBER of host-tier requests does not
+    # ensure that, because the policies pick requests of different contexts.
+    # Report it so the match is verifiable instead of assumed.
+    pool = _find_pool(llm)
+    host_bytes = int(getattr(pool, "stream_bytes", 0) or 0) if pool else 0
+    wb_bytes = int(getattr(pool, "writeback_bytes", 0) or 0) if pool else 0
     res = dict(arm=arm, slo_ms=slo_ms, wall_s=wall,
                tokens_per_s=toks / wall,
                steady_concurrency=(sum(warm) / len(warm)) if warm else 0.0,
                migrations=(ctl.migration_stats() if ctl else {}),
                probe_verdicts=[{"baseline_ms": b, "after_ms": a, "worse": w}
                                for b, a, w in probes],
+               sampled_steps=len(conc),
+               host_read_bytes=host_bytes,
+               writeback_bytes=wb_bytes,
+               link_bytes_total=host_bytes + wb_bytes,
                token_ids=[tuple(o.outputs[0].token_ids) for o in outs])
     _teardown(llm)
     return res
@@ -235,8 +275,11 @@ def main() -> int:
     results, ref = [], None
     print(f"model={args.model} ctx={args.ctx} offered={args.offered} "
           f"SLO={args.slo} ms link={args.link_gbps} GB/s\n")
-    print(f"{'arm':<16} {'steady conc':>12} {'tok/s':>9} {'wall':>8} "
-          f"{'migrations':>22}  tokens")
+    print(f"{'arm':<16} {'tok/s':>9} {'wall':>8} {'GB/step in':>11} "
+          f"{'GB/step back':>13} {'migrations':>18}  tokens")
+    print("(steady_concurrency is NOT shown: it is a mean over sampled steps, "
+          "so a SLOWER arm holds\n requests longer and scores HIGHER. It "
+          "produced a retracted claim. Compare tok/s.)\n")
     for arm in arms:
         r = _run_arm_subprocess(arm, args.slo, args)
         if ref is None:
@@ -247,9 +290,12 @@ def main() -> int:
         r["token_check"] = chk
         r.pop("token_ids")
         results.append(r)
-        print(f"{arm:<16} {r['steady_concurrency']:>12.1f} "
-              f"{r['tokens_per_s']:>9.1f} {r['wall_s']:>7.1f}s "
-              f"{str(r['migrations']):>22}  {chk}")
+        steps = max(1, int(r.get("sampled_steps") or 0)) or 1
+        gin = r.get("host_read_bytes", 0) / 1e9 / steps
+        gbk = r.get("writeback_bytes", 0) / 1e9 / steps
+        print(f"{arm:<16} {r['tokens_per_s']:>9.1f} {r['wall_s']:>7.1f}s "
+              f"{gin:>11.3f} {gbk:>13.3f} "
+              f"{str(r['migrations']):>18}  {chk}")
         for v in r["probe_verdicts"]:
             print(f"                 probe: {v['baseline_ms']:.1f} -> "
                   f"{v['after_ms']:.1f} ms  worse={v['worse']}")
@@ -259,15 +305,47 @@ def main() -> int:
 
     by = {r["arm"]: r for r in results}
     print("\n" + "=" * 72)
-    base = max((by[a]["steady_concurrency"] for a in by
-                if a.startswith("uniform_")), default=0.0)
-    for a in ("arrival", "scored", "scored_migrate"):
-        if a in by and base:
-            d = (by[a]["steady_concurrency"] / base - 1) * 100
-            print(f"{a:<16} vs best uniform: {d:+6.1f}%")
-    print("\nTHE QUESTION: does our policy beat a fixed offload fraction?")
+    # Compare on THROUGHPUT. steady_concurrency rewards the slower arm (it is
+    # a mean over sampled steps, so an arm that holds requests longer scores
+    # higher); it produced a claim we had to retract.
+    base_arm = max((a for a in by if a.startswith("uniform_")),
+                   key=lambda a: by[a]["tokens_per_s"], default=None)
+    if base_arm:
+        base = by[base_arm]["tokens_per_s"]
+        b_in = by[base_arm].get("host_read_bytes", 0)
+        print(f"best uniform arm: {base_arm} at {base:.1f} tok/s")
+        for a in ("arrival", "scored", "scored_migrate"):
+            if a in by:
+                d = (by[a]["tokens_per_s"] / base - 1) * 100 if base else 0.0
+                # The comparison is only controlled if the arms moved similar
+                # volume. Say so when they did not, rather than reporting a
+                # delta that is really a difference in offload ratio.
+                a_in = by[a].get("host_read_bytes", 0)
+                ratio = (a_in / b_in) if b_in else 0.0
+                flag = "" if 0.8 <= ratio <= 1.25 else \
+                    f"  [UNMATCHED: moved {ratio:.2f}x the bytes]"
+                print(f"{a:<16} vs {base_arm}: {d:+6.1f}% tok/s{flag}")
+    print("\nTHE QUESTION: at a MATCHED interconnect budget, does choosing")
+    print("which requests to offload beat spreading the same bytes uniformly?")
     print("If not, the policy layer is decoration and the contribution is the")
     print("analysis, not the system.")
+
+    # The return leg: swap semantics vs streaming, policy held fixed.
+    if "scored" in by and "scored_swapback" in by:
+        a, b = by["scored"], by["scored_swapback"]
+        t_a = a.get("link_bytes_total", 0) or 1
+        t_b = b.get("link_bytes_total", 0) or 1
+        print("\n" + "-" * 72)
+        print("RETURN LEG (swap semantics vs streaming, same policy):")
+        print(f"  streaming : {a['tokens_per_s']:7.1f} tok/s   "
+              f"link {t_a/1e9:8.2f} GB total")
+        print(f"  swap-back : {b['tokens_per_s']:7.1f} tok/s   "
+              f"link {t_b/1e9:8.2f} GB total  ({t_b/t_a:.2f}x)")
+        print(f"  cost of persisting the offloaded unit: "
+              f"{(b['tokens_per_s']/a['tokens_per_s'] - 1)*100:+.1f}% tok/s")
+        print("  A design whose offloaded unit is OWNED by one side pays this;")
+        print("  one whose device copy is a CACHE does not. Measured, not")
+        print("  inferred from another system's protocol.")
     verdicts = [v for r in results for v in r["probe_verdicts"]]
     if verdicts:
         worse = sum(1 for v in verdicts if v["worse"])
