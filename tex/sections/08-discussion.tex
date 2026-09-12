@@ -1,49 +1,103 @@
-% ============================================================================
-% Section 8 -- discussion and limitations.
-%
-% 8.5 REWRITTEN 2026-09-06. The previous version answered the wrong question --
-% it argued about demand-fetching on the READ path, which is not what was
-% proposed. The actual proposal concerns the WRITE path: use coherence to
-% eliminate the device-to-host mirroring of newly generated KV. That is correct,
-% and DirectKV's Alg. 3 already does it, which sharpens rather than weakens the
-% point.
-% ============================================================================
-
-\section{Discussion and limitations}
+\section{Discussion}
 \label{sec:discussion}
 
-\subsection{The applicability window is a finding}
+\subsection{The applicability window is a result}
 
-\todo{Restate the gate and the capacity multiplier as a deployment rule. The
-window is narrow and saying so precisely is a contribution: a practitioner can
-decide in one line whether a second memory tier is worth building.}
+The gate of Eq.~\ref{eq:gate} and the multiplier of Eq.~\ref{eq:gain} together
+form a deployment rule that can be evaluated before building anything: a second
+KV tier pays when the latency target exceeds the full-pool step time, and it
+pays in proportion to $\HBM/\Ckv$ --- how much of device memory the weights
+consumed. Both exclude configurations the field routinely evaluates on. An 8B
+model on a 96\,GB device leaves so much memory after weights that there is
+nothing to buy, and a latency target below the device's own step time makes the
+scheduler latency-bound rather than capacity-bound, where offloading is
+strictly harmful.
+
+We state the window as a finding rather than a caveat because the alternative
+is worse: a technique whose applicability is unstated gets evaluated where it
+happens to win.
+
+\subsection{Generality across memory tiers and attention backends}
+\label{sec:discussion:general}
+
+Nothing in the design is specific to HBM-plus-DRAM or to one attention kernel.
+The system needs three things from a substrate: a memory that is larger and
+slower than the device's, a path to it whose bandwidth can be measured, and an
+attention implementation that can read a block table. Everything else --- how
+many requests to place on the slower tier, which ones, when to move them --- is
+derived at runtime from quantities the system measures itself.
+
+\paragraph{More than two tiers.} The placement rule ranks requests by a scalar
+affinity and the admission controller enforces a per-step byte budget on one
+link. A third tier (CXL-attached memory, or NVMe) adds a second budget and a
+second affinity threshold; the structure is unchanged, and the parameters that
+distinguish tiers --- achieved bandwidth, and the per-request bytes a step must
+move --- are already measured rather than configured. What does not survive
+unchanged is the hiding argument: a tier whose transfer cannot fit inside a
+layer's compute window must be treated as a capacity tier for idle requests
+rather than a bandwidth tier for active ones, and Eq.~\ref{eq:gate} is what
+decides which it is.
+
+\paragraph{Different attention capabilities.} Our host tier stages KV through a
+rolling device buffer. A zero-copy kernel that reads host memory directly
+removes that buffer, and our backend interface exists so it can be substituted
+without touching the policy. The two are not ordered by quality but by
+operating point (\S\ref{sec:discussion:coherence}): staging buys a layer-sized
+hiding window at the cost of two extra device-memory passes, and which wins
+depends on whether the per-step transfer fits inside a layer's compute. Because
+the offload ratio here is chosen by admission rather than fixed by the design,
+that choice is ours to make from a measurement rather than a constraint we
+inherit.
+
+\paragraph{What must be recalibrated, and what must not.} Moving to a new
+platform requires re-measuring four quantities: achieved interconnect
+bandwidth, achieved device-memory bandwidth for weights and for paged KV, and
+the fixed per-step cost of the host path. The closed-form rules do not change;
+their inputs do. This is why we report the fixed cost separately from the
+per-byte cost rather than as a single slope --- only one of the two shrinks
+when the interconnect improves, and a system calibrated on their sum will
+mispredict its own behaviour on the next generation of hardware.
 
 \subsection{Anti-scaling}
 
-\todo{Address head-on: the gain shrinks as HBM grows, and for our primary model
-it does not merely shrink --- it switches OFF. Qwen-32B fp16 goes from x1.50 on
-GH200-96 (C = 28 GB) to x1.00 on GH200-144 (C = 73 GB), because at that C the
-workload is no longer capacity-bound at all and the applicability gate of
-Eq. 4 stops admitting. Llama-70B fp8 decays more gently, x1.71 to x1.32.
-State it in exactly those terms: this is the same structural decay we cite
-against CPU-attention offload, and the honest answer is that weights are
-growing faster than HBM (MoE, 405B+), so HBM/C trends favourably -- plus the
-gate itself is the deployment rule, so a system that switches off when it
-should is behaving correctly, not failing.}
+The gain shrinks as device memory grows, and for our primary model it does not
+merely shrink: Qwen2.5-32B on a 144\,GB device leaves $\Ckv \approx 73$\,GB, at
+which point the workload is no longer capacity-bound and the applicability gate
+stops admitting entirely. This is the same structural decay we identify in
+compute-offload systems, whose advantage fades as GPUs strengthen, and it would
+be dishonest to cite that against them without stating it about ourselves.
 
-\subsection{Composition}
+Two things bear on the trend. Weights are growing faster than device memory
+--- mixture-of-experts and 405B-class models push $\HBM/\Ckv$ up, not down ---
+so the configurations where the technique pays are becoming more common rather
+than less. And the gate is the deployment rule: a system that switches itself
+off where it cannot help is behaving correctly, not failing.
 
-\todo{KV quantization is neutral to the relative gain --- it scales the
-capacity batch and the affordable host cohort together --- so the two compose.
-Weight quantization hurts, by giving back the HBM/C amplifier. Measure rather
-than assert.}
+\subsection{Composition with orthogonal techniques}
+
+Methods that \emph{shrink} the KV cache compose with a system that
+\emph{relocates} it. Quantizing KV scales the device-resident cohort and the
+affordable host cohort together, leaving their ratio --- and so the value of a
+second tier --- unchanged. Quantizing \emph{weights} does the opposite: it
+returns memory to $\Ckv$ and removes the amplifier the technique depends on,
+which is the same mechanism by which a larger device reduces the gain.
+Sparse and low-rank methods reduce what must be stored at some cost in
+exactness; a tier moves bytes without altering them, so the two address
+different axes and could be combined.
 
 \subsection{Limitations}
 
-\todo{Host memory pressure and the pinned mirror; the per-layer launch floor
-(\S\ref{sec:impl}); speculative decoding unsupported on the pool path; the
-prefill transport is emulated rather than integrated with a production P/D
-stack; CXL and NVMe tiers untouched.}
+The prefill transport is emulated: KV reaches the host pool through a local
+handover whose cost we measure (\S\ref{sec:impl:stash}), not through a
+production prefill node's network path, which is deployment-dependent.
+Speculative decoding is unsupported on the host path, which assumes one query
+token per step. The pinned host mirrors are real memory, sized to the
+configured maximum concurrency and context. We evaluate a single device;
+tensor parallelism would introduce collectives into precisely the metric under
+measurement. And the fixed per-step cost of the streaming path is a floor of
+the current design (\S\ref{sec:impl:cost}) rather than a tuned result --- a
+cross-layer batching of the transfer issue would reduce it, and we have not
+built it.
 
 \subsection{Staging versus zero-copy: two hiding windows}
 \label{sec:discussion:coherence}
