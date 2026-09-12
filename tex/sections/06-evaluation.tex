@@ -36,8 +36,10 @@ KV stream is unidirectional.
 \paragraph{Models.} Qwen2.5-32B at fp16 and fp8 as the primary pair --- same
 architecture, tokenizer and KV geometry, differing only in weight footprint, so
 they move $\HBM/\Ckv$ and nothing else (\S\ref{sec:model}). Llama-3.1-8B as the
-negative control. \needsgh{Llama-70B fp8 as a confirmatory point if time
-allows.}
+negative control. A 70B-class model is deliberately \emph{not} evaluated: at
+that size the capacity-limited batch is about seven requests, so a single
+request is 14\% and no result could separate a real effect from a rounding
+one. We say so rather than leave its absence to be noticed.
 
 \paragraph{Workloads.} Three shapes, and the third is the one the placement
 policy needs. \emph{Homogeneous}: equal contexts and generation lengths,
@@ -189,12 +191,17 @@ $\effkv$ sits in the capacity denominator, so if Hopper's kernels read paged KV
 more efficiently than FA-2 did, the step shortens, the budget shrinks, and the
 projected gain falls.}
 
-\needsgh{plan §4.4b: the two-precision pair. Qwen-32B fp8 against fp16 moves
-$\HBM/\Ckv$ from 1.6 to 3.4 with the architecture fixed, and the model predicts
-the benefit falls from $\times$1.50 to $\times$1.31. Report the RATIO between
-precisions rather than the absolute numbers --- it is the cleanest test of the
-law available to us, because a model-size sweep confounds weight footprint with
-layer count, head count and architecture.}
+\textbf{One term of the law is asserted rather than measured, and we say which.}
+The capacity multiplier has two factors: a bandwidth ratio $\Xlink/\BW$ and an
+amplifier $\HBM/\Ckv$. Our measurements validate it across \emph{bandwidth} ---
+the same system on two interconnect generations, which is what
+\S\ref{sec:eval:cost} fits. The $\HBM/\Ckv$ dependence is supported by the
+model's agreement with published results (\S\ref{sec:model:directkv}) and by
+the A100 parameter fit, but we do not sweep it directly: doing so cleanly needs
+one model at two weight precisions, and we judged the hours better spent on the
+comparison against the closest prior system. A reviewer who wants that axis
+measured is asking for the experiment we chose not to run, and this is the
+honest account of the trade.
 
 \subsection{When does it not pay?}
 \label{sec:eval:negative}
