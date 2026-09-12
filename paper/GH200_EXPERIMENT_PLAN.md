@@ -82,6 +82,19 @@ lands, quote it.
 
 Every item here is free and removes rental risk.
 
+- [x] **Bring-up is a script, and it has been rehearsed (2026-09-12).**
+      `gh200_bringup.sh` ran all eight stages on the A100 and correctly returned
+      **NO-GO** there (PCIe link, so B1 will not admit a GH200-sized rider
+      count). The script needed no fixes. The rehearsal found a defect in what
+      it calls, which is the point of rehearsing: `gh200_preflight.py`
+      **defaulted `--weights-gb` to 72.7** — the fp8 70B dropped from this plan
+      on 09-10 — so against Qwen-32B it reported 3.9 GB of KV space and ~7
+      concurrent where the truth is 11.1 GB and ~20. **A 3× error in the
+      capacity every experiment is sized against**, and it would have set
+      `--offered` for 4.0 and 4.1 on the rented machine, producing a run where
+      the load never binds and all arms return the same number. Weights are now
+      derived from the checkpoint's own files.
+
 - [ ] **SNAPSHOT AND RESTORE THE BUILT ENVIRONMENT — and test the restore.**
       *Added 2026-09-12.* Bring-up is a **per-rental** cost, and the plan's
       8-hour figure is a stop-loss rather than an estimate (expect 1–3 h if the
