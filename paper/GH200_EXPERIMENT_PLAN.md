@@ -299,6 +299,52 @@ wrong answer before):
 - B1 should admit ~7 riders at 8K. ~2 means the link constant is still 25.1
   somewhere; ~30 means `b_tok` is wrong for a 64-layer model.
 
+### 4.0b IS ARM A A REAL BASELINE?  (0 GPU-h — run on the A100, before renting)
+
+**Added 2026-09-12.** Every number 4.0 and 4.1 report is a ratio against arm A,
+"our fork with the tiers off". Our fork adds ~3,900 lines across 22 files in
+`vllm/`. If any of it costs time on the *disabled* path — a per-step check, an
+attribute lookup in the runner's hot loop, a branch in attention — then arm A
+is slower than the stock engine we claim to compare against, and part of the
+reported win is self-inflicted. **A handicapped baseline produces perfectly
+plausible numbers**, which is why this needs a measurement rather than a
+reading of the code.
+
+Not hypothetical here: four loop-invariant computations were found inside the
+per-layer loop in 2026-09, worth ~21 ms/step, and only an operator trace found
+them. The same species of mistake on the disabled path would be invisible.
+
+`baseline_integrity.sh`. `main` (f417a0e25) is this fork immediately before the
+tiering work; our changes are pure Python, so the two versions swap in place
+with no rebuild. Interleaved repeats, not blocked, so a thermal or contention
+drift cannot be read as a code difference. **Gate: |delta| <= 3%.** If arm A is
+slower, either find the overhead or make arm A the *stock tree* and say so in
+the paper.
+
+**Why the choice of baseline is load-bearing for comparability.** The two
+systems we position against do not use the same one:
+
+| | HBM-resident baseline | their headline |
+|---|---|---|
+| **Pie** | **vLLM** (Pie is built on vLLM) | 1.9x over vLLM |
+| **DirectKV** | **SGLang** | 1.2x, and *slower* than SGLang on 8B |
+| **ours** | **vLLM** (tiers off) | — |
+
+Matching Pie is the right call: Pie is our only real competitor
+(`COMPETITORS_AND_BENCHMARKS.md`), their number is the one a reviewer will hold
+us against, and their baseline has the same shape as ours — their own ablation
+baseline is Pie at *expansion = 1*, which is exactly our "tiers off". But it
+means our ratio is **not** directly comparable to DirectKV's, because SGLang is
+generally the faster HBM-resident engine and a ratio against it is a harder
+number to earn. State that in the paper rather than leaving the two 1.2x/1.9x
+figures to be read as commensurable.
+
+**If hours allow, add SGLang as a second reference point** (not an arm): run it
+HBM-resident on the same workload and report where stock vLLM sits relative to
+it. That converts "our baseline is weaker than theirs" from an objection into a
+measured offset. Cheap, and it is the first thing a reviewer who knows both
+papers will ask.
+
 ### 4.1 THE DECISIVE ONE — mixture vs stock vLLM  (16 GPU-h)
 
 **`all_host` DROPPED as an arm (Ben, 2026-09-11).** Nobody deploys it, its
@@ -702,7 +748,8 @@ are recorded in §4 with what each costs us, not silently removed.
 | phase | GPU-h |
 |---|---|
 | 0 bring-up | 8 |
-| **4.0 saturation — does the feature work at all (RUN FIRST)** | **4** |
+| **4.0 feasibility gate — one cell of 4.1, on goodput (RUN FIRST)** | **4** |
+| 4.0b baseline integrity (arm A vs stock) | 0 (A100) |
 | 4.1 the decisive one: mixture vs stock vLLM | 16 |
 | 4.2 re-parameterise under FA-3 | 8 |
 | 4.2b rider cost curve (the crossover figure) | 6 |
