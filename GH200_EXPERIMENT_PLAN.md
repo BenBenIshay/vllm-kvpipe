@@ -222,25 +222,82 @@ failed bring-up is a cheap lesson; a week of debugging on the meter is not.
 
 ## 4. The experiments, in priority order
 
-### 4.0 DOES THE FEATURE WORK AT ALL — saturation test  (4 GPU-h, RUN FIRST)
+### 4.0 FEASIBILITY GATE — one cell of 4.1, on 4.1's metric  (4 GPU-h, RUN FIRST)
 
-**Added 2026-09-10 at Ben's direction, and it goes before everything.** 4.1 is a
-24 GPU-h grid whose every cell is conditional on one thing being true: that
-admitting riders raises throughput on this link. Measure that first, cheaply,
-with a harness already validated on A100 (`pd_decode_goodput.py`).
+**Rewritten 2026-09-12.** The earlier version gated on raw tok/s. That is the
+wrong quantity and it disagreed with the experiment it is supposed to protect:
+an arm can raise tokens/second while breaking the latency target it was run
+under, which is not a win, it is a different question. 4.0 now measures
+**exactly what 4.1 measures, at one point of 4.1's grid.**
 
-1. Saturate the GPU with all-HBM at ctx >= 2K: raise offered load until tok/s
-   stops rising. Record tok/s, ITL and GPU utilisation. That is the ceiling
-   this machine can do WITHOUT us.
-2. Turn the feature on, admit riders on top, and re-measure.
+**The metric is SLO-attaining goodput** --- requests/second that met a
+per-output-token latency target --- via `vllm bench serve --goodput tpot:<ms>`,
+which ships in our own fork and is what Pie's vLLM baseline is measured with.
+Our bespoke `pd_decode_goodput.py` is named for goodput but does not compute
+it; it reports tok/s and p99 ITL separately, which is how "tok/s went up" could
+have been read as success while the SLO was being missed.
 
-**tok/s must go UP.** On A100 it did not (-2.3%) because only 2 riders fit; here
-the budget allows ~7 at 8K and ~28 at 2K. If tok/s does not rise, the transfer
-is not hiding and 4.1 cannot produce a win no matter how its grid is set —
-stop and diagnose rather than spending the 24 h to learn the same thing slower.
+**The single cell.** 4.1 sweeps {3 contexts} x {5 SLOs} x {2 arms}. 4.0 runs
+one context, one SLO, two arms:
 
-Gate: **tok/s(mixture) > tok/s(all-HBM) at matched or better ITL.** Everything
-after this assumes it passed.
+| | 4.0 | 4.1 |
+|---|---|---|
+| arms | all-HBM, mixture | same |
+| harness | `vllm bench serve` | same |
+| primary metric | **SLO-attaining goodput** | same |
+| context | 8K only | 4K, 8K, 16K |
+| SLO | **T0 x 1.5 only** | T0 x {1.0, 1.2, 1.5, 2.0, 3.0} |
+| arrivals | Poisson, one rate above capacity | same, rate swept |
+| cost | 4 GPU-h | 16 GPU-h |
+
+`T0` is the all-HBM arm's measured median ITL on this machine, per
+`SLO_GRID_DECISION.md` --- never a round number, because a target below an
+arm's own step time is unsatisfiable by every arm and measures nothing.
+
+**Why T0 x 1.5 and not another point.** At T0 x 1.0 the mixture is expected to
+lose: riders add per-step latency, so the tightest target all-HBM can meet is
+the one they are least able to meet. At T0 x 3.0 everything passes and nothing
+discriminates. T0 x 1.5 is where the claim actually lives --- enough headroom
+for the transfer to hide, tight enough that missing it costs goodput.
+
+**Procedure.**
+1. Arm A, all-HBM, tiers off. Sweep Poisson `--request-rate` upward until
+   goodput stops rising. Record the peak and the median ITL at it; that median
+   is `T0`.
+2. Fix the SLO at `tpot:1.5*T0`. Re-run arm A at the rate that maximised its
+   goodput.
+3. Arm C, mixture, `b_hbm_max` = arm A's measured ceiling, riders on top. Same
+   rate, same SLO.
+
+**GATE, and it is a decision rule rather than a direction:**
+
+> **goodput(C) >= 1.10 x goodput(A)**, on **3 repeats**, with **p99 ITL(C) no
+> worse than 1.5 x T0** (i.e. the SLO it was run under is actually being met).
+
+10% rather than 4.1's 15%: this is one cell, and the grid's best cell should
+beat its typical cell. An effect that cannot clear 10% at the most favourable
+realistic point will not clear 15% averaged over a grid that includes
+unfavourable ones. Three repeats because our controls reproduce to ~0.1 tok/s,
+so a single reading that lands at +3% is noise we can already resolve.
+
+**If the gate fails, stop.** Do not run 4.1. Diagnose with 4.2b (the rider cost
+curve), which separates a fixed per-step cost from a per-byte cost that is not
+overlapping --- those extrapolate differently and only one of them is fixable
+by a faster link.
+
+**What this gate is and is not.** It is a NECESSARY condition, not a sufficient
+one: passing means 4.1 is worth 16 hours, not that 4.1 will pass at every point
+of its grid. That asymmetry is the point --- it is cheap to fail and honest
+about what it proves.
+
+**Sanity checks before believing either arm** (each has produced a plausible
+wrong answer before):
+- the tier histogram for arm C must contain `cpu` entries. No entries means no
+  rider was created and the two arms are the same configuration.
+- arm A's peak must be below the offered rate, or the load never bound and
+  neither arm was under pressure.
+- B1 should admit ~7 riders at 8K. ~2 means the link constant is still 25.1
+  somewhere; ~30 means `b_tok` is wrong for a 64-layer model.
 
 ### 4.1 THE DECISIVE ONE — mixture vs stock vLLM  (16 GPU-h)
 
@@ -250,10 +307,30 @@ the system that *is* the all-host endpoint — DirectKV — is a substrate we
 compose with, not a rival (its §8.1 says so). Measuring our own all-host arm and
 beating it proves nothing about anyone else's system. Two arms:
 
-| arm | configuration | model predicts (Qwen-32B fp16 @8K) |
-|---|---|---|
-| A | all-HBM (tiers off, **stock vLLM**) | ~13 requests |
-| C | **mixture** (our memory system) | **~19** |
+**Same harness and same primary metric as 4.0** (`vllm bench serve
+--goodput tpot:<ms>`), so passing 4.0 actually predicts something about 4.1.
+4.1 adds the grid: contexts {4K, 8K, 16K} x SLO T0 x {1.0, 1.2, 1.5, 2.0, 3.0}.
+
+| arm | configuration | @8K, util 1.0 | **@8K, util 0.90 (what we run)** |
+|---|---|---|---|
+| A | all-HBM (tiers off, **stock vLLM**) | 13.0 | **8.6** |
+| C | **mixture** (our memory system) | 19.5 | **14.2** |
+| | riders | 6.4 | 5.6 |
+
+**Run against the 0.90 column.** The paper's tables quote the util-1.0 figures,
+which describe the *device*; `gpu_memory_utilization` 0.90 is what our
+harnesses set, and it costs 9.6 GB of KV space --- a third of C --- so capacity
+drops 13.0 to 8.6. Setting `--offered` for 13 when the machine does 8.6 does
+not break the run, but every sanity check calibrated on 13 will read as a
+failure.
+
+*(An earlier draft of this table said 5 and 11. That was the 70B's C = 13.7 GB
+applied to the 32B by mistake; 64 GB of weights at util 0.90 leaves 18.4 GB,
+not 13.7. Corrected from `killer_v2.py` rather than by hand.)*
+
+The rider count barely moves (6.4 to 5.6) because the link budget depends on
+the step time, not on how much of HBM we were allowed to allocate. That is why
+the *ratio* improves as C shrinks and the *absolute* capacity falls.
 
 The baseline is stock vLLM, which is also Pie's baseline — so the numbers are
 comparable to their published 1.9x if the workload matches (see
@@ -269,7 +346,8 @@ comparable to their published 1.9x if the workload matches (see
 | host-tier requests the link can carry | **~6.9** |
 | arm C = B_cap + host-tier = 13.0 + 6.9 | **~19** |
 
-**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2 the link
+**Use ~7 host-tier requests as the live sanity check** (unchanged: the link
+budget does not depend on `gpu_mem_util`, only the resident capacity does). If B1 admits ~2 the link
 constant is still 25.1 somewhere — run `gh200_preflight.py` and pass the
 MEASURED `--hybrid-pcie-gbps`. If it admits ~30, `b_tok` is wrong for a
 64-layer model. Either way stop and fix before spending hours.
