@@ -27,6 +27,10 @@ Run:
 
 from __future__ import annotations
 
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
+
 import json
 import os
 import re
@@ -133,11 +137,11 @@ def run(port: int, reclaim: bool, serial: bool = False) -> list[str]:
         except Exception as e:                               # noqa: BLE001
             return [f"<err: {e}>"] * len(PROMPTS)
         finally:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except Exception:
-                pass
-            time.sleep(4)
+            # SIGTERM alone drained nova06/07 on 2026-09-06: a wedged
+            # engine ignores it and the survivor is what SLURM cannot
+            # kill. terminate_engine verifies the GROUP is empty and
+            # escalates. See bench_teardown.py.
+            terminate_engine(proc, label=__name__)
     proc = launch(port, reclaim)
     try:
         if not wait_ready(port):
@@ -147,11 +151,7 @@ def run(port: int, reclaim: bool, serial: bool = False) -> list[str]:
     except Exception as e:                                   # noqa: BLE001
         return [f"<err: {e}>"] * len(PROMPTS)
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        time.sleep(4)
+        terminate_engine(proc, label=__name__)
 
 
 def reclaim_stats(port: int) -> tuple[int, int]:

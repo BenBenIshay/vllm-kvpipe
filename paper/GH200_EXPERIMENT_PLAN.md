@@ -33,7 +33,7 @@ confirmatory arm. Reasoning below, because the reversal matters.
 | **Qwen-32B fp16** (primary) | 64 GB | 28.0 GB | 3.4 | **13.0** | 26.1 | ×1.50 |
 | **Qwen-32B fp8** (second point) | 32 GB | 60.0 GB | 1.6 | 27.9 | 55.9 | ×1.31 |
 | Llama-8B fp16 (negative control) | 16 GB | 76.0 GB | 1.3 | 70.8 | 141.6 | ×1.26 |
-| Llama-70B fp8 (confirmatory, last) | 72.7 GB | 19.3 GB | 5.0 | **7.2** | 14.4 | ×1.71 |
+| ~~Llama-70B fp8~~ (DROPPED 2026-09-10) | 72.7 GB | 19.3 GB | 5.0 | **7.2** | 14.4 | ×1.71 |
 
 **Why 70B lost the headline — statistical resolution.** At C = 19.3 GB, 70B
 gives `B_cap = 7.2` at 8K. The decisive experiment claims the mixture serves
@@ -57,7 +57,8 @@ whole ladder on the meter, against this document's own rule that rental time is
 for measuring, not debugging.
 
 Rejected or demoted, with reasons:
-- **Llama-70B fp8 as headline** — see above. Kept as §4.6, run LAST. Its unique
+- **Llama-70B fp8** — DROPPED entirely on 2026-09-10 (§4.6), not merely
+  demoted. Its unique
   value is real: it is the configuration the gain law most favours and the one
   DirectKV never evaluated (they use 8B and OPT-13B/30B). Worth having, not
   worth risking the trip on. Requires: 72.7 GB pre-staged, ~19 min per load,
@@ -89,7 +90,8 @@ Every item here is free and removes rental risk.
 - [ ] **NEW: confirm Qwen2.5-32B fp16 is staged** (it is in the A100 HF cache;
       it still has to reach the rented box).
 
-The next two items concern **§4.6, the confirmatory 70B arm only**. They are no
+The next two items concerned **§4.6, the 70B arm, which is now DROPPED**, so
+they are moot and kept only as a record. They were no
 longer on the critical path; do not let them consume pre-flight time.
 
 - [x] **fp8 70B checkpoint checked (2026-08-12) — largely de-risked.**
@@ -113,15 +115,43 @@ longer on the critical path; do not let them consume pre-flight time.
       A smaller C makes the effect **larger** (gain tracks `HBM/C`), so the
       prediction moves in our favour: **7 / 5 / 12** for 70B, and the model now
       reproduces it (§4.6).
-- [ ] **Pre-stage the 70B checkpoint** (72.7 GB) — **only if §4.6 is being
-      attempted.** Downloading it on a metered box is wasted money. Since 70B is
-      no longer the headline, it is legitimate to skip this and drop §4.6.
-- [ ] **Write and dry-run every experiment script on A100** with Qwen-0.5B, so
+- [x] **Pre-staging the 70B checkpoint: NOT NEEDED — §4.6 is dropped.**
+      Decided 2026-09-10: skip Llama-70B entirely. Qwen-32B is the primary
+      model and every harness and correctness gate is already validated on
+      it, so nothing on the meter depends on a 72.7 GB download.
+- [x] **Dry-run on A100 with Qwen-0.5B — done 2026-09-05.** `transfer_bw_probe`
+      25.16 GB/s vs the 25.1 assumed. `endpoint_comparison` runs three arms x
+      two SLOs end to end; its first dry run came back VACUOUS (all-HBM
+      absorbed the whole offered load) which a 0.5B KV pool makes
+      unavoidable, so it gained `--num-gpu-blocks-override` and the
+      non-vacuous verdict path was then validated: all-HBM 450 / all-host 302
+      / mixture 438 tok/s at SLO 40. Its headline metric was ALSO replaced --
+      it gated on `steady_concurrency`, which rewards a slower arm and is how
+      the retracted +12% was produced. `two_source_tax` and `policy_ablation`
+      arg-checked.
+- [x] **All remaining scripts dry-run end-to-end (2026-09-05).**
+      `policy_ablation` writes its JSON; `run_suite.sh` is **9/9 PASS**,
+      including `rungd_real`, `restore_roundtrip` and `migrate_roundtrip` —
+      the promotion and pool paths the loop-invariant hoists touched, which
+      had not been re-run since.
+      **Caveat on `p4_itl_model_validation`: it RUNS, but a 0.5B model at
+      ctx 512 cannot validate the ITL model.** KV is only 0.6–4.8% of
+      bytes/step there and the step is 2.2 ms, so it is launch-bound rather
+      than bandwidth-bound and the `implied_eff ≈ 0.22` it reports is an
+      artifact, not a measurement. The model is only testable in a regime
+      where KV dominates traffic — i.e. the 70B at 8K on GH200. Do not quote
+      the dry-run figure.
+- [x] ~~Write and dry-run every experiment script on A100~~ with Qwen-0.5B, so
       only the constants change. Scripts needed:
       `endpoint_comparison.py`, `policy_ablation.py`, plus the existing
       `p4_itl_model_validation.py`, `two_source_tax.py`, `transfer_bw_probe.py`,
       `run_suite.sh`.
-- [ ] **Pin the environment**: exact torch/vLLM/CUDA versions, and a build
+- [x] **Environment pinned — `paper/ENVIRONMENT_PIN.md`.** python 3.12.13,
+      torch 2.9.1+cu128, CUDA 12.8. Notes two traps: `pip list` reports the
+      MAIN tree's path even from the worktree (stale dist-info; the finder is
+      what imports use), and `ptxas` does exist inside the nvidia wheels --
+      the A100 gap is specifically `nvcc`.
+- [ ] ~~Pin the environment~~: exact torch/vLLM/CUDA versions, and a build
       script that runs unattended.
 - [ ] **Confirm `nvcc` exists on the target image.** `nvcc` is the CUDA
       compiler; vLLM itself ships precompiled kernels and does not need it, but
@@ -133,85 +163,50 @@ longer on the critical path; do not let them consume pre-flight time.
       (`nvidia/cuda:12.x-devel-*` has it; `*-runtime-*` does not).
       Verify in minute one: `nvcc --version`. Without it we lose 4.2's
       FlashInfer arm and all of 4.5.
-- [ ] **Decide the SLO grid** in advance (§4.1) so we are not tuning live.
+- [x] **SLO grid decided — `paper/SLO_GRID_DECISION.md`.** NOT the proposed
+      absolute {30,40,50,75,100} ms: an SLO below an arm's own rider-free step
+      is unsatisfiable by every arm and measures nothing at full price, and
+      the GH200 weights-bound floor alone is ~24 ms. Instead measure the
+      all-HBM median ITL in hour 1 (`T0`) and run `T0 x {1.0,1.2,1.5,2.0,3.0}`.
 
-## 2b. KNOWN OPEN ISSUE — the `all_host` arm stalls at scale (2026-08-12)
+## 2b. RESOLVED — the `all_host` stall does not reproduce (2026-09-11)
 
-Found during pre-flight, **not yet resolved**. Must be fixed or scoped before
-4.1 is trusted, because `all_host` is one of the three decisive arms.
+**Was a blocker; measured and closed.** `byte_volume_stall.py` walked BOTH arms
+up the byte-volume axis on an idle exclusive A100:
 
-**Symptom.** Qwen-32B, 20 requests x 1024 ctx on A100: `all_hbm` completes in
-**45 s**; `all_host` does not finish in **900 s** at ~0% GPU utilisation. At
-Qwen-0.5B the same arm completes in 1.6 s, so it is scale-dependent, not a
-logic error in the arm's configuration.
-
-**First hypothesis, tested and WRONG.** With `hybrid_b_hbm_max=0` every request
-must be host-tier, and B1's transfer budget admitted only ~5 of 20 (268 MB each
-against a 1.5 GB budget) with no fallback tier — so the rest would queue
-forever. Disabling B1 and B2 for this arm (correct modelling anyway: DirectKV
-does not gate admission) **did not fix it**.
-
-**Remaining suspects, in order:**
-1. **Seeding cost.** `seed_req` does a D2H `index_select(...).to("cpu")` per
-   layer per request. For 20 requests x 64 layers that is ~5.4 GB of *unpinned*
-   D2H, one time — minutes, not seconds.
-2. **Per-step transfer volume.** The rolling window streams the whole active set
-   every layer: ~84 MB/layer x 64 layers = **5.4 GB per decode step** over
-   ~24 GB/s PCIe = ~224 ms/step *at best*. That is the A100 physics, and it is
-   precisely why this arm is only meaningful on C2C (18x faster).
-3. Pinned-host allocation of the 5.8 GB mirror at engine build.
-
-**PROFILED 2026-08-12 (`profile_host_tier.py`).** Per-phase breakdown at
-Qwen-32B / 512 ctx, scaling 4 -> 16 requests:
-
-| phase | calls | time | verdict |
+| config | GB/step | mixture | all_host |
 |---|---|---|---|
-| `seed_layer` (one-time resident->host) | 4.0x | 4.1x | linear, correct |
-| `build_step` (per-step compaction) | 1.0x | 3.5x | linear in requests, tiny (12 ms) |
-| **`stream_layer`** (per-layer H2D) | 1.0x | **5.1x** | dominant: **48% of wall at n=16** |
-| `write_token` | 1.0x | 1.7x | sublinear |
+| 4 x 1024 | 1.07 | ok 4s | ok 4s |
+| 8 x 1024 | 2.15 | ok 7s | ok 7s |
+| 12 x 1024 | 3.22 | ok 9s | ok 9s |
+| 8 x 2048 | 4.29 | ok 12s | ok 12s |
+| **20 x 1024** | **5.37** | **ok 15s** | **ok 14s** |
 
-Wall scaled 3.6x for 4x requests. **Nothing pathological at this scale** — the
-transfer dominates, which is exactly the PCIe physics (~5.4 GB/step at ~24 GB/s
-= ~224 ms/step). So the stall is NOT in the host tier's transfer path.
+**20 x 1024 is the exact configuration that did not finish in 900 s on
+2026-08-12. It now completes in 14 s** -- a >64x improvement -- and neither arm
+has a knee: the ratio to the link's own bound is flat-to-decreasing (5.4x ->
+4.3x) as volume rises, which is fixed overhead amortising rather than a defect
+emerging.
 
-**TWO HYPOTHESES TESTED AND BOTH WRONG.** (i) B1 admitting only ~5 of 20 with
-no fallback tier — disabling B1/B2 did not fix it. (ii) The pool's rolling slots
-and pinned mirror sitting outside vLLM's `gpu_memory_utilization` budget —
-running at util 0.92 **and** 0.82 both still stalled, so it is not headroom.
+**Why it is fixed:** the symptom was ~0% GPU utilisation, which is a CPU-bound
+launch storm, and the four loop-invariant hoists of 2026-09-04/05 removed
+~21 ms/step of exactly that (`int(_crr.max())` per layer, per-layer scatter
+index rebuilds, `int(seqused_k.max())` per layer, per-layer `seqused` clone).
+No fix was written for 2b itself: there was nothing left to fix, and a
+speculative change could not have been verified.
 
-**Still unexplained.** The break is somewhere between 16 requests x 512 ctx
-(works, 7.5 s) and 20 x 1024 (stalls > 360 s) — only ~5x the work. Leading
-remaining suspect: the *resident* KV pool cannot hold 20 x 1024 = 20,480 tokens
-of PREFILL, because the host tier frees decode GROWTH but prefill blocks stay
-resident; the scheduler then thrashes. That is a real design limit worth
-understanding, not just a benchmark artifact.
+**Two caveats that survive this result.**
+1. The highest volume tested is **5.37 GB/step**. The rental's mixture arm at
+   8K runs at **~15 GB/step**, ~2.8x higher. Passing at 5.4 does not prove 15 is
+   safe -- 4.0 should watch for it on the machine.
+2. The "ratio to link" column is a LOWER bound that ignores prefill and compute
+   entirely, so 4.3x is not a measure of overhead. It is used here only to show
+   the ratio does not grow with volume.
 
-**Decision: stop chasing it here.** This arm is only meaningful on C2C, is slow
-on PCIe by construction, and is not the load-bearing comparison. Item 1
-(does the harness detect a difference?) is being closed with `all_hbm` vs
-`mixture`, which both work.
-
-**RESOLVED (partly): it is NOT a deadlock.** The smaller probe — 6 requests,
-512 ctx — completes in **3.2 s**. So the arm works; it scales badly. But the
-scaling is *superlinear and still unexplained*: 20x1024 is ~13x the work of
-6x512, which should be ~40 s, yet it exceeded 900 s. Suspect #1 (one-time
-seeding: 1280 separate unpinned D2H copies, each an implicit sync) and #2
-(per-step volume) do not obviously produce a >20x superlinear factor. **This
-needs one focused profiling pass before 4.1 is trusted.**
-
-Note the arm is *expected* to be slow on PCIe — 5.4 GB/step over ~24 GB/s is
-~224 ms/step at best. On C2C that same step is ~12 ms, so the regime that makes
-this arm painful here is exactly the one the rental removes.
-
-**Mitigation regardless:** `--arm-timeout-s` (default 3600) now fails a stalled
-arm fast instead of silently burning metered hours. That watchdog worked.
-
-**If unresolved at bring-up:** run 4.1 as `all_hbm` vs `mixture` only, and
-report `all_host` from the model plus DirectKV's published behaviour rather than
-from a broken measurement. The `mixture` vs `all_hbm` comparison is the one that
-carries the paper; `all_host` mainly establishes that DirectKV leaves HBM idle,
-which their own design makes true by construction.
+**Consequence for 4.1:** `all_host` is no longer a broken arm, so the objection
+that it cannot be learned from is answered on the merits. The separate
+objection -- that it is still OUR host tier rather than a published system --
+stands, and is what 4.5 exists for.
 
 ## 3. Phase 0 — bring-up  (time-box: 8 GPU-hours, HARD)
 
@@ -227,68 +222,78 @@ failed bring-up is a cheap lesson; a week of debugging on the meter is not.
 
 ## 4. The experiments, in priority order
 
-### 4.1 THE DECISIVE ONE — endpoint comparison  (24 GPU-h)
+### 4.0 DOES THE FEATURE WORK AT ALL — saturation test  (4 GPU-h, RUN FIRST)
 
-The whole point of the trip. Same model, same HBM, same workload, **same
-substrate** (our `StagedHostBackend`) — so this is a *policy* comparison, not a
-mechanism comparison.
+**Added 2026-09-10 at Ben's direction, and it goes before everything.** 4.1 is a
+24 GPU-h grid whose every cell is conditional on one thing being true: that
+admitting riders raises throughput on this link. Measure that first, cheaply,
+with a harness already validated on A100 (`pd_decode_goodput.py`).
+
+1. Saturate the GPU with all-HBM at ctx >= 2K: raise offered load until tok/s
+   stops rising. Record tok/s, ITL and GPU utilisation. That is the ceiling
+   this machine can do WITHOUT us.
+2. Turn the feature on, admit riders on top, and re-measure.
+
+**tok/s must go UP.** On A100 it did not (-2.3%) because only 2 riders fit; here
+the budget allows ~7 at 8K and ~28 at 2K. If tok/s does not rise, the transfer
+is not hiding and 4.1 cannot produce a win no matter how its grid is set —
+stop and diagnose rather than spending the 24 h to learn the same thing slower.
+
+Gate: **tok/s(mixture) > tok/s(all-HBM) at matched or better ITL.** Everything
+after this assumes it passed.
+
+### 4.1 THE DECISIVE ONE — mixture vs stock vLLM  (16 GPU-h)
+
+**`all_host` DROPPED as an arm (Ben, 2026-09-11).** Nobody deploys it, its
+capacity is arithmetic rather than a discovery (budget / bytes-per-request), and
+the system that *is* the all-host endpoint — DirectKV — is a substrate we
+compose with, not a rival (its §8.1 says so). Measuring our own all-host arm and
+beating it proves nothing about anyone else's system. Two arms:
 
 | arm | configuration | model predicts (Qwen-32B fp16 @8K) |
 |---|---|---|
-| A | all-HBM (tiers off, stock vLLM) | ~13 requests |
-| B | all-host (every request host-tier) | ~7 |
+| A | all-HBM (tiers off, **stock vLLM**) | ~13 requests |
 | C | **mixture** (our memory system) | **~19** |
 
-(Updated from 8/5/13 after measuring the real fp8 checkpoint at 72.7 GB, which
-leaves C = 19.3 GB rather than the assumed 22 GB.)
+The baseline is stock vLLM, which is also Pie's baseline — so the numbers are
+comparable to their published 1.9x if the workload matches (see
+`COMPETITORS_AND_BENCHMARKS.md`).
 
-**The rider arithmetic behind arm C, written out so a wrong run is obvious
-within minutes** (checked 2026-09-05 against the corrected 450 GB/s
-per-direction link — see `BLOCKER_PREFILL_RESIDENCY.md`'s correction entry):
+**The rider arithmetic behind arm C, so a wrong run is obvious in minutes:**
 
 | quantity | value |
 |---|---|
-| KV bytes/token, Qwen-32B (64 layers x 8 kv-heads x 128 x 2 x fp16) | 0.26 MB |
+| KV bytes/token, Qwen-32B (64L x 8kv x 128 x 2 x fp16) | 0.26 MB |
 | a host-tier request at 8K ctx, per step | **2.15 GB** |
 | hide budget = ITL_0 x X x 0.9 = 34.1 ms x 450 GB/s x 0.9 | **13.8 GB** |
 | host-tier requests the link can carry | **~6.9** |
 | arm C = B_cap + host-tier = 13.0 + 6.9 | **~19** |
 
-The 13 / 7 / 19 table reproduces from `paper/model/killer_v2.py` as committed
-(`analyze(S=8192, GH200, slo=50, stage=0)`), which is the gate a table has to
-pass before it goes in the paper.
-
-**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2, the
-link constant is still 25.1 somewhere -- run `gh200_preflight.py` and pass the
+**Use ~7 host-tier requests as the live sanity check.** If B1 admits ~2 the link
+constant is still 25.1 somewhere — run `gh200_preflight.py` and pass the
 MEASURED `--hybrid-pcie-gbps`. If it admits ~30, `b_tok` is wrong for a
-64-layer model.
-Either way, stop and fix before spending hours on arms that cannot mean
-anything.
+64-layer model. Either way stop and fix before spending hours.
 
-- Primary metric: **requests served at a fixed ITL SLO**. Secondary: tokens/s,
-  p99 ITL, achieved C2C bandwidth (to confirm the transfer actually hides).
-- SLO grid fixed in advance: **{30, 40, 50, 75, 100} ms**. Our gate says
-  capacity only binds above the full-pool ITL (~32 ms predicted here), so the
-  30 ms point should show *no* benefit — that is a prediction, and worth as much
-  as the positive result.
-- Contexts {4K, 8K, 16K} — our rule says the *ratio* is S-independent, which
-  P4 validated on A100. Confirming it on Hopper is nearly free here.
-- **Token-identical verification in every arm**, not just arm C.
+- Primary metric: **SLO-attaining goodput**. Secondary: tokens/s, p99 ITL,
+  achieved C2C bandwidth (so "the transfer hides" is measured, not inferred).
+- SLO grid anchored to the MEASURED baseline, not absolutes — see
+  `SLO_GRID_DECISION.md`. A target below the arm's own step time is
+  unsatisfiable by every arm and measures nothing at full price.
+- Contexts {4K, 8K, 16K}; the ratio is predicted S-independent and P4 confirmed
+  that on A100, so confirming on Hopper is nearly free.
+- **Token-identical verification in both arms.**
 
-**Kill criteria:**
-- C ≤ max(A, B) → **direction A is dead.** Write the characterization paper.
-- C > both but by < 15% → fall back to characterization, with this as a section.
-- C > both by ≥ 15% → proceed; this is the paper.
+**Kill criteria (restated for two arms):**
+- C <= A -> the mixture does not beat stock vLLM. Direction is dead.
+- C > A by < 15% -> characterization paper, with this as a section.
+- C > A by >= 15% -> this is the paper.
 
-**Set `b_hbm_max` = the MEASURED all-HBM ceiling from arm A, with riders on
-top.** `BLOCKER_PREFILL_RESIDENCY.md`'s setup-trap #2 says to set it *below*
-capacity; that rule is **superseded and now backwards** — it predates zero-block
-preload admission, after which riders never own a block and therefore add
-rather than displace. Capping the resident cohort below what HBM holds now
-handicaps arm C. The surviving half of that trap is the diagnostic: **if the
-mixture's tier histogram shows no `cpu` entries, no rider was created and the
-arms are identical by construction.** Check the histogram before believing any
-comparison.
+**Set `b_hbm_max` = the MEASURED all-HBM ceiling from arm A, riders on top.**
+The old rule to set it *below* capacity is superseded and now backwards: it
+predates zero-block preload admission, after which riders never own a block and
+therefore add rather than displace. **Diagnostic that survives: if the tier
+histogram shows no `cpu` entries, no rider was created and the arms are
+identical by construction.** Check it before believing any comparison.
 
 ### 4.2 Re-parameterize the model under FA3  (8 GPU-h)
 
@@ -375,6 +380,15 @@ that exists, because the workload contains nothing to choose between.**
 spread (report its min/median/max across the running set). If the spread is
 near zero the workload is still inert and §4.3 must not be run.
 
+**Use §4.5's workload rather than building a bespoke one.** §4.5 already
+requires ShareGPT/Alpaca with Poisson arrivals, via `vllm bench serve`, which
+ships in our own tree. Real conversational traces carry the variation this gate
+needs — generation lengths differ per request, and multi-turn sessions have
+genuine gaps — so the two requirements collapse into one piece of work. Build
+the arrival/idle plumbing once, verify the `host_affinity` spread on it, and
+both §4.3 and §4.5 become runnable. A synthetic generator is the fallback if
+the trace path fights the harness, not the first choice.
+
 This is also what the paper needs independently: §6.1 now states that a
 homogeneous workload makes scored placement degenerate to arrival *by
 construction*, so a reviewer will look for the heterogeneous one.
@@ -455,55 +469,87 @@ copy is a large fraction of it, and the sample is 25 steps. The *traffic* ratio
 is structural and does transfer; the *throughput* cost is what §4.3b measures
 at a real operating point.
 
-### 4.4 Negative control — Llama-8B  (4 GPU-h)
+### 4.4 Negative control — Llama-8B  (MOVED TO A100, 0 GPU-h here)
 
-Our model says ×1.22 and DirectKV published that 8B does not benefit. Running it
-costs little and **a model that predicts its own failure cases is far more
-credible than one that only predicts wins.**
+**Moved off the rental 2026-09-10.** The model predicts x1.22 -- i.e. no
+meaningful benefit -- and DirectKV published that 8B does not benefit either, so
+this arm is expected to be null. Ben's objection is right that a predicted null
+does not justify metered hours.
 
-### 4.4b Second HBM/C point — Qwen-32B fp8  (6 GPU-h)
+It is still worth running, because reviewers do ask whether a model only fits
+where it wins, and a model that predicts its own failure cases is worth more
+than one that only predicts wins. So run it on the A100, where it is free. The
+prediction is weaker there (less bandwidth) but the direction -- no benefit --
+is the whole point.
 
-**Added 2026-09-06.** Same model, same tokenizer, same KV geometry, half the
-weight footprint: C goes 28.0 -> 60.0 GB and HBM/C 3.4 -> 1.6. The gain law
-predicts the benefit falls from x1.50 to x1.31.
+### 4.4b Qwen-32B fp8 — DROPPED (2026-09-10)
 
-This is the cleanest validation of the law we can run, because it moves the
-weight footprint and **nothing else**. A model-size sweep confounds it with
-layer count, KV-head count and architecture. It also converts the paper's
-current assertion that weight quantization *hurts* a memory system -- by giving
-back the HBM/C headroom -- into a measurement.
+Ben's objection, and it is fair: the claim this was to prove -- that quantizing
+weights gives back HBM/C headroom and therefore shrinks our benefit -- is
+straightforward once the gain law is granted, not counterintuitive, and does not
+need 6 GPU-h.
 
-Run the same arms as 4.1 at one context (8K) and one SLO; the quantity of
-interest is the gain RATIO between the two precisions, not the absolute
-numbers, so it does not need the full grid.
+**What we give up, so the paper does not overclaim.** This was the only second
+point on the **HBM/C axis**. Without it the gain law is validated across
+BANDWIDTH (A100 vs C2C, via 4.2b) and its HBM/C term is **asserted, not
+measured**. Section 3 must say so rather than presenting the law as validated in
+both dimensions. If a reviewer attacks the HBM/C dependence, this is the
+experiment we chose not to run, and the honest answer is that we traded it for
+the bandwidth axis.
 
-### 4.5 If time remains — DirectKV head-to-head  (16 GPU-h)
+### 4.5 Head-to-head with Pie — the only real competitor  (12 GPU-h)
 
-Only now possible (SM90a). Two things worth knowing:
-- staged (ours) vs zero-copy (theirs) at matched offload ratio — is there a
-  crossover by offload ratio, as we hypothesised?
-- how much of their decode actually takes the fast path, given the
-  `S_past % 64 == 0` gate. **Frame any result as characterisation, never as a
-  takedown** — the artifact has constraints (no radix cache, head_dim 128, bf16)
-  that make a naive head-to-head unfair and unpublishable.
+**Reframed 2026-09-11.** `COMPETITORS_AND_BENCHMARKS.md` works through the nine
+cited systems and concludes the competitor set is **Pie, and only Pie**:
+DirectKV is a substrate by its own account, OmniServe computes attention on the
+CPU in a different regime, FlexGen is offline, DAK takes the offload ratio as an
+input, and NEO/ShadowKV/CALKV shrink KV rather than relocate it.
 
-### 4.6 Confirmatory — Llama-70B fp8  (10 GPU-h, OPTIONAL, run LAST)
+Pie is the nearest neighbour: same hardware, same goal, **different axis of
+partition** — it splits KV by *layer* uniformly across all requests, we split by
+*request*. It reports **1.9x over vLLM** on ShareGPT/Alpaca with Poisson
+arrivals.
 
-**Demoted from headline 2026-09-06** (see §1). Run only after 4.1, 4.2, 4.2b
-and 4.3 have landed, and only if the fp8 path works on SM90 at bring-up.
+Run **our system on Pie's workload**: ShareGPT and Alpaca, Poisson arrivals,
+throughput plus queuing/compute latency reported separately as they do. If Pie
+builds on the box, run it directly; if not, compare against their published
+figure over a shared vLLM baseline and state plainly that the vLLM versions
+differ.
 
-Its value is genuine and specific: HBM/C = 5.0 is the configuration our law
-most favours (predicted x1.71), and DirectKV never evaluated a 70B-class model,
-so it is non-overlapping evidence. But `B_cap = 7.2` at 8K means one request is
-14% against a 15% kill threshold, so this arm **cannot carry the decision** --
-it can only corroborate one already made at 32B. Report it at 4K as well
-(B_cap = 14.4), where the resolution is tolerable.
+**Prerequisite, and it is not free:** our harnesses use synthetic fixed-length
+prompts and closed-loop arrivals. Pie's numbers cannot be compared to ours until
+we run their workload shape. `vllm bench serve` already ships ShareGPT, Poisson
+`--request-rate` and SLO-aware `--goodput` in our own tree — use it for serving
+claims and keep the bespoke harnesses for mechanism claims.
 
-**Abort conditions, decided in advance so they are not argued about live:** fp8
-kernels not taking the fp8 path (`format=naive-quantized` -- confirm it is not
-dequantizing); load time over 30 min; or fewer than 6 hours left in the
-reservation. TP=2 fp16 is NOT an acceptable substitute here — the all-reduces
-confound the metric.
+### 4.7 DirectKV — composition, not competition  (8 GPU-h, if time remains)
+
+Not a rival: DirectKV removes the staging buffer beneath us. The question is
+whether our policy *composes* with it — riders served through a zero-copy kernel
+instead of `StagedHostBackend`. A win here is additive to both papers. Requires
+`nvcc` (SM90a CUTLASS/CuTe source).
+
+### 4.6 Llama-70B fp8 — DROPPED (2026-09-10)
+
+Not run. Decided with Ben: skip the 70B entirely and spend the window on the
+models the claim actually rests on.
+
+The reasoning was already in this plan before the decision. `B_cap = 7.2` at 8K
+means a single request is 14% against a 15% kill threshold, so this arm could
+never have carried the decision -- and §1 had already demoted it for exactly
+that. What remained was 10 GPU-h for a confirmatory point plus a 72.7 GB
+download on a metered box, to re-validate a harness ladder that is verified on
+Qwen-32B and nowhere else.
+
+What we give up, stated rather than glossed: HBM/C = 5.0 is the configuration
+the law most favours (predicted x1.71), and DirectKV never evaluated a
+70B-class model, so this was non-overlapping evidence. **§4.4b replaces it
+properly** -- Qwen-32B at fp8 vs fp16 moves HBM/C while holding architecture,
+tokenizer and KV geometry fixed, which is a cleaner test of the same law than
+changing model families would have been.
+
+Consequence for the budget: 10 GPU-h freed, and the pre-flight no longer needs
+the 72.7 GB pre-stage.
 
 ### Model-load accounting (matters at 72.7 GB)
 
@@ -572,24 +618,30 @@ the load-bearing pair.
 
 ## 5. Budget
 
+Reconciled 2026-09-12 after merging the two working branches; the dropped arms
+are recorded in §4 with what each costs us, not silently removed.
+
 | phase | GPU-h |
 |---|---|
 | 0 bring-up | 8 |
-| 4.1 endpoint comparison (Qwen-32B fp16) | 24 |
-| 4.2 re-parameterisation | 8 |
-| **4.2b rider cost curve (F8)** | **6** |
-| 4.3 policy ablation (matched bytes) | 16 |
-| **4.3b return leg: swap vs streaming** | **4** |
-| 4.2c heterogeneous workload (built on A100) | 0 |
-| 4.4 negative control (Llama-8B) | 4 |
-| **4.4b second HBM/C point (Qwen-32B fp8)** | **6** |
-| 4.5 DirectKV (optional) | 16 |
-| **4.6 confirmatory 70B (optional, LAST)** | **10** |
-| **total** | **76–102** |
+| **4.0 saturation — does the feature work at all (RUN FIRST)** | **4** |
+| 4.1 the decisive one: mixture vs stock vLLM | 16 |
+| 4.2 re-parameterise under FA-3 | 8 |
+| 4.2b rider cost curve (the crossover figure) | 6 |
+| 4.2c heterogeneous workload | 0 (built on A100) |
+| 4.3 policy ablation (matched cap **and** matched bytes) | 16 |
+| 4.3b return leg: swap vs streaming | 4 |
+| 4.4 negative control, Llama-8B | 0 (moved to A100) |
+| 4.4b Qwen-32B fp8 | — dropped |
+| **4.5 head-to-head with Pie on Pie's workload** | **12** |
+| 4.7 DirectKV composition (if time remains) | 8 |
+| 4.6 Llama-70B fp8 | — dropped |
+| **total** | **74–82** |
 
-Model loads are cheaper than the old plan: Qwen-32B is ~64 GB rather than
-72.7 GB, and the fp8 arm ~32 GB, so §4.4b costs little beyond its own runs.
-The 10 h for §4.6 includes the 72.7 GB stage-in and two ~19 min loads.
+Down from 76–102: dropping 70B removes 10 h and its 72.7 GB pre-stage, dropping
+the fp8 pair removes 6 h, and moving the negative control to the A100 removes 4.
+Added since: the saturation test (4 h), the return leg (4 h), and the Pie
+head-to-head (12 h), which is the one comparison a reviewer will look for.
 
 At typical GH200 on-demand rates that is roughly **$250–450**, plus the 70 GB
 checkpoint transfer. Call it **a 5–7 day reservation** to absorb model-load time

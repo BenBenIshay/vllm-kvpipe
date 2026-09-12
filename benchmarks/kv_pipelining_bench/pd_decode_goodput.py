@@ -34,6 +34,11 @@ Run:
 
 from __future__ import annotations
 
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from bench_teardown import terminate_engine  # noqa: E402
+
 import argparse
 import json
 import os
@@ -236,11 +241,11 @@ def run_arm(port: int, arm: str, args, budget_ms: float) -> dict:
             t.join(timeout=args.req_timeout)
         wall = time.time() - t0
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        time.sleep(4)
+        # SIGTERM alone drained nova06/07 on 2026-09-06: a wedged
+        # engine ignores it, and the survivor is what SLURM cannot
+        # kill. terminate_engine verifies the GROUP is empty and
+        # escalates. See bench_teardown.py.
+        terminate_engine(proc, label=__name__)
 
     flat = [g for gs in gaps for g in gs]
     flat.sort()

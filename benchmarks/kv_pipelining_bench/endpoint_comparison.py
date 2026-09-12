@@ -93,6 +93,14 @@ def build_llm(arm: str, args, slo_ms: float):
             # performance be whatever it is.
             extra["hybrid_itl_ms"] = 1e9                   # unlimited B1 budget
             extra["transfer_aware_slo_p99_itl_ms"] = 0.0   # disables B2
+    if args.num_gpu_blocks_override:
+        # Force a SMALL KV pool so all-HBM saturates below the offered load.
+        # Without this the comparison can only be run at a scale where HBM
+        # genuinely binds, which on a small model means thousands of requests:
+        # a 0.5B dry run cannot reach it, so the whole decision path (verdict
+        # included) stays untested until the rented box. The vacuity guard
+        # catches such a run -- but only after the GPU-hours are spent.
+        extra["num_gpu_blocks_override"] = args.num_gpu_blocks_override
     return LLM(model=args.model, dtype=args.dtype,
                enable_prefix_caching=False,
                gpu_memory_utilization=args.gpu_mem_util,
@@ -303,6 +311,10 @@ def main() -> int:
     p.add_argument("--max-num-seqs", type=int, default=32)
     p.add_argument("--b-hbm-max", type=int, default=8)
     p.add_argument("--gpu-mem-util", type=float, default=0.35)
+    p.add_argument("--num-gpu-blocks-override", type=int, default=0,
+                   help="force a small KV pool so all-HBM binds; needed to "
+                        "dry-run the non-vacuous decision path on a small "
+                        "model. 0 = let vLLM size the pool.")
     p.add_argument("--link-gbps", type=float, default=25.1,
                    help="A100 PCIe4 ~25; GH200 C2C ~450 (MEASURE IT FIRST)")
     p.add_argument("--slos", default="30,40,50,75,100")
@@ -390,6 +402,9 @@ def main() -> int:
     for slo in slos:
         a = next((r for r in results
                   if r["slo_ms"] == slo and r["arm"] == "all_hbm"), None)
+        # Concurrency IS the right quantity here, unlike in the verdict: this
+        # asks whether the offered load ever bound the all-HBM arm, not which
+        # arm delivered more work.
         if a and a["steady_concurrency"] >= args.offered * 0.95:
             vacuous.append(slo)
     if vacuous:
@@ -409,24 +424,56 @@ def main() -> int:
             print(f"SLO {slo:>5.0f} ms: cannot compare -- missing "
                   f"{sorted({'all_hbm', 'mixture'} - set(by))}")
             continue
-        a = by["all_hbm"]["steady_concurrency"]
-        c = by["mixture"]["steady_concurrency"]
+        # HEADLINE IS GOODPUT, NOT CONCURRENCY.
+        #
+        # `steady_concurrency` is a mean over sampled steps of a FIXED offered
+        # load, so an arm that runs SLOWER keeps its requests in flight longer
+        # and scores HIGHER. It rewards being slow. That is not a subtle
+        # objection: it is how the retracted +12% of 2026-08-13 was produced --
+        # the slower implementation "won" on this metric while delivering less
+        # work per second. Gating a 24 GPU-h decision run on it would put the
+        # same defect at the centre of the paper.
+        #
+        # tokens_per_s is the honest comparator here: every arm is offered the
+        # same requests with the same out_len, so tokens are equal across arms
+        # and tokens/s is exactly work-per-second. Concurrency stays as a
+        # diagnostic, printed but never gated on.
+        a = by["all_hbm"]["tokens_per_s"]
+        c = by["mixture"]["tokens_per_s"]
+        a_conc = by["all_hbm"]["steady_concurrency"]
+        c_conc = by["mixture"]["steady_concurrency"]
         # A missing all_host must NOT be silently read as an endpoint of 0 --
         # that would flatter the mixture. Compare against the endpoints we
         # actually measured, and say which those are.
         if "all_host" in by:
-            b = by["all_host"]["steady_concurrency"]
+            b = by["all_host"]["tokens_per_s"]
             best_end, against = max(a, b), "best endpoint"
-            host_col = f"{b:5.1f}"
+            host_col = f"{b:6.1f}"
         else:
             best_end, against = a, "all-HBM only (all-host DID NOT FINISH)"
-            host_col = "  n/a"
+            host_col = "   n/a"
         gain = (c / best_end - 1) * 100 if best_end else 0.0
-        verdict = ("MIXTURE WINS" if gain >= 15 else
-                   "marginal (<15%)" if gain > 0 else "MIXTURE LOSES")
-        print(f"SLO {slo:>5.0f} ms: all-HBM {a:5.1f} | all-host {host_col} | "
-              f"mixture {c:5.1f}  -> {gain:+6.1f}% vs {against}  [{verdict}]")
+
+        # The SLO is a GATE, not part of the score. An arm that beats the
+        # endpoints on goodput while breaking the latency target it was run
+        # under has not won; it has changed the question.
+        mix_itl = by["mixture"].get("itl_proxy_ms")
+        slo_met = mix_itl is not None and mix_itl <= slo
+        if not slo_met:
+            verdict = f"SLO BREACHED (ITL {mix_itl:.0f} > {slo:.0f} ms)"
+        else:
+            verdict = ("MIXTURE WINS" if gain >= 15 else
+                       "marginal (<15%)" if gain > 0 else "MIXTURE LOSES")
+        print(f"SLO {slo:>5.0f} ms: all-HBM {a:6.1f} | all-host {host_col} | "
+              f"mixture {c:6.1f} tok/s -> {gain:+6.1f}% vs {against}  "
+              f"[{verdict}]")
+        print(f"{'':>13} (concurrency, diagnostic only: all-HBM {a_conc:.1f} "
+              f"-> mixture {c_conc:.1f}; NOT gated on -- a slower arm scores "
+              f"higher on it)")
     print("=" * 72)
+    print("Headline metric is tokens/s (goodput). steady_concurrency is a "
+          "diagnostic:\n  it is a mean over a fixed offered load, so a slower "
+          "arm scores higher on it.")
     print("Kill criteria (agreed): mixture must beat BOTH endpoints by >=15% "
           "at matched SLO, else fall back to the characterization paper.")
     if vacuous:

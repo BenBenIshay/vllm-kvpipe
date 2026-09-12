@@ -288,6 +288,19 @@ class RungdHostPool:
         # destination range whenever it sits inside one block.
         hk_flat = hk.view(hk.shape[0] * bs, *hk.shape[2:])
         hv_flat = hv.view(hv.shape[0] * bs, *hv.shape[2:])
+        # FAST PATH: a request allocated a contiguous extent (`blocks_per_req`
+        # > 0, which is how the runner builds the pool) has host blocks
+        # base..base+k-1, so token p lands at base*bs + p and the WHOLE range
+        # is one contiguous destination. The block-by-block loop below is then
+        # 128 copies per layer at ctx 2048 -- 8192 for the request -- and
+        # measured at ~2.9 GB/s flat across contexts, which is Python overhead,
+        # not memory bandwidth.
+        need = (start_pos + n + bs - 1) // bs
+        if need > 1 and hblks[need - 1] - hblks[0] == need - 1:
+            base = hblks[0] * bs + start_pos
+            hk_flat[base:base + n].copy_(k_cpu)
+            hv_flat[base:base + n].copy_(v_cpu)
+            return
         written = 0
         while written < n:
             pos = start_pos + written
@@ -351,14 +364,22 @@ class RungdHostPool:
             hv_flat = hv.view(hv.shape[0] * bs, *hv.shape[2:])
             k = torch.empty((n, *hk.shape[2:]), dtype=hk.dtype, device="cpu")
             v = torch.empty((n, *hv.shape[2:]), dtype=hv.dtype, device="cpu")
-            taken = 0
-            while taken < n:
-                blk, off = divmod(taken, bs)
-                take = min(bs - off, n - taken)
-                src = hblks[blk] * bs + off
-                k[taken:taken + take].copy_(hk_flat[src:src + take])
-                v[taken:taken + take].copy_(hv_flat[src:src + take])
-                taken += take
+            # Same contiguity fast path as `preload_layer`, for the same
+            # reason: this is the inverse read and was equally loop-bound.
+            nb_need = (n + bs - 1) // bs
+            if nb_need > 1 and hblks[nb_need - 1] - hblks[0] == nb_need - 1:
+                src0 = hblks[0] * bs
+                k.copy_(hk_flat[src0:src0 + n])
+                v.copy_(hv_flat[src0:src0 + n])
+            else:
+                taken = 0
+                while taken < n:
+                    blk, off = divmod(taken, bs)
+                    take = min(bs - off, n - taken)
+                    src = hblks[blk] * bs + off
+                    k[taken:taken + take].copy_(hk_flat[src:src + take])
+                    v[taken:taken + take].copy_(hv_flat[src:src + take])
+                    taken += take
             out[ln] = (k, v)
         self.prefill_stash[key] = out
         self.stash_tokens[key] = n

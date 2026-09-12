@@ -81,8 +81,24 @@ def configure(arm: str, args, slo_ms: float) -> dict:
                  hybrid_pcie_gbps=args.link_gbps)
     if arm.startswith("uniform_"):
         frac = int(arm.split("_")[1]) / 100.0
-        # fixed fraction on host: cap HBM slots at (1-frac) of the offered load
-        extra["hybrid_b_hbm_max"] = max(1, int(round(args.offered * (1 - frac))))
+        # The fraction must be of the CONCURRENCY THIS CONFIG ACHIEVES, not of
+        # --offered. Measured 2026-09-07: offered 12 but the KV pool caps
+        # concurrency at 6, so uniform_25 computed b_hbm_max=9 and uniform_50
+        # computed 6 -- both at or above the ceiling, so NEITHER offloaded
+        # anything. They returned identical numbers to each other and to an
+        # all-HBM run, and the ablation compared our policy against a baseline
+        # that was silently all-HBM.
+        cap = args.capacity or args.offered
+        extra["hybrid_b_hbm_max"] = max(1, int(round(cap * (1 - frac))))
+        extra["_b_hbm_max_effective"] = extra["hybrid_b_hbm_max"]
+        # And a uniform arm must NOT get our byte budget. With B1 active it
+        # refuses riders the link cannot hide -- which is the very policy under
+        # test, so leaving it on makes the "baseline" a copy of us with a
+        # different knob. A huge itl_ms disables the budget, so the arm offloads
+        # its fixed fraction whether or not it fits: "DirectKV with a dial",
+        # which is what we claim to beat.
+        extra["hybrid_itl_ms"] = 1e9
+        extra["transfer_aware_slo_p99_itl_ms"] = 0.0
     else:
         extra["hybrid_b_hbm_max"] = args.b_hbm_max
     return extra
@@ -249,6 +265,12 @@ def main() -> int:
     p.add_argument("--offered", type=int, default=16)
     p.add_argument("--max-num-seqs", type=int, default=32)
     p.add_argument("--b-hbm-max", type=int, default=8)
+    p.add_argument("--capacity", type=int, default=0,
+                   help="the concurrency an all-HBM run of this config actually "
+                        "achieves. The uniform arms take their fraction of THIS, "
+                        "not of --offered; getting it wrong makes them offload "
+                        "nothing and silently turns the baseline into all-HBM. "
+                        "0 = fall back to --offered (and warn).")
     p.add_argument("--gpu-mem-util", type=float, default=0.35)
     p.add_argument("--link-gbps", type=float, default=25.1)
     p.add_argument("--slo", type=float, default=50.0)
@@ -305,28 +327,91 @@ def main() -> int:
 
     by = {r["arm"]: r for r in results}
     print("\n" + "=" * 72)
-    # Compare on THROUGHPUT. steady_concurrency rewards the slower arm (it is
-    # a mean over sampled steps, so an arm that holds requests longer scores
-    # higher); it produced a claim we had to retract.
-    base_arm = max((a for a in by if a.startswith("uniform_")),
-                   key=lambda a: by[a]["tokens_per_s"], default=None)
-    if base_arm:
-        base = by[base_arm]["tokens_per_s"]
-        b_in = by[base_arm].get("host_read_bytes", 0)
-        print(f"best uniform arm: {base_arm} at {base:.1f} tok/s")
+
+    # VACUITY GUARD. If the achieved concurrency never exceeded b_hbm_max, then
+    # every request fit in the HBM tier in EVERY arm and all five arms ran the
+    # identical configuration. The arms then agree to within noise and the
+    # verdict below reads as "the policy is decoration" -- evidence against our
+    # own contribution, manufactured by a bad setup. Measured 2026-09-07:
+    # concurrency 6.0 against b_hbm_max 8, all arms within 0.7%, uniform_50
+    # scoring 56.5 tok/s when forcing 6 requests onto a PCIe host tier should
+    # have destroyed it. Nothing had offloaded.
+    peak = max((r["steady_concurrency"] for r in results), default=0.0)
+    if peak <= args.b_hbm_max:
+        print("!" * 72)
+        print(f"VACUOUS: peak concurrency {peak:.1f} <= b_hbm_max "
+              f"{args.b_hbm_max}, so no request was ever assigned to the host "
+              "tier and all arms ran the SAME configuration.")
+        print("This says NOTHING about the policy. Lower --b-hbm-max below the")
+        print("concurrency the load actually achieves (or raise --offered) and")
+        print("re-run. Do NOT read the numbers above as a negative result.")
+        print("!" * 72)
+        return 2
+
+    # The baseline must actually BE a baseline. If a uniform arm's HBM cap sits
+    # at or above the achieved concurrency it never offloaded, and comparing
+    # against it is comparing against all-HBM under a different label.
+    inert = [r["arm"] for r in results if r["arm"].startswith("uniform_")
+             and r["steady_concurrency"] <= max(1, int(round(
+                 (args.capacity or args.offered)
+                 * (1 - int(r["arm"].split("_")[1]) / 100.0))))]
+    if inert:
+        print("!" * 72)
+        print(f"INVALID: uniform arm(s) {inert} never offloaded -- their HBM cap "
+              "is at or above the concurrency this config achieves, so they ran "
+              "all-HBM under a uniform label.")
+        print("Set --capacity to the concurrency an all-HBM run really reaches.")
+        print("!" * 72)
+        return 2
+
+    # Compare on GOODPUT, not concurrency. steady_concurrency is a mean over a
+    # fixed offered load, so a slower arm scores higher -- it is retracted from
+    # endpoint_comparison for exactly that reason (PAPER_PLAN 6.7) and it was
+    # still in use here. The 2026-09-07 run shows why it matters: scored_migrate
+    # scored +0.0% on concurrency while being 22% WORSE on tok/s (44.1 vs 56.7).
+    base = max((by[a]["tokens_per_s"] for a in by
+                if a.startswith("uniform_")), default=0.0)
+    for a in ("arrival", "scored", "scored_migrate"):
+        if a in by and base:
+            d = (by[a]["tokens_per_s"] / base - 1) * 100
+            print(f"{a:<16} vs best uniform: {d:+6.1f}%  "
+                  f"({by[a]['tokens_per_s']:.1f} vs {base:.1f} tok/s)")
+    # Compare at MATCHED b_hbm_max or not at all. A uniform arm with a
+    # different HBM cap is a different ALLOCATION, not a different policy, and
+    # on a slow link the arm that offloads least wins by default. Measured
+    # 2026-09-07: uniform_25 (cap 5) "beat" us by 14.5% while uniform_50 (cap
+    # 3, our cap) was only 2.9% ahead -- almost all of that headline was the
+    # cap, not the policy.
+    matched = [a for a in by if a.startswith("uniform_")
+               and by[a].get("b_hbm_max_effective") == args.b_hbm_max]
+    if matched:
+        m = max(matched, key=lambda a: by[a]["tokens_per_s"])
         for a in ("arrival", "scored", "scored_migrate"):
             if a in by:
-                d = (by[a]["tokens_per_s"] / base - 1) * 100 if base else 0.0
-                # The comparison is only controlled if the arms moved similar
-                # volume. Say so when they did not, rather than reporting a
-                # delta that is really a difference in offload ratio.
-                a_in = by[a].get("host_read_bytes", 0)
-                ratio = (a_in / b_in) if b_in else 0.0
-                flag = "" if 0.8 <= ratio <= 1.25 else \
-                    f"  [UNMATCHED: moved {ratio:.2f}x the bytes]"
-                print(f"{a:<16} vs {base_arm}: {d:+6.1f}% tok/s{flag}")
-    print("\nTHE QUESTION: at a MATCHED interconnect budget, does choosing")
-    print("which requests to offload beat spreading the same bytes uniformly?")
+                d = (by[a]["tokens_per_s"] / by[m]["tokens_per_s"] - 1) * 100
+                print(f"{a:<16} vs {m} at MATCHED b_hbm_max={args.b_hbm_max}: "
+                      f"{d:+6.1f}%")
+
+    # MATCHED BYTES, the other half of "matched". Matching b_hbm_max controls
+    # the ALLOCATION; it does not control the TRAFFIC, because the policies
+    # select requests of different contexts and the interconnect only sees
+    # bytes. An arm can sit at the same cap and still move 2x the volume.
+    b_ref = by.get(m) if matched else None
+    if b_ref is not None:
+        b_in = b_ref.get("host_read_bytes", 0)
+        for a in ("arrival", "scored", "scored_migrate"):
+            if a in by and b_in:
+                ratio = by[a].get("host_read_bytes", 0) / b_in
+                if not 0.8 <= ratio <= 1.25:
+                    print(f"  [UNMATCHED BYTES] {a} moved {ratio:.2f}x the "
+                          f"traffic of {m}; the delta above mixes policy with "
+                          f"offload ratio and is not reportable as a policy "
+                          f"result.")
+    else:
+        print(f"NOTE: no uniform arm ran at b_hbm_max={args.b_hbm_max}, so the "
+              "comparison above mixes policy with allocation. Add a uniform "
+              "fraction that lands on the same cap before reading it.")
+    print("\nTHE QUESTION: does our policy beat a fixed offload fraction?")
     print("If not, the policy layer is decoration and the contribution is the")
     print("analysis, not the system.")
 

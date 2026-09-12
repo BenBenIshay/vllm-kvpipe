@@ -144,15 +144,22 @@ other architectural variable --- see below. The 70B weight figure is the
 \label{tab:gain}
 \end{table}
 
-\paragraph{Weight precision is the clean lever on $\HBM/\Ckv$.} Comparing
-models of different sizes moves the weight footprint, but it also moves layer
-count, KV-head count and architecture, so a trend across 8B, 32B and 70B
-confounds the quantity the law is about with three others. Halving a
-\emph{single} model's weight precision moves $\HBM/\Ckv$ and nothing else: the
-two Qwen-32B rows above share an architecture, a tokenizer and a KV geometry,
-and differ only in that fp8 weights leave 60\,GB for KV where fp16 leave
-28\,GB. The law predicts the gain should fall from $\times$1.50 to
-$\times$1.31, and \S\ref{sec:eval} tests that directly.
+\paragraph{Weight precision is the clean lever on $\HBM/\Ckv$, and we do not
+pull it.} Comparing models of different sizes moves the weight footprint, but
+also layer count, KV-head count and architecture, so a trend across 8B, 32B and
+70B confounds the quantity the law is about with three others. The clean
+instrument is a \emph{single} model at two weight precisions, which moves
+$\HBM/\Ckv$ and nothing else --- the two Qwen-32B rows above share an
+architecture, a tokenizer and a KV geometry and differ only in that fp8 weights
+leave 60\,GB for KV where fp16 leave 28\,GB.
+
+We report those rows as projections rather than measurements. Validating the
+$\HBM/\Ckv$ axis directly would have cost hours we judged better spent
+comparing against the closest prior system, so the law is validated across
+\emph{bandwidth} (\S\ref{sec:eval:cost}) while its amplifier rests on the
+parameter fit and on agreement with published results
+(\S\ref{sec:model:directkv}). \S\ref{sec:eval:model} states this again where
+a reviewer will look for it.
 
 The same observation has a practical edge, which \S\ref{sec:discussion} takes
 up: quantizing \emph{weights} is not neutral to a memory system, it actively

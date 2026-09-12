@@ -1,0 +1,40 @@
+{
+  "config": {
+    "riders": 5,
+    "ctx": 8192,
+    "layers": 80,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "block_size": 16,
+    "iters": 20,
+    "out": "transfer_bw.json"
+  },
+  "results": {
+    "per-layer bulk": {
+      "chunk_bytes": 167772160,
+      "gbs": 25.155366267548228,
+      "ms_per_layer": 6.669438171386719
+    },
+    "per-block": {
+      "chunk_bytes": 327680,
+      "gbs": 18.50040963421148,
+      "ms_per_layer": 9.06856460571289
+    },
+    "per-rider-block": {
+      "chunk_bytes": 65536,
+      "gbs": 7.674528253768384,
+      "ms_per_layer": 21.86090850830078
+    },
+    "per-row (4KB)": {
+      "chunk_bytes": 4096,
+      "gbs": 0.4612354556479997,
+      "ms_per_layer": 363.74515
+    },
+    "overlap": {
+      "compute_ms": 12.527001953125,
+      "overlapped_ms": 12.441292572021485,
+      "copy_ms": 6.669438171386719,
+      "hidden_pct": 100.0
+    }
+  }
+}

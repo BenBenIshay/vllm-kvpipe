@@ -1,0 +1,82 @@
+{
+  "config": {
+    "model": "Qwen/Qwen2.5-32B-Instruct",
+    "dtype": "float16",
+    "ctx": 2048,
+    "out_len": 64,
+    "offered": 12,
+    "max_num_seqs": 12,
+    "b_hbm_max": 8,
+    "gpu_mem_util": 0.83,
+    "link_gbps": 25.2,
+    "slo": 60.0,
+    "probe_steps": 16,
+    "migrate_warmup": 24,
+    "eager": true,
+    "arms": "uniform_25,uniform_50,arrival,scored,scored_migrate",
+    "single_arm": "",
+    "arm_slo": 0.0,
+    "out": "policy_ablation.json"
+  },
+  "results": [
+    {
+      "arm": "uniform_25",
+      "slo_ms": 60.0,
+      "wall_s": 13.551548911258578,
+      "tokens_per_s": 56.672488512508586,
+      "steady_concurrency": 5.959595959595959,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "ref"
+    },
+    {
+      "arm": "uniform_50",
+      "slo_ms": 60.0,
+      "wall_s": 13.592434355989099,
+      "tokens_per_s": 56.50202015959002,
+      "steady_concurrency": 5.959595959595959,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "arrival",
+      "slo_ms": 60.0,
+      "wall_s": 13.625455113127828,
+      "tokens_per_s": 56.365089725336865,
+      "steady_concurrency": 5.959595959595959,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "scored",
+      "slo_ms": 60.0,
+      "wall_s": 13.65147215873003,
+      "tokens_per_s": 56.25766884847425,
+      "steady_concurrency": 5.959595959595959,
+      "migrations": {},
+      "probe_verdicts": [],
+      "token_check": "OK"
+    },
+    {
+      "arm": "scored_migrate",
+      "slo_ms": 60.0,
+      "wall_s": 17.428058810532093,
+      "tokens_per_s": 44.06686988776304,
+      "steady_concurrency": 5.959595959595959,
+      "migrations": {
+        "cpu": 1,
+        "hbm": 1
+      },
+      "probe_verdicts": [
+        {
+          "baseline_ms": 63.270356704986675,
+          "after_ms": 104.55406946016706,
+          "worse": true
+        }
+      ],
+      "token_check": "OK"
+    }
+  ]
+}
