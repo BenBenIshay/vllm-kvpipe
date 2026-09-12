@@ -140,3 +140,45 @@ instance rather than from a spec page, and check the pinned-page limit (§7 Q4).
 
 *Caveat: prices and stock move weekly, and no spec page substitutes for
 running `gh200_bringup.sh` on the actual instance. Re-check before booking.*
+
+
+---
+
+## 9. Runcrate — what their docs answer, and what they do not (2026-09-12)
+
+Researched before contacting them, so the enquiry asks only what is genuinely
+unknown. Draft message: `paper/RUNCRATE_ENQUIRY.md`.
+
+**The finding that comes first: their own site does not list GH200.** Their
+pricing page carries 18 SKUs (H200 down to A16) with no GH200, and their docs'
+`/dedicated/available-gpus` lists **H100, H200, B200, B300**. The $2.52/hr
+"in stock" figure comes from third-party trackers. Runcrate is a *marketplace
+aggregating* capacity across providers and regions, so a tracker entry may
+reflect a partner listing, stale data, or a region we cannot get. **Confirm the
+product exists before evaluating anything else about them.**
+
+Answered from their docs:
+
+| §7 question | answer |
+|---|---|
+| Q2 persistent volumes | **Yes** — `/storage/overview`, `creating`, `mounting`, `file-explorer`. Survival across termination and restore throughput still unknown. |
+| Q5 billing | **Per-second, no minimum commitment**, "stop the instance, stop the meter" — better than the on-demand hourly we asked for. |
+| contact | Enquiry form, 24 h response; **Slack Connect** offered for direct engineering contact. |
+
+Still unknown, and they matter more here than for a first-party cloud:
+
+- **Bare-metal or VM.** Their docs mention bare-metal only for *reserved
+  clusters of 16–128+ nodes*. A single on-demand GH200 may therefore be a VM,
+  which raises both exclusivity and virtualization-overhead questions for a
+  measurement paper.
+- **Exclusivity**, unaddressed anywhere in the docs.
+- **Image / `nvcc`** — no documentation page on images or CUDA at all.
+- **Host RAM and the pinned-page limit** (§7 Q4), which is the one most likely
+  to fail silently.
+- **Same-host continuity across two sessions**, which for an aggregator is a
+  harder guarantee than for a single operator.
+
+**Assessment.** Per-second billing and persistent volumes suit our two-block
+shape well. The marketplace model is the risk: it is the opposite of the
+measurement continuity §4 depends on. Worth the enquiry — it costs nothing —
+but Lambda restocking would still be the better outcome.
