@@ -108,10 +108,11 @@ $PY $P/gh200_preflight.py --model "$MODEL" --ctx "$CTX" \
     --gpu-mem-util "$GPU_MEM_UTIL" --out preflight.json 2>&1 | sed 's/^/  /'
 gate ${PIPESTATUS[0]} "gh200_preflight"
 
-# The capacity this machine ACTUALLY has at the util we ACTUALLY run, which is
-# not the number the plan was written around: C = 19.3 GB and B_cap 7.2 hold
-# only at util 0.958. At 0.90 it is C = 13.7 GB and ~5. An --offered set for
-# the wrong one makes a correct run look broken.
+# The capacity this machine ACTUALLY has at the util we ACTUALLY run. The
+# paper's tables quote util-1.0 figures, which describe the DEVICE; our
+# harnesses set gpu_memory_utilization 0.90, which for Qwen-32B costs 9.6 GB of
+# KV space -- capacity 13.0 -> 8.6 at 8K. An --offered calibrated on the wrong
+# column makes a correct run look broken.
 $PY - preflight.json <<'EOF'
 import json, sys
 try:
@@ -124,6 +125,26 @@ if cap:
     print(f"      >>> set --offered WELL ABOVE {cap:.0f} in 4.0 and 4.1, or the")
     print(f"          load never binds and every arm returns the same number.")
 EOF
+
+# ---------------------------------------------------------------- 3b. tree
+say "3b. the engine we are about to measure is the one in THIS tree"
+# On a RESTORED instance this is the check that matters. The editable install's
+# finder is a MetaPathFinder with an absolute path baked in, consulted BEFORE
+# sys.path, so PYTHONPATH cannot correct it: a venv restored from a snapshot
+# can happily import vllm from a path that no longer holds our code, run
+# clean, and measure the wrong thing. `pip list` does not catch this -- it
+# reports the dist-info path, which is not what imports use. Ask the importer.
+EXPECT="$(pwd)/vllm"
+$PY - "$EXPECT" <<'EOF'
+import sys, os, vllm
+got = os.path.dirname(os.path.abspath(vllm.__file__))
+want = os.path.abspath(sys.argv[1])
+print(f"      import vllm -> {got}")
+if got != want:
+    print(f"      EXPECTED    -> {want}")
+sys.exit(0 if got == want else 1)
+EOF
+gate $? "vllm imports from this tree"      "a restored venv pointing elsewhere runs the WRONG code and looks healthy"
 
 # ---------------------------------------------------------------- 4. model
 say "4. model is present (no downloading on the meter)"

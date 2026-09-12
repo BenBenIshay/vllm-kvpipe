@@ -82,13 +82,66 @@ lands, quote it.
 
 Every item here is free and removes rental risk.
 
-- [ ] **NEW (2026-09-06): source a Qwen2.5-32B fp8 checkpoint** for the second
-      HBM/C point. It must share the fp16 model's architecture exactly — same
-      64 layers, 8 kv-heads, head_dim 128 — or the pair stops isolating weight
-      precision, which is the entire reason for running it. Verify the config
-      before renting, the same way the 70B checkpoint was verified.
-- [ ] **NEW: confirm Qwen2.5-32B fp16 is staged** (it is in the A100 HF cache;
-      it still has to reach the rented box).
+- [ ] **SNAPSHOT AND RESTORE THE BUILT ENVIRONMENT — and test the restore.**
+      *Added 2026-09-12.* Bring-up is a **per-rental** cost, and the plan's
+      8-hour figure is a stop-loss rather than an estimate (expect 1–3 h if the
+      build behaves; the aarch64/SM90 build time is unmeasured). Making the
+      environment restorable converts that into a **one-time** cost and removes
+      the incentive to hold an idle instance purely to avoid rebuilding.
+
+      What has to survive, measured on the A100:
+
+      | | size |
+      |---|---|
+      | `.venv` (incl. 2.8 GB compiled `.so`) | **8.6 GB** |
+      | Qwen2.5-32B fp16 checkpoint | **62 GB** |
+      | **total** | **~71 GB** |
+
+      Target: a second rental's bring-up becomes *restore + verify* (~1 h)
+      instead of *rebuild + verify* (up to 8).
+
+      **The restore must be verified, not assumed.** A restore that silently
+      produces a subtly different environment is worse than rebuilding, because
+      every number taken afterwards is wrong and nothing says so. This codebase
+      has already been bitten by exactly that class of problem: the editable
+      install's finder is a `MetaPathFinder` with an absolute path baked in,
+      consulted **before** `sys.path`, so `PYTHONPATH` cannot correct it — a
+      restored venv pointing at the wrong tree would run the wrong code while
+      looking healthy. `pip list` does not catch it either; it reports the
+      *dist-info* path, which is not what imports use.
+
+      Acceptance gate, in this order:
+      1. restore onto a clean instance;
+      2. `python -c "import vllm; print(vllm.__file__)"` resolves **into the
+         restored tree**, not to any other path;
+      3. `gh200_bringup.sh` exits 0 (which re-runs the 9/9 suite).
+
+      Only then are numbers from a restored instance comparable to numbers from
+      the original one.
+
+- [ ] **Confirm the provider's storage model**, because it decides the rental
+      shape. Persistent volume or fast same-region object storage ⇒ the split
+      below is clearly right. Ephemeral-only ⇒ prefer one continuous block and
+      accept paying for analysis time.
+
+- [ ] **Confirm Qwen2.5-32B fp16 reaches the box** (it is in the A100 HF cache;
+      `gh200_bringup.sh` gates on it, so this is a staging task, not a check).
+
+**Rental shape this implies.** Rent **on-demand and releasable**; do not
+pre-commit to a reserved block unless the discount is large.
+
+```
+bring-up (<=8 h, expect 1-3) -> 4.0b baseline integrity -> 4.0 gate
+                                       |
+                   FAIL --> release. ~16 h spent, not 82.
+                   PASS --> SNAPSHOT, then run 4.1 onward continuously.
+```
+
+Cost is not the argument here: at ~$4/GPU-h a second bring-up is $12–32
+against a ~$330 trip. The argument is **measurement continuity** — if 4.1 runs
+on different silicon from 4.0, the baselines shift underneath every ratio the
+paper reports, and a contended node has already cost us a 9.4x error in one
+measurement before anyone noticed.
 
 The next two items concerned **§4.6, the 70B arm, which is now DROPPED**, so
 they are moot and kept only as a record. They were no
