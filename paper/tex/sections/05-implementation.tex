@@ -1,65 +1,129 @@
-% STATUS: skeleton, 2026-09-05. Write in W1. Branch-independent.
 \section{Implementation}
 \label{sec:impl}
-\todo{vLLM v1 fork; every path env-gated and default-off, existing paths
-untouched. Name the swappable backend protocol (KVTierBackend: staged host,
-resident, zero-copy) -- it is the abstraction a reviewer asks for when the
-paper says "our policy would compose with their mechanism".}
 
-\subsection{Host-block-id KV pool}
-\todo{Own id space, per-request logical-to-host-block map, growth-aware, freed
-at request end so block reuse cannot alias. Why a resident-block-id mirror does
-NOT work: freeing a request's resident blocks nulls its block table and the ids
-are reused, so the read mapping cannot be rebuilt and one request's host data
-overwrites another's.}
+The system is implemented in vLLM~v1 in roughly 3{,}900 lines across 22 files.
+Every path is disabled by default and selected at runtime, so a build with the
+feature off exercises the stock code; \S\ref{sec:eval:setup} reports what that
+costs, because a baseline that is quietly slower than the engine it stands in
+for would flatter every ratio in this paper.
 
-\subsection{Zero-block admission}
-\todo{The mechanism behind Table~\ref{tab:capacity}, in three pieces -- and the
-third was found only by testing: (1) admit with no main-pool blocks; (2)
-declare the prompt already computed so no prefill is scheduled; (3) HEAD OF
-LINE -- vLLM's waiting loop stops at the first request it cannot allocate,
-which also stopped riders behind it that needed nothing at all. A block-starved
-head is now deferred so the scan continues.}
+\subsection{Host KV pool}
+\label{sec:impl:pool}
 
-\subsection{Reclaim}
-\todo{The worker acknowledges the seed and the scheduler reclaims only on that
-ack -- the scheduler cannot know the device-to-host copy happened, and guessing
-loses history on a pool-setup failure. Promotion had to be repaired alongside:
-block accounting is LENGTH-based, so an in-place null counts as present, and
-the phase-2 "blocks cover the whole sequence" gate would have passed on an
-all-null table and served garbage.}
+The pool owns a private block-id space, a per-request map from logical block to
+host block, and two pinned host tensors per layer. Host block ids are freed
+only when a request finishes, which is what makes them safe: a request's device
+blocks are released and reissued to other requests while it is still decoding,
+so any mirror keyed by device block id would both lose the mapping needed to
+find its own data and alias another request's (\S\ref{sec:design:spaces}).
+
+Two layout decisions carry measurable weight. The mirrors are \textbf{block-major}
+and $K$ and $V$ are \textbf{separate tensors}, so a run of consecutive host blocks is
+one contiguous byte range on both sides and the per-layer transfer is a handful
+of \texttt{cudaMemcpyAsync} calls issued straight from pinned memory. An earlier
+layout that interleaved $K$ and $V$ made a run two chunks strided by a whole
+plane; no pinned DMA was possible, every layer paid a host-side gather, and that
+gather measured 22\,ms per layer --- 98\% of the streaming path and 72\% of
+engine wall time. Restructuring the mirrors reduced it to 39\,ms in total.
+
+That defect is worth reporting rather than quietly fixing, because it is
+invisible to the metric one would naturally watch. It is a \emph{host} memcpy:
+a faster interconnect does not remove it. On a coherent link the same code would
+have spent hundreds of milliseconds per step gathering in order to hide a
+transfer of a few milliseconds, and the natural conclusion would have been that
+the interconnect does not help --- while measuring our own memory copies.
+
+\subsection{Tier-aware attention}
+\label{sec:impl:attn}
+
+Attention is the only operation that distinguishes the tiers
+(\S\ref{sec:design:exec}). We subclass the FlashAttention backend's forward
+path. Device-tier rows are served by the standard call; host-tier rows are
+gathered with \texttt{index\_select}, attended against the rolling slot with the
+compacted block table, and scattered back into the shared output with
+\texttt{index\_copy\_}.
+
+The standard call still runs over every row, so host-tier rows would be attended
+twice --- once uselessly, over their full history --- if nothing prevented it.
+We set their \texttt{seqused\_k} to 1, so they read a single key in the first
+call and are overwritten by the second. On A100 that single change was worth
+22\% of wall time.
+
+\subsection{Scheduler}
+\label{sec:impl:sched}
+
+Three changes make a host-tier request hold no device blocks
+(\S\ref{sec:design:additive}): admission with an empty block list, a prompt
+marked already computed so no prefill is scheduled, and deferral of a
+block-starved request at the head of the waiting queue so it does not block
+admissions that need no blocks at all. The third was found only by testing; the
+first two are insufficient without it.
+
+Reclaiming a resident request's blocks on demotion required repairing the
+promotion path, and the failure mode was not a crash. Block accounting is
+length-based, so a nulled entry still counts as present: \texttt{allocate\_slots}
+would never refill it, and the promotion gate --- ``do the blocks cover the whole
+sequence?'' --- would have \emph{passed on an all-null table} and served
+garbage. Refill is therefore all-or-nothing, the gate counts non-null entries,
+and refilled ids reach the worker through a rewrite channel, because they
+replace positions rather than appending.
 
 \subsection{Prefill handover}
 \label{sec:impl:stash}
-\todo{Prompt-keyed stash; the scheduler admits block-free only after the worker
-confirms the KV exists. Bitwise-proven across block boundaries, unaligned
-lengths, and after the producer's extent is recycled and overwritten. Report
-its cost -- this is the answer to the largest objection to the system model.}
 
-\subsection{What the transfer path cost us, and why}
-\todo{WORTH A FULL SUBSECTION -- it generalises beyond this system.}
-\todo{(1) LAYOUT. A per-layer $[2,H,bs,\ldots]$ mirror makes a run of blocks two
-chunks strided by a whole K/V plane, so no pinned DMA is possible and every
-layer pays a CPU staging gather: 22\,ms/layer, 72\% of wall. Block-major with
-SPLIT K and V makes a run one contiguous byte range on both sides and the DMA
-engine does the compaction. CPU gather 10096\,ms $\to$ 39\,ms. On a fast
-interconnect this defect would have been INVISIBLE and we would have concluded
-that C2C does not help while measuring our own memcpy.}
-\todo{(2) LOOP-INVARIANT WORK. Four sites, one species: work computed per layer
-that is fixed once the step's schedule is known (a device reduction plus
-\texttt{.item()} inside a guard meant to SKIP work; scatter indices; sequence
-maxima; a masked clone). Fixed cost 37.02 $\to$ 12.29\,ms, headline
-$-11.3\% \to -2.3\%$, controls reproducing to 0.1 tok/s over five runs, no
-numerics touched.}
-\todo{(3) WHAT REMAINS IS A FLOOR, NOT A BUG. An operator trace shows
-\texttt{cudaStreamSynchronize} gone from the table entirely and no dominant
-remaining term: ~640 extra kernel launches per step (10 operations $\times$ 64
-layers), 0.19\,ms per layer. Machine-independent, so it does not corrupt the
-C2C measurement. Getting past it needs batching ACROSS layers -- the k-window
-slots already exist for it -- which is a design change, not a fix.}
-\todo{(4) METHOD. Two rounds of aggregate per-phase timers produced two wrong
-diagnoses, because a timer around async GPU work charges waiting-for-the-GPU to
-whoever holds it. An operator-level diff (0-rider against 1-rider on identical
-prompts) found all four sites. Related earlier bug: a
-\texttt{synchronize()} inside the timing wrapper made async double-buffering
-impossible BY CONSTRUCTION, so it "showed" the optimisation to be useless.}
+A host-tier request's KV must reach the host pool before it is admitted. We
+implement a prompt-keyed stash: the producer writes KV into the pool, the entry
+outlives the producing request, and a later request preloads from it. Admission
+is contingent on the worker acknowledging that the KV is present, since the
+scheduler cannot observe a host-side write and admitting on the assumption
+would leave a request with no KV anywhere.
+
+The handover costs \textbf{0.22\,ms per decode step} at 2048 context
+(14.2\,ms amortised over 64 steps, 38\,GB/s), about 5\% of a host-tier
+request's per-step cost. Two corrections produced that number and both are
+worth recording. The path was first written block by block, which at 2048
+context is 8{,}192 small copies per request; since the pool allocates
+per-request contiguous extents, a layer is one copy, and fixing it gained
+$2.2\times$. The first measurement was then taken on a \emph{contended} node
+and reported 4.06\,GB/s; exclusive on an idle node the same code reports
+38\,GB/s. \textbf{A $9.4\times$ error from contention alone}, in the measurement
+that answers the most obvious objection to our system model --- which is why
+\S\ref{sec:eval:setup} requires exclusive access for every absolute we report.
+
+\subsection{What the streaming path costs, and why}
+\label{sec:impl:cost}
+
+Beyond the transfer itself, using the host path at all costs a fixed amount per
+step. We reduced it from 37.0 to 12.3\,ms, and the residual is not a defect.
+
+Four sites accounted for the reduction and all were the same species:
+loop-invariant work executed inside the per-layer loop. A device reduction and
+a \texttt{.item()} evaluated once per layer inside a guard whose purpose was to
+\emph{skip} work --- an optimisation paying a full pipeline drain to decide
+whether to optimise. Scatter indices rebuilt per layer from data fixed once the
+step's schedule is known. A sequence maximum and an \texttt{arange} likewise.
+A clone and index-fill of the masked sequence lengths. Each is invariant once
+the step is scheduled; together they were worth 21\,ms per step, and the
+end-to-end throughput deficit moved $-11.3\% \to -5.8\% \to -2.8\% \to -2.3\%$
+as they were removed, with the control reproducing to within 0.1\,tokens/s
+across five runs.
+
+\paragraph{Method, because it decided the outcome twice.} Aggregate per-phase
+timers attributed the cost wrongly, twice, and in both cases plausibly. A timer
+wrapped around asynchronous GPU work charges waiting-for-the-GPU to whichever
+phase holds it; a profiler that synchronises \emph{inside} its own timing
+wrapper makes double-buffering impossible by construction and then reports that
+double-buffering does not help. What located all four sites was an
+operator-level trace differencing a step with one host-tier request against a
+step with none. We record this because the same instinct --- read the phase
+timings, form a hypothesis --- is what a reader would try first.
+
+\paragraph{The residual is a floor, not a bug.} An operator trace against the
+current code shows \texttt{cudaStreamSynchronize} gone from the table entirely
+and no dominant remaining term: the cost is roughly 640 additional kernel
+launches per step, about ten operations across 64 layers, at 0.19\,ms per
+layer. That is the per-layer structure itself. Removing it requires batching
+across layers rather than issuing per layer --- the rolling slots already exist
+to support it --- which is a design change we have not made and do not claim.
+It is also machine-independent, so it does not distort the comparison between
+interconnects in \S\ref{sec:eval:cost}.

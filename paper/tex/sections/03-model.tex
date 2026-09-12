@@ -287,8 +287,10 @@ strongest available evidence that the model captures something real rather
 than fitting our own measurements.
 
 \ifdraft
-\needsgh{$\effkv$ under FA-3 is the top downside risk and sits in the capacity
-denominator: if Hopper's kernels close the paged-KV gap, the step shortens, the
-rider budget shrinks, and Table~\ref{tab:gain} falls. Re-measured in
-\S\ref{sec:eval} (GH200 plan 4.2), which runs early for exactly this reason.}
+Note the direction of this risk, since it runs against us. $\effkv$ sits in
+the capacity denominator, so a kernel generation that reads paged KV
+\emph{more} efficiently shortens the step, shrinks the transfer budget, and
+lowers the predicted gain. The curve above is measured on one kernel
+generation; \S\ref{sec:eval:model} re-measures it on the other, and reports
+the result whichever way it moves.
 \fi

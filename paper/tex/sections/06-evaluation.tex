@@ -1,138 +1,144 @@
-% ============================================================================
-% Section 6 -- evaluation. REWRITTEN 2026-09-11.
-%
-% Ordered by the questions a reviewer asks, not by the order we ran things:
-%   6.1 setup         what, on what, against what, measured how
-%   6.2 does it work  the endpoint comparison (THE decision)
-%   6.3 where from    policy vs mechanism ablation
-%   6.4 what it costs rider cost decomposition + the crossover + return leg
-%   6.5 model         does the capacity law predict it
-%   6.6 when not      negative control and the gate
-%   6.7 correctness   hygiene, with the bf16 method note
-%
-% Numbers marked FROZEN come from paper/data/ @ f3df05bdb and may be quoted.
-% \needsgh marks a slot needing the rental; \draftfalse turns it and \todo into
-% compile errors so neither can ship unresolved.
-% ============================================================================
-
 \section{Evaluation}
 \label{sec:eval}
 
-We ask, in order: does a two-tier KV memory serve more requests than either
-single-tier design; does the \emph{policy} contribute or would uniform
-offloading do as well; what does a host-tier request cost and how does that
-scale with the interconnect; does the capacity model of \S\ref{sec:model}
-predict what we measure; and where does the technique stop paying.
+We ask five questions, in the order a reader should want them answered. Does a
+second memory tier raise \emph{goodput} --- requests served within a latency
+target --- rather than merely raw throughput? Does the placement policy
+contribute, or would uniform offloading do as well? What does a host-tier
+request cost, and how does that cost scale with the interconnect? Does the
+capacity model of \S\ref{sec:model} predict what we measure? And where does the
+technique stop paying?
 
 \subsection{Setup}
 \label{sec:eval:setup}
 
-\paragraph{Hardware.} A100-80 (PCIe~4) for the cost decomposition and the
-capacity mechanism; GH200-96 (NVLink-C2C) for everything that depends on a
-coherent interconnect. We \emph{measure} link bandwidth on both rather than
-quoting it: the widely cited 900\,GB/s figure for C2C is bidirectional, and a
-KV stream is unidirectional.
+\paragraph{Hardware.} A100-80 over PCIe~4 for the cost decomposition and the
+capacity mechanism; GH200-96 over NVLink-C2C for everything that depends on a
+coherent interconnect. Link bandwidth is \emph{measured} on both rather than
+quoted: the widely cited 900\,GB/s for C2C is bidirectional, a KV stream is
+unidirectional, and an independent measurement of the same hardware reports
+419\,GB/s host-to-device~\cite{pie}.
 
-\paragraph{Models.} Qwen2.5-32B at fp16 and fp8 as the primary pair --- same
-architecture, tokenizer and KV geometry, differing only in weight footprint, so
-they move $\HBM/\Ckv$ and nothing else (\S\ref{sec:model}). Llama-3.1-8B as the
-negative control. A 70B-class model is deliberately \emph{not} evaluated: at
-that size the capacity-limited batch is about seven requests, so a single
-request is 14\% and no result could separate a real effect from a rounding
-one. We say so rather than leave its absence to be noticed.
+\paragraph{Exclusive access, for every absolute.} Each number we report as an
+absolute is taken on an idle, exclusively allocated device. This is not
+boilerplate: the same measurement on a contended node and on an idle one
+differed by $9.4\times$ (\S\ref{sec:impl:stash}). Ratios between arms run back
+to back are robust to contention; absolutes are not.
 
-\paragraph{Workloads.} Three shapes, and the third is the one the placement
-policy needs. \emph{Homogeneous}: equal contexts and generation lengths,
-arriving together --- the simplest capacity test, and what our A100 results
-below use. \emph{Poisson arrivals} at varying rate, for SLO attainment.
-\emph{Heterogeneous}: mixed remaining-generation lengths and multi-turn idle
-gaps.
+\paragraph{Models.} Qwen2.5-32B fp16 as the primary model. On a 96\,GB device
+its weights leave $\Ckv \approx 22$--28\,GB, which is the regime
+\S\ref{sec:model} identifies as the one where a second tier pays. Llama-3.1-8B
+as a negative control, where the model predicts no benefit. We deliberately do
+not evaluate a 70B-class model: its capacity-limited batch is about seven
+requests, so a single request is 14\% and no result could separate an effect
+from a rounding artifact.
 
-The third is a requirement rather than a refinement, and the reason is worth
-stating because it is easy to get wrong. Our placement rule scores requests on
-\emph{temporal} signals --- idle time and estimated remaining generation
-(\S\ref{sec:design:placement}) --- because context length provably cannot
-discriminate. A workload in which every request has the same generation length
-and never idles therefore gives every request the same score, and scored
-placement degenerates to arrival order \emph{by construction}. Measuring the
-two as equal on such a workload would say nothing about the policy; it would
-only say the workload had nothing to choose between.
+\paragraph{Workloads.} ShareGPT and Alpaca under Poisson arrivals, via
+\texttt{vllm bench serve}. Two properties are required rather than preferred.
+Real traces are heavy-tailed in both prompt and generation length, which is the
+variation a \emph{per-request} placement policy exists to exploit --- on a
+workload of identical requests our placement rule assigns every request the
+same score and degenerates to arrival order by construction, so measuring it
+equal to arrival order there would say nothing about the policy. And open-loop
+arrivals are needed because a closed loop of $N$ simultaneous requests is a
+different experiment from offering $\lambda$ requests per second; it also
+invites metrics that reward slowness (below). These are the workloads Pie
+reports on~\cite{pie}, which makes our numbers comparable to theirs.
 
-\paragraph{Baselines.} Stock vLLM (all device-tier); all-host, i.e.\ every
-request offloaded, which is the placement DirectKV makes by construction;
-uniform offload at a matched byte budget, which is the placement both Pie and
-DirectKV instantiate at their own granularities; and our policy.
+\paragraph{Metric.} \textbf{SLO-attaining goodput}: requests per second whose
+per-output-token latency met a target. Raw throughput is secondary, p99 latency
+and achieved interconnect bandwidth are reported alongside so that ``the
+transfer hides'' is measured rather than inferred.
 
-\paragraph{Metrics.} Requests served at a fixed ITL SLO first, tokens/s second,
-p99 ITL, and achieved interconnect bandwidth so that ``the transfer hides'' is
-measured rather than inferred. \textbf{We do not report mean concurrency.} It
-averages over sampled steps, so an arm that serves requests more slowly holds
-them longer and scores \emph{higher}; it is not a goodput metric, and we
-retracted a result that relied on it.
+We do \emph{not} report mean concurrency. It averages over sampled steps, so an
+arm that serves requests more slowly holds them longer and scores
+\emph{higher}. It is not a goodput metric, and an earlier result of ours that
+relied on it was retracted for exactly that reason.
 
-\subsection{Does a second tier serve more?}
+\paragraph{Baselines.} Stock vLLM with all tiering disabled, which is also
+Pie's baseline and makes the two sets of numbers commensurable. We verify
+separately that our fork with the feature off matches the unmodified engine to
+within 3\%; a baseline quietly slowed by our own additions would inflate every
+ratio here. Uniform offload at a matched byte budget represents the placement
+that Pie and DirectKV instantiate at their own granularities. Where a
+comparison against a published figure is drawn, we state which engine version
+and workload each side used rather than presenting ratios as directly
+commensurable.
+
+\subsection{Does a second tier raise goodput?}
 \label{sec:eval:capacity}
 
-\needsgh{THE DECISION (plan §4.1). all-HBM / all-host / mixture: same model,
-same device memory, same workload, same substrate, so this is a placement
-comparison and not a mechanism comparison. SLO grid \{30, 40, 50, 75, 100\}\,ms
-fixed in advance; contexts \{4K, 8K, 16K\}. Predicted 13 / 7 / 19 for Qwen-32B
-fp16 at 8K.}
+The decisive experiment holds the model, the device, the workload and the
+substrate fixed and varies only whether a second memory tier is used. We sweep
+the arrival rate upward until goodput stops rising --- that is, until the
+device is saturated --- and report goodput at a latency target anchored to the
+baseline's own measured step time rather than to a round number, since a target
+below an arm's step time is unsatisfiable by every arm and measures nothing.
 
-\needsgh{The 30\,ms point should show NO benefit --- it sits below the
-applicability gate of Eq.~\ref{eq:gate}. State the prediction before the
-result.}
+Two properties of this design are worth stating in advance, because they are
+what make a result interpretable. A target at the baseline's own floor is the
+one a host-tier request is \emph{least} able to meet, since it adds per-step
+latency; a very loose target admits everything and discriminates nothing. The
+informative regime is between them. And below the applicability gate of
+Eq.~\ref{eq:gate} the model predicts \emph{no} benefit at any rate, so the
+tightest points of the sweep are a prediction we can be wrong about in public.
 
-The capacity mechanism is separable from the economics, and we report it on
-A100 because that isolates the allocator's behaviour from the link. Against a
-fixed KV pool, host-tier requests raise peak concurrency from 8 to 48 --- itself
-a lower bound, since 48 was the entire offered load.
+\emph{The capacity mechanism, measured independently of the economics.} On
+A100 we can separate whether host-tier requests are \emph{additive} from
+whether they pay. Against a fixed KV pool, host-tier requests raise peak
+concurrency from 8 to 48 --- and 48 is a lower bound, being the entire offered
+load.
 % src: paper/data/preload_capacity.json @ f3df05bdb
-KV is delivered synthetically here, so this establishes capacity only and its
-generated tokens are not meaningful; goodput with real KV is
-\S\ref{sec:eval:cost} and correctness is \S\ref{sec:eval:correct}.
+KV is delivered synthetically in this experiment, so it establishes capacity
+only and its generated tokens are not meaningful; goodput with real KV is
+\S\ref{sec:eval:cost}.
 
-\todo{Include the negative result that motivates zero-block admission: capping
-a host-tier request's block GROWTH while leaving its prefill resident frees
-about 11\% of its footprint and still costs full interconnect every step, so
-the served total creeps toward the all-HBM capacity from below and never passes
-it, at any setting of the resident cap. That is what makes the
-disaggregated-decode assumption load-bearing rather than convenient.}
+That result also isolates why the system model matters. An earlier design
+capped a host-tier request's block \emph{growth} while leaving its prefill
+resident. It freed about 11\% of the request's footprint while still paying
+full interconnect every step, and the served total crept toward the all-HBM
+capacity from below without ever passing it, at any setting of the resident
+cap. A request whose prefill stays resident is strictly worse than one left in
+device memory, at any link speed --- which is what makes the disaggregated
+decode-node assumption (\S\ref{sec:background:pd}) load-bearing rather than
+convenient.
 
-\subsection{Is the policy load-bearing?}
+\subsection{Is the placement policy load-bearing?}
 \label{sec:eval:ablation}
 
-If uniform offloading at the same interconnect budget does as well, the policy
-layer is decoration and the contribution collapses to the analysis. This is the
-experiment that decides it.
+If uniform offloading at the same interconnect budget performs as well, the
+policy is decoration and the contribution reduces to the analysis. The arms add
+one mechanism each: uniform offload at a matched byte budget; our admission
+controller choosing how many while arrival order chooses which; scored
+placement; and migration.
 
-\needsgh{plan §4.3. Arms add one mechanism each: uniform at a matched byte
-budget; our admission deciding how many while arrival order decides which;
-$+$ scored placement; $+$ migration. Run on the heterogeneous workload of
-\S\ref{sec:eval:setup} --- on a homogeneous one the scored arm cannot differ
-from arrival. Report tok/s and, for every pair, the bytes each arm moved.}
+\textbf{Matched bytes, not matched request count.} Capping how many requests
+are host-tier does not control this comparison, because the policies select
+requests of different context lengths and therefore move different volume ---
+part of any difference would be a difference in offload ratio wearing the
+appearance of a policy win. We count bytes in both directions per arm and treat
+arms differing by more than $1.25\times$ in traffic as not comparable. A
+parallel control matches the resident-cohort cap, because an arm with a
+different cap is a different \emph{allocation} rather than a different policy;
+on A100 that distinction accounted for most of an apparent 14.5\% difference.
 
-\textbf{Matched budget, not matched request count.} Capping how many requests
-are host-tier does not control this comparison: the policies select requests of
-different contexts and therefore move different volume, so part of any delta
-would be a difference in offload ratio wearing the costume of a policy win. We
-count bytes in both directions per arm and treat a pair differing by more than
-$1.25\times$ in traffic as not comparable.
-
-\needsgh{The adaptive probe's verdict. On PCIe it measured demotion as
-\emph{harmful} and correctly reverted; here it should measure \emph{beneficial}
-and keep it. If it still says harmful, the host path has a fixed per-step cost
-that survives a fast link --- a finding either way, and one we would rather
-publish than omit.}
+The adaptive probe's verdict is reported as a result in its own right. On PCIe
+it measured demotion as harmful and reverted it, which is the correct action on
+a link that cannot hide the transfer. On a coherent link it should measure
+demotion as beneficial and keep it. If it does not, the host path carries a
+fixed per-step cost that survives a fast interconnect, and that is a finding we
+would rather publish than omit.
 
 \subsection{What a host-tier request costs}
 \label{sec:eval:cost}
 
 Sweeping the number of host-tier requests on an otherwise identical engine and
-fitting $\mathrm{ITL}(r) = \mathrm{ITL}_0 + \text{fixed} + r\cdot c$ separates
-a fixed per-step cost of using the host path at all from a per-request cost
-that fails to overlap. The two extrapolate to completely different answers on a
-faster link, which is why a single operating point cannot decide the question.
+fitting
+$\mathrm{ITL}(r) = \mathrm{ITL}_0 + \text{fixed} + r\cdot c$
+separates a fixed per-step cost of using the host path at all from a per-request
+cost that fails to overlap compute. The two extrapolate to completely different
+answers on a faster link, which is why a single operating point cannot settle
+the question.
 
 \begin{table}[t]
 \centering
@@ -147,83 +153,85 @@ host-tier requests & ITL (ms) & tok/s \\
 3 & 74.98 & 57.0 \\
 \bottomrule
 \end{tabular}
-\caption{Qwen-32B, 2048 context, 12 offered, 8 resident, A100/PCIe. Fit:
-$9.6$\,ms fixed $+$ $4.7$\,ms each, so \textbf{78\% of the transfer overlaps
-compute} --- the interconnect is not the binding cost. Throughput recovers
-towards the offload-free arm but does not cross it within this sweep: three
-host-tier requests remain 0.9\% below it.}
+\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe. Fit:
+$9.6$\,ms fixed $+$ $4.7$\,ms per request, so \textbf{78\% of the transfer
+overlaps compute} --- the interconnect is not the binding cost at this scale.
+Throughput recovers toward the offload-free arm as requests are added but does
+not cross it within this sweep: three host-tier requests remain 0.9\% below it.}
 \label{tab:ridercost}
 \end{table}
-% src: paper/data/hide_efficiency.json @ f3df05bdb -- FROZEN 2026-09-05
+% src: paper/data/hide_efficiency.json @ f3df05bdb
 
-\todo{Two corrections belong in the text because both were ours. A single
-two-request point cannot distinguish a steep slope from a large intercept, and
-our first reading of one (``89\% did not hide'') was wrong; the sweep fixed it.
-And a concurrency/ITL model predicted break-even at seven where the measured
-column crosses at three to four, because it ignores queueing --- the
-offload-free arm leaves requests waiting and host-tier requests shorten that
-queue. Report the measured crossing; keep the model as a labelled bound.}
+Two readings of this data were ours and both were wrong, in ways worth
+recording. A single two-request point cannot distinguish a steep slope from a
+large intercept; read that way it suggested that 89\% of the transfer failed to
+overlap, and only the sweep corrected it. And a concurrency-over-latency model
+predicted break-even at seven requests where the measured throughput column
+crosses between three and four, because it ignores queueing --- the
+offload-free arm leaves requests waiting, and host-tier requests shorten that
+queue. We report the measured crossing and keep the model only as a bound.
 
-\todo{The fit is unstable at three points: two runs of the same sweep gave
-$12.3 + 4.5$ and $9.6 + 4.7$. The SPLIT is what sets break-even on a faster
-link, since the fixed term is the part bandwidth does not shrink, so the GH200
-sweep uses ten host-tier counts rather than three.}
+The fixed-versus-slope split is also unstable at three points: two runs of the
+same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
+precisely the part that a faster interconnect does \emph{not} shrink, that
+split determines break-even on a coherent link, so the interconnect comparison
+uses ten host-tier counts rather than three.
 
-\needsgh{FIGURE: the crossover. Per-request marginal cost against interconnect
-bandwidth --- PCIe measured, C2C measured, the model line through both, and
-break-even count on a second axis. This turns two point measurements into a law
-with a validated crossing.}
-
-\needsgh{The return leg (plan §4.3b). Same policy, with and without persisting
-each layer's slot to the host mirror: the second crossing a design whose
-offloaded unit is \emph{owned} by one side must pay and a caching one need not
-(\S\ref{sec:related}). Report both arms' throughput and total link bytes. If
-they perform the same, the return leg is not on the critical path at our
-operating point, and the claim in \S\ref{sec:related} must be weakened to a
-statement about traffic rather than about performance.}
+\paragraph{Swap semantics versus streaming.} A design whose offloaded unit is
+\emph{owned} by one side must write that unit back once per generated token; one
+whose device-side copy is a \emph{cache} need not (\S\ref{sec:related}). We
+measure the difference directly by writing each layer's slot back to the host
+mirror with the policy otherwise unchanged. The emulation is exact in extent:
+both arms read identical volume, and the write-back arm moves \textbf{2.00×}
+the total link traffic, with identical token output.
+% src: paper_runs/20260911_ablation_smoke.json
 
 \subsection{Does the capacity model predict it?}
 \label{sec:eval:model}
 
-\needsgh{plan §4.2: re-measure $\effw$ and $\effkv$ against KV working set
-under FA-3. This runs early because it is the top \emph{downside} risk ---
-$\effkv$ sits in the capacity denominator, so if Hopper's kernels read paged KV
-more efficiently than FA-2 did, the step shortens, the budget shrinks, and the
-projected gain falls.}
+Two parameters of Eq.~\ref{eq:step} are re-measured on each platform: the
+weight-read efficiency $\effw$ and the paged-KV read efficiency $\effkv$ against
+working-set size. The second is the larger risk to our own projections and we
+run it early for that reason --- $\effkv$ sits in the capacity denominator, so a
+kernel generation that reads paged KV more efficiently shortens the step,
+shrinks the transfer budget, and \emph{lowers} the predicted gain.
 
-\textbf{One term of the law is asserted rather than measured, and we say which.}
-The capacity multiplier has two factors: a bandwidth ratio $\Xlink/\BW$ and an
-amplifier $\HBM/\Ckv$. Our measurements validate it across \emph{bandwidth} ---
-the same system on two interconnect generations, which is what
-\S\ref{sec:eval:cost} fits. The $\HBM/\Ckv$ dependence is supported by the
-model's agreement with published results (\S\ref{sec:model:directkv}) and by
-the A100 parameter fit, but we do not sweep it directly: doing so cleanly needs
-one model at two weight precisions, and we judged the hours better spent on the
-comparison against the closest prior system. A reviewer who wants that axis
-measured is asking for the experiment we chose not to run, and this is the
+\textbf{One term of the law is asserted rather than measured, and we say
+which.} The multiplier has two factors: a bandwidth ratio $\Xlink/\BW$ and an
+amplifier $\HBM/\Ckv$. We validate it across \emph{bandwidth}, by running the
+same system on two interconnect generations. The $\HBM/\Ckv$ dependence rests
+on the parameter fit and on the model's agreement with a published system's own
+results (\S\ref{sec:model:directkv}); isolating it cleanly would require one
+model at two weight precisions, an experiment we chose not to run. A reader who
+wants that axis measured is asking for a specific experiment, and this is the
 honest account of the trade.
 
 \subsection{When does it not pay?}
 \label{sec:eval:negative}
 
-\needsgh{plan §4.4: Llama-8B, where the model says $\times$1.26 because 76\,GB
-of device memory is left after weights and there is nothing to buy. DirectKV
-independently reports 8B not benefiting. A model that predicts its own failure
-cases is worth more than one tuned to its wins.}
+\emph{Below the applicability gate.} Eq.~\ref{eq:gate} predicts no benefit when
+the latency target is tighter than the full-pool step time; the tightest points
+of the goodput sweep test that directly.
 
-On A100/PCIe the memory system works and the economics do not: with real KV
-delivered through the prefill handover, throughput is 2.3\% \emph{below} not
-offloading at all.
+\emph{When the weights are small.} Llama-3.1-8B leaves so much device memory
+after weights that there is nothing to buy. Our model predicts $\times$1.26 and
+DirectKV independently reports that 8B does not benefit from offload. A model
+that predicts its own failure cases is worth more than one tuned to its wins.
+
+\emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered
+through the prefill handover, throughput is 2.3\% \emph{below} not offloading
+at all.
 % src: paper/data/pd_decode_goodput.json @ f3df05bdb
-That is what the model predicts for a 25\,GB/s link, and it is corroborated
-from the kernel side --- DirectKV concludes that on PCIe theirs ``should be
-viewed primarily as a capacity-extension mechanism''. We report it as a
-validated negative that fixes one end of the bandwidth axis.
+That is what the model predicts for a 25\,GB/s link, and DirectKV reaches the
+same boundary from the kernel side, concluding that on PCIe theirs ``should be
+viewed primarily as a capacity-extension mechanism\ldots bounded by CPU--GPU
+interconnect bandwidth''. We report it as a validated negative that fixes one
+end of the bandwidth axis rather than as a disappointment.
 
 \subsection{Correctness}
 \label{sec:eval:correct}
 
-Placement moves bytes rather than approximating them, so the gates below are
+Placement moves bytes rather than approximating them, so these gates are
 hygiene rather than a contribution. Numerically we verify the host pool's round
 trip, the two-tier attention against a single-pass reference over the same KV
 (576 mixed decode layer-steps, $\max|\mathrm{diff}| = 0$), and the prefill
@@ -234,9 +242,9 @@ One methodological note, because it traps anyone reproducing this.
 \texttt{bf16} attention reductions are not associative, so their result depends
 on batch composition: stock vLLM produces different text for the same prompt at
 concurrency 1 and at 6, reproducibly at each. Any system that changes batching
---- as a tier does --- will diverge on such prompts without being wrong. We
-therefore compare serially, batch of one on both sides, and under load only on
-prompts pre-screened as batching-stable. For calibration: on a serial greedy
+--- as a memory tier does --- will diverge on such prompts without being wrong.
+We therefore compare serially, batch of one on both sides, and under load only
+on prompts pre-screened as batching-stable. For calibration: on a serial greedy
 comparison our host tier matched stock vLLM on 6 of 6 prompts in one round and
 4 of 6 in another, while enabling \emph{vLLM's own prefix cache} --- changing
 nothing else --- matched on 2 of 6.

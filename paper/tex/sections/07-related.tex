@@ -62,6 +62,22 @@ per-step volume is a fixed fraction of \emph{every} request's KV, whereas ours
 is the KV of the requests we select, which is what makes \emph{which requests}
 a decision at all.
 
+\paragraph{Where Pie's advantage comes from, and where it stops.} Pie's
+headline is $1.9\times$ over vLLM, and the regime that produces it is stated
+plainly in their \S5.3: they hold the physical KV cache fixed and sweep it from
+3 to 12\,GB, and report that Pie ``outperforms vLLM at smaller GPU KV cache
+sizes and achieve similar performance at the largest memory capacity
+(12\,GB)'', because ``when GPU memory capacity is small, vLLM suffers from
+significant recomputation''. As memory grows, ``the improvement ratio gradually
+decreases until Pie and vLLM perform similarly''.
+
+The gain is therefore \emph{avoided recomputation} in a memory-starved engine,
+not additional capacity converted into work. That distinction matters for what
+each system can claim. A device large enough that the baseline stops preempting
+is a device on which Pie's reported advantage has already converged to zero ---
+and their entire sweep, 3 to 12\,GB of KV, sits below the operating point we
+study, where a 32B model on a 96\,GB device leaves $\Ckv \approx 22$--28\,GB.
+
 \paragraph{A consequence of the layer unit: the return leg.} Choosing the layer
 as the unit of management has a second effect, on traffic rather than on
 policy. In Pie a layer's KV \emph{lives} on one side or the other, and the

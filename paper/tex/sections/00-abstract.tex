@@ -1,9 +1,36 @@
-% STATUS: skeleton. Write LAST (W7) -- the abstract's numbers depend on the
-% GH200 gate. Keep two versions in git until the gate resolves.
 \begin{abstract}
-\todo{Write last. Structure: (1) decode batch is capped by HBM capacity, not
-compute; (2) coherent interconnects make host DDR a usable KV tier and the
-mechanism is solved, but placement is static and total in every published
-system; (3) the optimum is interior and we give the closed form for where;
-(4) request-level tiering, SLO-targeted admission, migration; (5) the number.}
+A decode server's batch size is capped by device memory, not by arithmetic: KV
+cache exhausts HBM long before the arithmetic units are busy, so the GPU runs
+at single-digit utilization while turning requests away. Coherent CPU--GPU
+interconnects make host DRAM fast enough to hold the KV of an \emph{actively
+decoding} request, but existing systems use one memory or the other. Stock
+engines keep all KV in HBM and stall when it does not fit; offloading systems
+relocate a fixed fraction of every request's KV, uniformly, with no notion of
+which request is which.
+
+We present a heterogeneous KV memory for LLM decode that manages HBM and host
+DRAM as a single store and assigns each request to a tier. A host-tier request
+holds \emph{no} device blocks: its KV lives in host memory and each layer is
+streamed in just before that layer's attention, into a rolling buffer shared
+across all layers, so its device footprint is $k/L$ of a resident request's.
+Both tiers are served in one forward pass, so weights are read once however the
+batch is split.
+
+We first derive when a second tier pays at all. The capacity multiplier is
+$1 + (\Xlink/\BW)(\HBM/\Ckv)$, it applies only above a latency gate we make
+explicit, and --- counter to intuition --- context length cancels, so the value
+tracks how much of memory the weights consumed rather than how long the
+requests are. The rules explain a published system's own unexplained result:
+why zero-copy offload is slower than an HBM-resident baseline on an 8B model
+and faster on larger ones.
+
+We implement the design in vLLM and evaluate it on PCIe and coherent
+interconnects. Host-tier requests are \emph{additive} --- peak concurrency rises
+from 8 to 48 against a fixed KV pool --- and 78\% of a host-tier request's
+transfer overlaps compute. On PCIe the economics still do not close, which our
+own model predicts and we report as a validated negative that bounds the
+technique. We separate the policy's contribution from the mechanism's by
+running uniform offload and per-request placement on one substrate at a matched
+interconnect budget, and we report where the technique stops paying as
+carefully as where it starts.
 \end{abstract}

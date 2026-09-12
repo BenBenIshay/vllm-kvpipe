@@ -39,7 +39,7 @@
 
 % Drafting aids. Set \draftfalse before submission; \showtodos triggers an
 % error if any TODO survives, so none can ship by accident.
-\newif\ifdraft\drafttrue
+\newif\ifdraft\draftfalse
 \ifdraft
   \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
   \newcommand{\needsgh}[1]{\textcolor{blue}{[GH200: #1]}}
@@ -72,7 +72,11 @@
 %   (old, subordinate) "Who Rides Along? Request-Level KV Tiering ..."
 {\Large\bf Heterogeneous KV Memory for Capacity-Bound LLM Decode}
 \par\vspace{1ex}
-\todo{author list and affiliations --- open decision, paper/PAPER\_PLAN\_2026-09-05.md section 8}
+% MLSys reviewing is double-blind: the submission carries no author list.
+% Replace with the real one for the camera-ready.
+{\large Anonymous Author(s)}
+\par
+{\normalsize Affiliation withheld for review}
 \par\vspace{2ex}
 \end{center}
 ]
