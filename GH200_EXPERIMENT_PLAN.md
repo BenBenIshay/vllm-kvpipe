@@ -365,7 +365,49 @@ wrong answer before):
 - B1 should admit ~7 riders at 8K. ~2 means the link constant is still 25.1
   somewhere; ~30 means `b_tok` is wrong for a 64-layer model.
 
-### 4.0b IS ARM A A REAL BASELINE?  (0 GPU-h — run on the A100, before renting)
+### 4.0b IS ARM A A REAL BASELINE?  — **RUN, PASSED (2026-09-12)**
+
+**Result: the disabled-path cost is $-0.08\%$.** Six valid runs, interleaved,
+`vllm bench serve` at 48 prompts / 6 req/s on Qwen2.5-0.5B:
+
+| | STOCK (`main`) | OFF (HEAD, no hybrid flags) |
+|---|---|---|
+| mean | **5.589 req/s** | **5.585 req/s** |
+| spread | 0.008 | 0.008 |
+
+The gap between arms (0.004) is smaller than the noise within either, so our
+fork with the feature off is stock vLLM to within measurement. Ratios reported
+against arm A are honest. Log: `paper/data/baseline_integrity_20260912.log`.
+
+**A finding that came out of building this, and it changes what one existing
+number means.** `pd_decode_goodput.py` passes `--enable-hybrid-kv-tiers`,
+`--enable-transfer-aware-admission`, `--enable-kv-pipelining` and six
+`VLLM_KVPIPE_*` env vars for **both** of its arms, differing only in
+`b_hbm_max`. That is the correct control for *"what do riders cost"* — both
+arms must carry identical machinery — but it means the A100 $-2.3\%$ headline
+compares our fork **with** riders against our fork **without riders but with
+the hybrid path live**, not against stock. It also cannot run against a stock
+tree at all, since `main` contains zero occurrences of those flags. So this
+check needed its own harness, and `vllm bench serve` is it: present in both
+revisions, no tiering flags, and the same goodput metric §4.0/§4.1 use.
+
+**Three bugs in this script before it produced a number, all of which output
+something plausible rather than an error** — which is the case for rehearsing
+on free hardware:
+
+1. `local a="$1" b="${a}"` — bash declares both names before assigning either,
+   so `${a}` was unbound under `set -u`; every arm returned `nan`.
+2. A server that fails to start reports `0.000 req/s`, and the verdict averaged
+   it in as a slow run: it printed **"50% SLOWER"** from one failed arm. Zero
+   is now a failure, and the verdict requires $\geq 2$ valid runs per arm.
+3. `kill -9 $SERVER_PID` kills the API server parent; **EngineCore survives as
+   a child holding the GPU**, so the next server found 5.76 of 79 GB free and
+   died. Failures accumulated 0, 1, 2 across reps. Fixed by `setsid` plus
+   signalling the process **group**, verifying, and escalating — the shape
+   `bench_teardown.py` already uses, and the same orphan that drained nova06
+   and nova07 in September.
+
+### 4.0b original rationale  (0 GPU-h — run on the A100, before renting)
 
 **Added 2026-09-12.** Every number 4.0 and 4.1 report is a ratio against arm A,
 "our fork with the tiers off". Our fork adds ~3,900 lines across 22 files in
