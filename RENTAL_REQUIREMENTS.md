@@ -97,3 +97,46 @@ take numbers from this machine.**
 5. On-demand hourly with **early release**, or minimum committed term? What is
    the discount for committing?
 6. GH200 **96 GB** availability specifically — not 144.
+
+
+---
+
+## 8. Provider survey (2026-09-12)
+
+Researched against §1. **Price is not the binding constraint — availability
+and billing model are.** At the rates below, 74–82 GPU-h is **$150–210**, well
+under the $250–450 the plan budgeted, so optimising for the cheapest hour is
+optimising the wrong variable.
+
+| provider | $/GPU-h | HBM | billing | stock | verdict |
+|---|---|---|---|---|---|
+| **Lambda Labs** | **2.29** | 96 GB | on-demand | out | **best fit if it comes back in stock** — persistent shared network filesystem, preinstalled CUDA stack, documented GH200 support |
+| **Runcrate** | 2.52 | 96 GB | on-demand | **in** | only verified in-stock on-demand; unknown to us otherwise — needs the §7 questions |
+| Sesterce | 2.52–4.65 | 96 **or 144** | on-demand | out | make sure any quote is the **96**, not 144 (§2) |
+| CoreWeave | 6.50 | 96 GB | on-demand | — | ~2.8× Lambda for no benefit we need |
+| Vultr | 1.99 | 96 GB | **SPOT** | out | **disqualified — see below** |
+
+**Vultr's headline $1.99 is spot, and spot is disqualifying for this
+experiment.** A preemption mid-run does not merely cost the hours: it ends the
+continuous block that §4 exists to protect, and the measurements taken before
+and after it are on different silicon. Our own data already shows what that
+does — a contended node produced a 9.4× error in one measurement. Spot is fine
+for the 4.0 gate if it is cheap enough to redo; it is not fine for 4.1 onward.
+
+**Reported host memory across these configs is 432–480 GB**, comfortably above
+the ≥256 GB in §1 (we need up to 87 GB pinned at 20×16K). Confirm on the
+instance rather than from a spec page, and check the pinned-page limit (§7 Q4).
+
+### Recommendation
+
+1. **Lambda Labs** if available — it is the only one whose persistent
+   filesystem is documented, and §4's two-block shape depends on exactly that.
+   Watch for restock.
+2. **Runcrate** as the in-stock fallback, gated on the §7 questions —
+   particularly persistent storage and whether the GPU is exclusive.
+3. Treat **availability as the scheduling risk**: multiple providers report
+   sold out through Q3 2026. That, not price, is what could push the trip past
+   the MLSys deadline and into the OSDI window.
+
+*Caveat: prices and stock move weekly, and no spec page substitutes for
+running `gh200_bringup.sh` on the actual instance. Re-check before booking.*
