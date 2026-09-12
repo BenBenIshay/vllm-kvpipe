@@ -56,10 +56,10 @@ arm that serves requests more slowly holds them longer and scores
 relied on it was retracted for exactly that reason.
 
 \paragraph{Baselines.} Stock vLLM with all tiering disabled, which is also
-Pie's baseline and makes the two sets of numbers commensurable. We verify
-separately that our fork with the feature off matches the unmodified engine to
-within 3\%; a baseline quietly slowed by our own additions would inflate every
-ratio here. Uniform offload at a matched byte budget represents the placement
+Pie's baseline and makes the two sets of numbers commensurable. We verify separately that our fork with the feature off matches the unmodified
+engine: across six interleaved runs it is slower by $0.08\%$, less than the
+spread within either arm. A baseline quietly slowed by our own additions would
+inflate every ratio reported here, and it would do so invisibly. Uniform offload at a matched byte budget represents the placement
 that Pie and DirectKV instantiate at their own granularities. Where a
 comparison against a published figure is drawn, we state which engine version
 and workload each side used rather than presenting ratios as directly
