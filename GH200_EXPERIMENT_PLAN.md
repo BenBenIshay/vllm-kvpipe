@@ -860,6 +860,12 @@ Everything after 4.2b is genuinely optional.
    >=15% at matched SLO, or we fall back to the characterization paper.
 
 **STILL OPEN:**
-1. **Provider and timing.** Requirement fixed by the above: a CUDA **devel**
-   image (must have `nvcc` — see §2), 1× GH200-96, ~5-7 days, and enough disk
-   for a ~70 GB fp8 checkpoint plus the host-tier pinned pool.
+1. **Provider and timing.** The full spec is now `paper/RENTAL_REQUIREMENTS.md`
+   — written to be handed to a provider, with every figure derived or measured
+   rather than estimated. Summary: 1× GH200-**96** (reject 144, it switches the
+   effect off for Qwen-32B), exclusive not MIG, **≥256 GB host RAM** because the
+   KV mirrors are pinned and reach 87 GB at 20×16K, ≥250 GB disk, aarch64,
+   **on-demand and releasable** so §4.0 can end the trip at ~16 h. CUDA `devel`
+   (`nvcc`) is *preferred* rather than required — it costs §4.7 and FlashInfer,
+   not the paper. Six questions for the provider are listed there, including the
+   one most likely to bite: any limit on **pinned** pages.
