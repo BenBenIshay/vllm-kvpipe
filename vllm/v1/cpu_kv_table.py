@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
-import os
 from typing import Any
 
 import torch
@@ -67,8 +66,8 @@ def _per_token_shape(kv: torch.Tensor) -> tuple[int, ...]:
     """Trailing dims for one decode token in batched D2H scratch."""
     if _kv_layout_blocks_first(kv):
         return tuple(kv[0, :, 0].shape)
-    if kv.ndim >= 3 and kv.shape[0] == 2:
-        return tuple(kv[:, 0, 0].shape)
+    if kv.shape[0] == 2:
+        return tuple(kv[0, 0, 0].shape)
     return tuple(kv[0, 0].shape)
 
 
@@ -136,13 +135,6 @@ class CpuKvTable:
         if max_blocks_per_req <= 0:
             max_blocks_per_req = 1
         num_req_slots = max(1, num_blocks_per_layer_row // max_blocks_per_req)
-        max_off_env = os.environ.get("VLLM_KVPIPE_MAX_OFFLOAD_REQS", "").strip()
-        if max_off_env:
-            try:
-                cap = max(1, int(max_off_env))
-                num_req_slots = min(num_req_slots, cap)
-            except ValueError:
-                pass
         dtype = ref.dtype
 
         buffers: list[torch.Tensor] = []

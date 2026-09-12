@@ -238,21 +238,6 @@ class SchedulerOutput:
     # EC Cache Connector metadata
     ec_connector_metadata: ECConnectorMetadata | None = None
 
-    # Hybrid tiered KV: req_id -> "hbm" | "cpu" (empty when hybrid tiers off).
-    req_kv_tiers: dict[str, str] | None = None
-
-    # Hybrid tiered KV: requests promoted host->HBM this step. The runner must
-    # restore their KV from the host pool into resident blocks BEFORE attention
-    # runs, because their tier already reads "hbm" in req_kv_tiers above.
-    promote_req_ids: set[str] | None = None
-
-    # Hybrid tiered KV: req_id -> its COMPLETE main-pool block id list, to
-    # overwrite the runner's row with. Needed when promotion refills the null
-    # placeholders left by the prefill reclaim: those block ids replace
-    # positions the runner already holds, so they cannot travel through
-    # `new_block_ids`, which only ever appends.
-    rewrite_block_ids: dict[str, list[int]] | None = None
-
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

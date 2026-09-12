@@ -187,12 +187,6 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
-    # Hybrid-KV tiers: request ids whose full history the worker has just copied
-    # into the host-tier pool. The scheduler may reclaim their main-pool blocks
-    # only AFTER seeing this -- it is the worker, not the scheduler, that knows
-    # the copy actually happened. See paper/BLOCKER_PREFILL_RESIDENCY.md.
-    kv_tier_seeded_req_ids: list[str] | None = None
-
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):

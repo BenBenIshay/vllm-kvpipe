@@ -393,49 +393,6 @@ class KVCacheManager:
         """
         self.coordinator.remove_skipped_blocks(request_id, total_computed_tokens)
 
-    def reclaim_tier_blocks(self, request_id: str) -> int:
-        """Free ALL main-pool blocks of a host-tier request, replacing them with
-        null blocks.
-
-        This is the hybrid-KV reclaim (`paper/BLOCKER_PREFILL_RESIDENCY.md`).
-        Capping a host-tier request's block *growth* only frees what it would
-        have grown during decode; its whole prefill stays resident, which is the
-        bulk of its KV for any realistic prompt. Once the worker has seeded that
-        prefill into the host pool, the resident copy is dead weight -- the
-        request's attention reads the pool and its resident write is skipped
-        (`_rungd_skip_cpu_resident_write`), so nothing touches these blocks
-        again until it is promoted back.
-
-        The caller MUST have received the worker's seed acknowledgement first;
-        freeing before the seed loses the request's history.
-
-        Returns the number of blocks freed.
-        """
-        return self.coordinator.reclaim_all_blocks(request_id)
-
-    def refill_tier_blocks(self, request_id: str) -> list[int] | None:
-        """Re-allocate real blocks for the null positions left by
-        `reclaim_tier_blocks`, for PROMOTION back to the HBM tier.
-
-        `allocate_slots` cannot do this: `get_num_blocks_to_allocate` is
-        length-based (`num_required - len(req_to_blocks)`), so an in-place null
-        counts as present and no block is handed out for it.
-
-        Returns the request's full block-id list (single group) once every
-        position holds a real block, or None if the pool could not satisfy it
-        (in which case NOTHING is changed and the request stays host-tier).
-        """
-        return self.coordinator.refill_null_blocks(request_id)
-
-    def num_real_blocks(self, request_id: str) -> int:
-        """Number of blocks of `request_id` that actually hold KV, i.e.
-        excluding the null placeholders left by `reclaim_tier_blocks` (and by
-        the sliding-window skip). Minimum across kv cache groups."""
-        groups = self.coordinator.get_blocks(request_id)
-        if not groups:
-            return 0
-        return min(sum(1 for b in blocks if not b.is_null) for blocks in groups)
-
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.
 

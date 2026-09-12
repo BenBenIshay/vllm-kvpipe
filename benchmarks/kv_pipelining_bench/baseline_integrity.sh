@@ -74,7 +74,11 @@ restore() {
 trap restore EXIT INT TERM
 
 run_arm() {  # run_arm <label> ; echoes "tok_s itl_ms"
-  local label="$1" json="/tmp/bi_${label}_$$.json"
+  # NOT one `local` statement: bash declares every name in a `local` first and
+  # only then assigns, so ${label} is still unbound when json is evaluated --
+  # which under `set -u` aborts the function and yields an empty measurement.
+  local label="$1"
+  local json="/tmp/bi_${label}_$$.json"
   $PY benchmarks/kv_pipelining_bench/pd_decode_goodput.py \
       --model "$MODEL" --ctx "$CTX" --out-len "$OUT_LEN" \
       --offered "$OFFERED" --gpu-mem-util "$GPU_MEM_UTIL" \

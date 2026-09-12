@@ -374,52 +374,6 @@ class SingleTypeKVCacheManager(ABC):
             blocks[i] = self._null_block
         self.block_pool.free_blocks(removed_blocks)
 
-    def reclaim_all_blocks(self, request_id: str) -> int:
-        """Hybrid-KV reclaim: null out and free EVERY block this request holds.
-
-        Same primitive as `remove_skipped_blocks` -- replace with `_null_block`
-        and return the real blocks to the pool -- but applied to the whole
-        sequence rather than to a sliding window's tail, because a host-tier
-        request keeps NO resident KV at all. Idempotent: positions that are
-        already null are left alone.
-        """
-        blocks = self.req_to_blocks.get(request_id)
-        if not blocks:
-            return 0
-        removed: list[KVCacheBlock] = []
-        # Reverse order so the tail blocks are evicted first, matching `free()`.
-        for i in range(len(blocks) - 1, -1, -1):
-            if blocks[i] == self._null_block:
-                continue
-            removed.append(blocks[i])
-            blocks[i] = self._null_block
-        if not removed:
-            return 0
-        self.block_pool.free_blocks(removed)
-        # Nothing of this request is cached in the prefix cache any more: the
-        # blocks that carried its hashes are back in the free queue and may be
-        # handed to anyone. Re-caching on promotion starts from scratch.
-        self.num_cached_block[request_id] = 0
-        return len(removed)
-
-    def refill_null_blocks(self, request_id: str) -> list[int] | None:
-        """Hybrid-KV promotion: put a real block back in every nulled position.
-
-        All-or-nothing -- if the pool cannot cover every hole we return None
-        having changed nothing, so the caller can leave the request host-tier.
-        """
-        blocks = self.req_to_blocks.get(request_id)
-        if blocks is None:
-            return None
-        holes = [i for i, b in enumerate(blocks) if b == self._null_block]
-        if holes:
-            if len(holes) > self.block_pool.get_num_free_blocks():
-                return None
-            fresh = self.block_pool.get_new_blocks(len(holes))
-            for i, blk in zip(holes, fresh):
-                blocks[i] = blk
-        return [b.block_id for b in blocks]
-
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -488,13 +442,6 @@ class FullAttentionManager(SingleTypeKVCacheManager):
         blocks = self.req_to_blocks[running_request_id]
         num_common_blocks = 0
         for block in blocks:
-            # A null block carries no KV and its ref_cnt is not maintained, so
-            # it can neither be nor terminate a shared prefix. Full attention
-            # never produced one before hybrid-KV reclaim (which nulls a
-            # host-tier request's whole block list); same reasoning as
-            # SlidingWindowManager.get_num_common_prefix_blocks.
-            if block.is_null:
-                break
             if block.ref_cnt == len(self.req_to_blocks):
                 num_common_blocks += 1
             else:

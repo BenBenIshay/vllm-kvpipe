@@ -70,6 +70,33 @@ def measure_h2d_gbps(mb: int = 256, iters: int = 20) -> float:
     return (n * 2) / secs / 1e9
 
 
+def _weights_gb_from_config(model: str) -> float:
+    """Weight bytes on the device, from the model's own config.
+
+    Prefer the real file sizes (a quantized checkpoint carries scales and
+    zero-points, so parameter-count arithmetic understates it); fall back to
+    param_count x dtype width when the files are not staged locally.
+    """
+    from huggingface_hub import snapshot_download
+    import glob
+    import os
+    try:
+        d = snapshot_download(model, local_files_only=True)
+        tot = sum(os.path.getsize(f) for ext in ("*.safetensors", "*.bin")
+                  for f in glob.glob(os.path.join(d, ext)))
+        if tot > 0:
+            return tot / 1e9
+    except Exception:                                        # noqa: BLE001
+        pass
+    from transformers import AutoConfig
+    c = AutoConfig.from_pretrained(model, trust_remote_code=True)
+    n = getattr(c, "num_parameters", 0) or 0
+    if not n:                      # rough: 12 x L x d^2 for a dense decoder
+        L = int(c.num_hidden_layers); d = int(c.hidden_size)
+        n = 12 * L * d * d
+    return n * 2 / 1e9             # assume fp16 unless told otherwise
+
+
 def kv_bytes_per_token(model: str) -> tuple[int, dict]:
     from transformers import AutoConfig
 
@@ -92,9 +119,14 @@ def main() -> int:
                          "denominated in it. Re-run with the MEASURED value "
                          "once the control arm has run on this machine.")
     ap.add_argument("--block-size", type=int, default=16)
-    ap.add_argument("--weights-gb", type=float, default=72.7,
-                    help="checkpoint size on the device; 72.7 measured for the "
-                         "fp8 70B. KV space is what is left after this.")
+    ap.add_argument("--weights-gb", type=float, default=0.0,
+                    help="checkpoint size on the device. 0 = DERIVE from the "
+                         "model config, which is what you want: a hardcoded "
+                         "value silently mis-states capacity whenever the "
+                         "model changes. (This defaulted to 72.7 -- the 70B "
+                         "that was later dropped -- and so reported 3.9 GB of "
+                         "KV space for a 64 GB Qwen-32B, a ~3x error in the "
+                         "capacity every experiment is sized against.)")
     ap.add_argument("--hbm-gb", type=float, default=0.0,
                     help="override the measured HBM, to check the arithmetic "
                          "for a machine you are not on yet")
@@ -204,14 +236,18 @@ def main() -> int:
     # endpoint_comparison's vacuity guard reports it -- AFTER the hours are
     # spent. It is arithmetic, so do it now.
     hbm_gb = args.hbm_gb or hbm / 1e9
-    kv_gb = hbm_gb * args.gpu_mem_util - args.weights_gb
+    weights_gb = args.weights_gb
+    if weights_gb <= 0:
+        weights_gb = _weights_gb_from_config(args.model)
+        print(f"      weights derived from the model: {weights_gb:.1f} GB")
+    kv_gb = hbm_gb * args.gpu_mem_util - weights_gb
     if kv_gb <= 0:
         ok(False, "the weights leave room for a KV pool",
-           f"{args.weights_gb} GB of weights vs {hbm_gb:.0f} GB HBM")
+           f"{weights_gb:.1f} GB of weights vs {hbm_gb:.0f} GB HBM")
     else:
         cap = int(kv_gb * 1e9 // per_rider)
         print(f"      {hbm_gb:.0f} GB HBM x {args.gpu_mem_util} util - "
-              f"{args.weights_gb} GB weights = {kv_gb:.1f} GB of KV space")
+              f"{weights_gb:.1f} GB weights = {kv_gb:.1f} GB of KV space")
         print(f"      all-HBM capacity at ctx {args.ctx}: ~{cap} concurrent")
         rec = max(2 * cap, cap + 4)
         print(f"      >>> run 4.1 with --offered >= {rec} "

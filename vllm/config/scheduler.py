@@ -194,28 +194,6 @@ class SchedulerConfig:
     """Path to injection sweep JSONL for mechanistic PCIe delta term. Optional
     for ``combined``; recommended for ``mechanistic``."""
 
-    enable_hybrid_kv_tiers: bool = False
-    """When True with transfer-aware admission, assign HBM-resident vs
-    CPU-offload tiers using the PCIe hide roofline instead of admitting all
-    requests to the pipelined path."""
-
-    hybrid_b_hbm_max: int = Field(default=0, ge=0)
-    """Max concurrent HBM-resident (R0-path) requests. 0 = unset (admit-only
-    by offload roofline when hybrid tiers enabled)."""
-
-    hybrid_seq_tokens: int = Field(default=512, ge=1)
-    """Typical decode context length (tokens) for B_off_max roofline."""
-
-    hybrid_pcie_gbps: float = Field(default=0.0, ge=0.0)
-    """Effective CPU->GPU GB/s for hide budget. 0 = env/default."""
-
-    hybrid_b_tok: int = Field(default=0, ge=0)
-    """All-layer KV bytes per decode token. 0 = derive from model if available."""
-
-    hybrid_itl_ms: float = Field(default=0.0, ge=0.0)
-    """Reference decode ITL (ms) for roofline when predictor unavailable. 0 = use
-    predictor at running batch size."""
-
     @staticmethod
     def default_factory(**kwargs):
         """

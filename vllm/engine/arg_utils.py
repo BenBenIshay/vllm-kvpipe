@@ -591,13 +591,6 @@ class EngineArgs:
     )
     transfer_aware_injection_jsonl: str = SchedulerConfig.transfer_aware_injection_jsonl
 
-    enable_hybrid_kv_tiers: bool = SchedulerConfig.enable_hybrid_kv_tiers
-    hybrid_b_hbm_max: int = SchedulerConfig.hybrid_b_hbm_max
-    hybrid_seq_tokens: int = SchedulerConfig.hybrid_seq_tokens
-    hybrid_pcie_gbps: float = SchedulerConfig.hybrid_pcie_gbps
-    hybrid_b_tok: int = SchedulerConfig.hybrid_b_tok
-    hybrid_itl_ms: float = SchedulerConfig.hybrid_itl_ms
-
     kv_sharing_fast_prefill: bool = CacheConfig.kv_sharing_fast_prefill
     optimization_level: OptimizationLevel = VllmConfig.optimization_level
 
@@ -1212,30 +1205,6 @@ class EngineArgs:
             "--transfer-aware-injection-jsonl",
             **scheduler_kwargs["transfer_aware_injection_jsonl"],
         )
-        scheduler_group.add_argument(
-            "--enable-hybrid-kv-tiers",
-            **scheduler_kwargs["enable_hybrid_kv_tiers"],
-        )
-        scheduler_group.add_argument(
-            "--hybrid-b-hbm-max",
-            **scheduler_kwargs["hybrid_b_hbm_max"],
-        )
-        scheduler_group.add_argument(
-            "--hybrid-seq-tokens",
-            **scheduler_kwargs["hybrid_seq_tokens"],
-        )
-        scheduler_group.add_argument(
-            "--hybrid-pcie-gbps",
-            **scheduler_kwargs["hybrid_pcie_gbps"],
-        )
-        scheduler_group.add_argument(
-            "--hybrid-b-tok",
-            **scheduler_kwargs["hybrid_b_tok"],
-        )
-        scheduler_group.add_argument(
-            "--hybrid-itl-ms",
-            **scheduler_kwargs["hybrid_itl_ms"],
-        )
 
         # Compilation arguments
         compilation_kwargs = get_kwargs(CompilationConfig)
@@ -1763,12 +1732,6 @@ class EngineArgs:
             transfer_aware_admission_policy=self.transfer_aware_admission_policy,
             transfer_aware_baseline_compute_json=self.transfer_aware_baseline_compute_json,
             transfer_aware_injection_jsonl=self.transfer_aware_injection_jsonl,
-            enable_hybrid_kv_tiers=self.enable_hybrid_kv_tiers,
-            hybrid_b_hbm_max=self.hybrid_b_hbm_max,
-            hybrid_seq_tokens=self.hybrid_seq_tokens,
-            hybrid_pcie_gbps=self.hybrid_pcie_gbps,
-            hybrid_b_tok=self.hybrid_b_tok,
-            hybrid_itl_ms=self.hybrid_itl_ms,
         )
 
         if not model_config.is_multimodal_model and self.default_mm_loras:
