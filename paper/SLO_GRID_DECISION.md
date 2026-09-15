@@ -36,6 +36,38 @@ If `T0` lands near 50 ms the grid is ~{50, 60, 75, 100, 150}, which overlaps
 the plan's upper points while dropping the two that would have measured
 nothing.
 
+## Correction 2026-09-15: T0 must be measured in the units the SLO enforces
+
+`T0` was specified as the all-HBM arm's **median ITL**. The gate it feeds
+scores **goodput**, and `vllm bench serve` defines a request as meeting a TPOT
+target using `(latency - ttft) / (output_len - 1)` — a per-request mean, not a
+pooled inter-token latency. On the same A100 dry run those differ by 1.7x:
+
+    median pooled ITL   5.85 ms
+    median TPOT         3.39 ms
+
+The gap is a definition, not noise: a streamed chunk can carry more than one
+token, so `len(itl)` under-counts tokens while `sum(itl)` stays correct, and
+dividing by the true token count gives a smaller per-token figure.
+
+Anchoring the grid to pooled ITL and then enforcing it on TPOT sets **every**
+point ~1.7x looser than intended. The damage lands hardest on `1.0 x T0`, the
+point whose entire purpose is to be the tightest target all-HBM can meet: it
+would silently become a target the mixture can also pass, and the rationale
+above ("riders must show they cost nothing here") would no longer be tested.
+
+**Decided: `T0` = median per-request TPOT of the all-HBM arm at its peak.**
+`gate_goodput.py --t0-metric itl` reproduces the old wording if a comparison is
+ever needed; the JSON records which was used. The same correction applies to
+the tail condition — `--tail-metric` defaults to p99 TPOT, for the same reason.
+
+**Related asymmetry, worth deciding before 4.0 runs.** The plan's gate reads
+"p99 ITL(C) no worse than 1.5 x T0". On the dry run arm A's *own* p99 pooled
+ITL was 27.95 ms against an 8.78 ms SLO it met on 64/64 requests. A condition
+the baseline fails by 3x is not a gate, it is a disqualification of one arm.
+The harness now reports whether the baseline meets the same condition and says
+so when it does not; judge the tail arm-relatively.
+
 ## Cost of getting this wrong
 
 Five SLO points x three arms is the bulk of 4.1's 24 GPU-h. Two dead points is

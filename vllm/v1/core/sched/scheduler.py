@@ -868,6 +868,52 @@ class Scheduler(SchedulerInterface):
                 n_hbm, n_cpu, blk_hbm, blk_cpu, _free, _total,
             )
 
+        # Hybrid tiered-KV: trace the SPREAD of `host_affinity` over the running
+        # set. Env-gated; off by default.
+        #
+        # This exists because of a defect that produces plausible output rather
+        # than an error (GH200 plan 4.2c). `host_affinity` scores on TEMPORAL
+        # signals -- idle time and remaining generation -- since context length
+        # provably cannot discriminate between tiers. Every harness here
+        # generates identical requests: one burst, `max_tokens == min_tokens`,
+        # `ignore_eos`. On such a workload every request scores the same, the
+        # `scored` policy is byte-for-byte `arrival`, and the policy ablation
+        # returns a null that says nothing about the policy -- while looking
+        # exactly like a real measurement. 16 GPU-hours of rented machine were
+        # budgeted for that comparison.
+        #
+        # So the spread is measured, not assumed, and §4.3 gates on it.
+        if _os.environ.get("VLLM_KVPIPE_AFFINITY_TRACE", "0") == "1" and self.running:
+            _adm = self.transfer_aware_admission
+            _scores: list[float] = []
+            _idle: list[float] = []
+            _rem: list[float] = []
+            _w = getattr(_adm, "_w_idle", 0.7)
+            for _req in self.running:
+                try:
+                    _i, _r = _adm.host_affinity_parts(_req)
+                except Exception:
+                    continue
+                _idle.append(_i)
+                _rem.append(_r)
+                _scores.append(_w * _i + (1.0 - _w) * _r)
+            if _scores:
+                _scores.sort()
+                _n = len(_scores)
+                _q = lambda f: _scores[min(_n - 1, max(0, int(round(f * (_n - 1)))))]  # noqa: E731
+                # The components are reported alongside the score so that an
+                # inert workload names its own cause. They are weighted 0.7/0.3
+                # by default, so a flat idle signal caps the achievable spread
+                # at 0.3 whatever the generation lengths do.
+                logger.info(
+                    "AFFINITY_TRACE: n=%d min=%.4f p25=%.4f p50=%.4f p75=%.4f "
+                    "max=%.4f spread=%.4f idle_spread=%.4f rem_spread=%.4f "
+                    "w_idle=%.2f",
+                    _n, _scores[0], _q(0.25), _q(0.50), _q(0.75), _scores[-1],
+                    _scores[-1] - _scores[0], max(_idle) - min(_idle),
+                    max(_rem) - min(_rem), _w,
+                )
+
         # Construct the scheduler output.
         if self.use_v2_model_runner:
             scheduled_new_reqs = scheduled_new_reqs + scheduled_resumed_reqs

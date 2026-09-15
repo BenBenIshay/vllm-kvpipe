@@ -300,6 +300,22 @@ class TransferAwareAdmissionController:
           * a nearly-finished request will release its HBM shortly anyway ->
             migrating it is wasted work
         """
+        idle_score, rem_score = self.host_affinity_parts(request, now)
+        return self._w_idle * idle_score + (1.0 - self._w_idle) * rem_score
+
+    def host_affinity_parts(
+        self, request: "Request", now: float | None = None
+    ) -> tuple[float, float]:
+        """The two components of `host_affinity`, before weighting.
+
+        Split out so that a workload can be diagnosed rather than merely
+        graded. If the running set shows no spread, "which signal is flat?" is
+        the next question, and the two have very different meanings: a flat
+        `rem_score` means the requests really are interchangeable, while a flat
+        `idle_score` is the expected state whenever every turn of a
+        conversation arrives as its own request -- nothing is idle *while
+        running*, because a waiting session holds no running request at all.
+        """
         t = time.monotonic() if now is None else now
         # idle signal: seconds since this request last produced a token
         last = self._last_active.get(request.request_id)
@@ -317,7 +333,7 @@ class TransferAwareAdmissionController:
             min(1.0, remaining / float(self._remaining_saturation))
             if remaining > 0 else 0.5      # unknown horizon -> neutral
         )
-        return self._w_idle * idle_score + (1.0 - self._w_idle) * rem_score
+        return idle_score, rem_score
 
     # ------------------------------------------------- Item 3: migration
     def plan_migrations(
