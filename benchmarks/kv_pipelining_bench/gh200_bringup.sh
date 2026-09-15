@@ -146,6 +146,31 @@ sys.exit(0 if got == want else 1)
 EOF
 gate $? "vllm imports from this tree"      "a restored venv pointing elsewhere runs the WRONG code and looks healthy"
 
+# ...and that the engine in this tree still HAS the feature. Checking the path
+# is not enough. On 2026-09-12 a commit recorded vllm/ as `main` --
+# baseline_integrity.sh swaps it in place to measure the disabled-path cost,
+# and the commit captured the swap: 2,478 deletions across 16 files. The
+# fork-only modules (vllm/v1/hybrid_*.py) survived, because `git checkout main
+# -- vllm/` cannot delete paths main does not know about, so the tree looked
+# entirely normal and `git status` was clean for three days. The engine that
+# would have flown to a rented GH200 was stock vLLM with our benchmarks
+# attached to it -- and every arm would have run, and agreed, and meant
+# nothing. Ask the parser, since that is what the experiments depend on.
+$PY - <<'EOF'
+import sys
+from vllm.engine.arg_utils import EngineArgs, FlexibleArgumentParser
+p = EngineArgs.add_cli_args(FlexibleArgumentParser())
+flags = {"--enable-hybrid-kv-tiers", "--hybrid-b-hbm-max",
+         "--enable-transfer-aware-admission"}
+known = {s for a in p._actions for s in a.option_strings}
+missing = sorted(flags - known)
+print(f"      tiering flags parsed: {len(flags) - len(missing)}/{len(flags)}")
+if missing:
+    print(f"      MISSING: {' '.join(missing)}")
+sys.exit(1 if missing else 0)
+EOF
+gate $? "the engine has the tiering feature" "a vllm/ reverted to main parses none of these and measures nothing"
+
 # ---------------------------------------------------------------- 4. model
 say "4. model is present (no downloading on the meter)"
 $PY - "$MODEL" <<'EOF'
