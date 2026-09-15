@@ -194,6 +194,9 @@ def summarize(result: dict) -> dict:
     return {
         "completed": int(result.get("completed") or 0),
         "failed": int(result.get("failed") or 0),
+        # The achieved concurrency is what arm C's b_hbm_max must sit BELOW,
+        # so it is carried through rather than left in the raw file.
+        "max_concurrent": float(result.get("max_concurrent_requests") or 0.0),
         "duration_s": float(result.get("duration") or 0.0),
         "request_throughput": float(result.get("request_throughput") or 0.0),
         "output_throughput": float(result.get("output_throughput") or 0.0),
@@ -207,6 +210,47 @@ def summarize(result: dict) -> dict:
 # --------------------------------------------------------------------------
 # Tier observability: is arm C actually a different configuration?
 # --------------------------------------------------------------------------
+_RUNNING = re.compile(r"Running: (\d+) reqs, Waiting: (\d+) reqs")
+
+
+def running_batch(server_log: str) -> dict:
+    """The engine's own resident batch and queue, from its periodic log line.
+
+    THE CLIENT'S NUMBER IS A DIFFERENT QUANTITY. `vllm bench serve` reports
+    `max_concurrent_requests`, which counts requests **in flight** -- accepted
+    by the client, including everything queued or preempted inside the engine.
+    On the 32B rehearsal that read 28 while the engine was actually running 4-5
+    and had the rest waiting. Deriving `b_hbm_max` from 28 set it to 16, far
+    above the resident capacity, so arm C had HBM slots for every request it
+    could actually run and produced a single rider.
+
+    That is the vacuity trap in a new costume: an arm C that is arm A with
+    extra logging. The engine's `Running:` line is the resident batch, which is
+    the quantity `b_hbm_max` has to sit below.
+    """
+    run: list[int] = []
+    wait: list[int] = []
+    try:
+        with open(server_log, errors="replace") as fh:
+            for line in fh:
+                m = _RUNNING.search(line)
+                if m:
+                    run.append(int(m.group(1)))
+                    wait.append(int(m.group(2)))
+    except OSError:
+        pass
+    busy = [r for r in run if r > 0]
+    if not busy:
+        return {"samples": 0}
+    return {
+        "samples": len(busy),
+        "median_running": statistics.median(busy),
+        "max_running": max(busy),
+        "median_waiting": statistics.median(wait) if wait else 0,
+        "max_waiting": max(wait) if wait else 0,
+    }
+
+
 _OCC = re.compile(
     r"TIER_OCCUPANCY: n_hbm=(\d+) n_cpu=(\d+) blk_hbm=(\d+) blk_cpu=(\d+) "
     r"free=(-?\d+) total=(-?\d+)")
@@ -269,6 +313,9 @@ def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
         cmd.append("--enforce-eager")
     if a.num_gpu_blocks_override:
         cmd += ["--num-gpu-blocks-override", str(a.num_gpu_blocks_override)]
+    # Both arms get the same admission width, or the comparison is not one.
+    if a.max_num_seqs:
+        cmd += ["--max-num-seqs", str(a.max_num_seqs)]
 
     env = dict(os.environ)
     env.setdefault("VLLM_USE_V1", "1")
@@ -296,7 +343,103 @@ def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
         # The tier histogram is the sanity check that tells a real arm C from a
         # configuration that silently produced no riders.
         env["VLLM_KVPIPE_TIER_OCCUPANCY"] = "1"
+        # Pin the pool to what was checked to fit, rather than letting it size
+        # itself from max_num_seqs and be killed by the cgroup.
+        if getattr(a, "rungd_hmax", 0):
+            env["VLLM_KVPIPE_RUNGD_HMAX"] = str(a.rungd_hmax)
     return cmd, env
+
+
+def cgroup_limit() -> int:
+    """The smallest memory limit actually binding on this process, v1 or v2.
+
+    Reading `/sys/fs/cgroup/memory.max` is not enough and reads as *no limit*
+    here, which is worse than not checking: on nova06 it reported the node's
+    876 GB while the job was capped at 120 GB, so the sizing check passed a
+    437 GB pinned allocation straight into the OOM killer it existed to
+    prevent.
+
+    SLURM places the limit on the JOB cgroup, while the step and task cgroups
+    below it are unlimited -- and `/proc/self/cgroup` names the deepest one. So
+    resolve the process's own path and walk UP it, taking the smallest real
+    limit found. Measured on this cluster: task and step unlimited, job
+    128849018880 = 120 GB, which is the true bound.
+    """
+    best = 0
+    try:
+        with open("/proc/self/cgroup") as fh:
+            entries = [ln.strip().split(":", 2) for ln in fh if ln.strip()]
+    except OSError:
+        return 0
+    for ent in entries:
+        if len(ent) != 3:
+            continue
+        _hid, ctrl, path = ent
+        if "memory" in ctrl.split(","):
+            base, fname = "/sys/fs/cgroup/memory", "memory.limit_in_bytes"
+        elif ctrl == "":                                   # v2 unified
+            base, fname = "/sys/fs/cgroup", "memory.max"
+        else:
+            continue
+        parts = [p for p in path.strip("/").split("/") if p]
+        for i in range(len(parts), -1, -1):
+            try:
+                with open(os.path.join(base, *parts[:i], fname)) as fh:
+                    raw = fh.read().strip()
+            except OSError:
+                continue
+            if not raw or raw == "max":
+                continue
+            try:
+                val = int(raw)
+            except ValueError:
+                continue
+            # v1 spells "unlimited" as a near-2^63 sentinel.
+            if 0 < val < (1 << 62) and (best == 0 or val < best):
+                best = val
+    return best
+
+
+def host_pool_check(a) -> dict:
+    """Will arm C's PINNED host mirrors fit in host memory?
+
+    They did not, on the 32B rehearsal, and the way they failed is the reason
+    this is a pre-launch check rather than a note in a runbook. The pool sizes
+    itself as `h_max = max_num_seqs * blocks_per_request + 8` so that any
+    admissible request can be fully host-resident. At Qwen-32B/8K that is
+    256 x 524 blocks x 4 MB = **536 GB** of pinned memory against a 120 GB
+    limit. The cgroup killed the EngineCore, 27 of 32 requests failed, and the
+    surviving 5 were scored as a slow arm.
+
+    Nothing in the engine's own logs says "the pool was too big" -- the process
+    simply disappears, which is exactly the silent shape RENTAL_REQUIREMENTS §7
+    Q4 asks providers about. So compute it before spending a model load, and
+    cap `max_num_seqs` to what actually fits rather than discovering the limit
+    by being killed.
+    """
+    sys.path.insert(0, HERE)
+    from gh200_preflight import kv_bytes_per_token
+
+    b_tok, geo = kv_bytes_per_token(a.model)
+    max_len = a.ctx + a.out_len + 64
+    bpr = max(1, -(-max_len // a.block_size))          # ceil
+    try:
+        avail = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):
+        avail = 0
+    lim = cgroup_limit()
+    if lim and (not avail or lim < avail):
+        avail = lim
+
+    budget = avail * a.host_pool_frac
+    per_req = bpr * a.block_size * b_tok
+    fits = int(budget // per_req) if per_req else 0
+    seqs = a.max_num_seqs or fits
+    need = (seqs * bpr + 8) * a.block_size * b_tok
+    return {"b_tok": b_tok, "geometry": geo, "blocks_per_req": bpr,
+            "per_req_bytes": per_req, "avail_bytes": avail,
+            "budget_bytes": budget, "max_reqs_that_fit": fits,
+            "max_num_seqs": seqs, "pinned_bytes": need, "fits": need <= budget}
 
 
 def wait_ready(port: int, timeout_s: float, proc) -> bool:
@@ -461,9 +604,14 @@ def sweep(a, arm: str, slo_ms: float | None, tag_prefix: str) -> dict:
                 break
             prev = max(prev, s["request_throughput"])
         tiers = tier_stats(srv.log)
+        batch = running_batch(srv.log)
     ok = [r for r in runs if "error" not in r]
     peak = max(ok, key=lambda r: r["request_throughput"]) if ok else None
-    return {"runs": runs, "peak": peak, "tiers": tiers,
+    if batch.get("samples"):
+        print(f"    engine resident batch: median {batch['median_running']:.1f} "
+              f"(max {batch['max_running']}), queue median "
+              f"{batch['median_waiting']:.1f}")
+    return {"runs": runs, "peak": peak, "tiers": tiers, "batch": batch,
             "ever_bound": any(r.get("bound") for r in ok)}
 
 
@@ -552,6 +700,29 @@ def mode_gate(a) -> int:
           f"p99 ITL(C) <= SLO")
     print("=" * 62)
 
+    hp = host_pool_check(a)
+    print(f"\n  host pool: {hp['geometry']['layers']}L x "
+          f"{hp['geometry']['kv_heads']}KV x {hp['geometry']['head_dim']}D -> "
+          f"{hp['b_tok']} B/token, {hp['per_req_bytes'] / 1e9:.2f} GB per "
+          f"request at {a.ctx} ctx")
+    print(f"  pinned mirrors would need {hp['pinned_bytes'] / 1e9:.1f} GB of "
+          f"{hp['avail_bytes'] / 1e9:.0f} GB available "
+          f"({a.host_pool_frac:g} budget = {hp['budget_bytes'] / 1e9:.1f} GB)")
+    if not hp["fits"]:
+        if a.max_num_seqs:
+            print(f"\nINCONCLUSIVE: --max-num-seqs {a.max_num_seqs} needs "
+                  f"{hp['pinned_bytes'] / 1e9:.0f} GB pinned; only "
+                  f"{hp['max_reqs_that_fit']} requests fit the budget. Lower "
+                  f"it, shorten --ctx, or run where there is more host RAM. "
+                  f"(Left alone, the cgroup kills the EngineCore mid-run and "
+                  f"the arm scores as merely slow.)")
+            return 2
+        a.max_num_seqs = max(2, hp["max_reqs_that_fit"])
+        hp = host_pool_check(a)
+        print(f"  -> capping --max-num-seqs at {a.max_num_seqs} so the pool "
+              f"fits ({hp['pinned_bytes'] / 1e9:.1f} GB)")
+    a.rungd_hmax = a.max_num_seqs * hp["blocks_per_req"] + 8
+
     print("\n[1/3] arm A rate sweep -> peak and T0")
     sw = sweep(a, "A", None, "A")
     if not sw.get("peak"):
@@ -568,6 +739,53 @@ def mode_gate(a) -> int:
           f"{peak['request_throughput']:.3f} req/s achieved")
     print(f"  T0 (median ITL at peak) = {t0:.2f} ms  ->  "
           f"SLO = {a.slo_mult:g} x T0 = {slo_ms:.2f} ms")
+
+    # b_hbm_max must be BELOW arm A's achieved concurrency, or arm C has HBM
+    # slots for everyone, creates no rider, and silently becomes arm A. That
+    # exact mistake -- concurrency 6.0 against b_hbm_max 8 -- is what made the
+    # policy ablation print "the policy layer is decoration" on a setup that
+    # could not have shown anything else. Deriving it from the measured
+    # ceiling removes the chance to set it by hand and be wrong on the meter.
+    # The ENGINE's resident batch, not the client's in-flight count.
+    conc = sw.get("batch", {}).get("median_running", 0.0)
+    if not conc:
+        print("\nINCONCLUSIVE: could not read the engine's resident batch from "
+              "arm A's log, so b_hbm_max cannot be set against a measured "
+              "ceiling. (Is --disable-log-stats set?)")
+        return 2
+    # `max_num_seqs` is not a neutral knob, and it must be reported with any
+    # number taken here. It decides HOW an overload manifests: set wide, the
+    # excess queues at the door and the requests that do run see clean steps
+    # (measured: median ITL 55 ms); set near capacity, the engine preempts and
+    # every running request absorbs stalls (median ITL 657 ms on the same
+    # hardware, same model, same offered rate). T0 moved 12x between those two
+    # configurations, and the whole SLO grid is anchored to T0.
+    #
+    # It must also sit ABOVE arm A's capacity, or arm C cannot show its win:
+    # the mixture's claim is that it runs MORE concurrent requests than HBM
+    # holds, and an admission width equal to arm A's ceiling forbids exactly
+    # that while looking like a fair, matched setting.
+    if a.max_num_seqs and conc >= a.max_num_seqs:
+        print(f"  WARNING: arm A's resident batch ({conc:.1f}) reaches "
+              f"--max-num-seqs {a.max_num_seqs}, so the BASELINE is limited by "
+              f"admission width rather than by KV capacity. The premise of the "
+              f"comparison is that HBM binds; raise it to ~3x capacity.")
+    if a.b_hbm_max <= 0:
+        if conc < 2:
+            print(f"\nINCONCLUSIVE: arm A's resident batch is {conc:.1f}; there "
+                  f"is no room to split it into HBM-tier plus riders. Raise "
+                  f"the offered rate or shrink the pool.")
+            return 2
+        a.b_hbm_max = max(1, int(conc * a.b_hbm_frac))
+        print(f"  arm A resident batch {conc:.1f} -> b_hbm_max = "
+              f"{a.b_hbm_max} ({a.b_hbm_frac:g} of the measured ceiling), "
+              f"riders on top")
+    elif a.b_hbm_max >= conc:
+        print(f"\nINCONCLUSIVE: --b-hbm-max {a.b_hbm_max} is at or above arm "
+              f"A's resident batch ({conc:.1f}), so arm C has an HBM slot for "
+              f"every request it can actually run and creates no riders. The "
+              f"two arms would be the same configuration.")
+        return 2
 
     if not sw["ever_bound"]:
         print("\nINCONCLUSIVE: arm A absorbed the whole offered load at every "
@@ -598,6 +816,20 @@ def mode_gate(a) -> int:
             if "error" in s:
                 pair[arm] = s
                 print(f"    arm {arm}: {s['error']}")
+                continue
+            # AN ARM THAT DID NOT FINISH IS NOT A SLOW ARM. Measured on the
+            # 32B rehearsal: arm C's EngineCore died of a host OOM, 27 of 32
+            # requests failed, and the 5 that survived were scored as a
+            # legitimate 55% slowdown -- a crash reported as a NO-GO on the
+            # experiment the whole rental exists to run. Goodput divides by
+            # wall time, so a run that dies early looks merely slow rather
+            # than broken, and nothing else in the number gives it away.
+            if s["failed"] or s["completed"] < a.min_completion_frac * a.num_prompts:
+                s["error"] = (
+                    f"incomplete: {s['completed']}/{a.num_prompts} completed, "
+                    f"{s['failed']} failed -- check {srv.log}")
+                pair[arm] = s
+                print(f"    arm {arm}: INVALID RUN -- {s['error']}")
                 continue
             g = goodput_at(res, slo_ms)
             s.update(g)
@@ -662,6 +894,15 @@ def verdict_gate(a, out: dict) -> int:
     # misses by more. A gate only one arm has to clear is not a gate.
     base_tail_ok = all(r["A"][tail_key] <= out["slo_ms"] for r in valid)
 
+    if a.max_num_seqs:
+        capped = [r for r in valid
+                  if r["C"]["tiers"]["max_n_cpu"] + r["C"]["tiers"]["max_n_hbm"]
+                  >= a.max_num_seqs]
+        if capped:
+            print(f"  WARNING: arm C reached --max-num-seqs {a.max_num_seqs} in "
+                  f"{len(capped)}/{len(valid)} repeats, so its concurrency was "
+                  f"bounded by the admission width and not by what the riders "
+                  f"made room for. Any win measured here is a LOWER bound.")
     for r in valid:
         print(f"  repeat {r['repeat']}: A {r['A']['goodput_req_s']:.3f} -> "
               f"C {r['C']['goodput_req_s']:.3f} req/s  "
@@ -779,8 +1020,25 @@ def main() -> int:
                    help="force a small KV pool so the load binds (dry runs)")
     p.add_argument("--eager", action="store_true",
                    help="--enforce-eager (the hybrid path forces it anyway)")
-    p.add_argument("--b-hbm-max", type=int, default=5,
-                   help="arm C: HBM-tier slots; set to arm A's measured ceiling")
+    p.add_argument("--max-num-seqs", type=int, default=0,
+                   help="admission width for BOTH arms. 0 = derive the largest "
+                        "value whose pinned host pool fits (see "
+                        "host_pool_check); the engine's default of 256 asks "
+                        "for 536 GB of pinned memory at 32B/8K")
+    p.add_argument("--block-size", type=int, default=16)
+    p.add_argument("--host-pool-frac", type=float, default=0.5,
+                   help="share of available host RAM the pinned mirrors may use")
+    p.add_argument("--min-completion-frac", type=float, default=0.95,
+                   help="an arm completing less than this share of its prompts "
+                        "is an INVALID run, not a slow one")
+    p.add_argument("--b-hbm-max", type=int, default=0,
+                   help="arm C: HBM-tier slots. 0 (default) derives it from "
+                        "arm A's MEASURED concurrency x --b-hbm-frac; a value "
+                        "at or above that ceiling is refused, because arm C "
+                        "would then create no riders and silently equal arm A")
+    p.add_argument("--b-hbm-frac", type=float, default=0.6,
+                   help="fraction of arm A's ceiling kept HBM-resident when "
+                        "b_hbm_max is derived")
     p.add_argument("--link-gbps", type=float, default=25.1,
                    help="MEASURED host->device GB/s. On C2C the A100's 25.1 "
                         "makes B1 admit ~36x too few riders; take it from "
