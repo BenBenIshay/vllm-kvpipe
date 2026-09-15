@@ -25,6 +25,25 @@ triton                            3.5.1
 vllm                              0.1.dev13032+g3661a60c1.d20260603.cu128 /mnt/beegfs/benishay/vllm-kvpipe
 ```
 
+## Added 2026-09-15 — benchmark-only packages
+
+```
+pandas                            3.0.5
+xlsxwriter                        3.2.9
+```
+
+Required by `benchmarks/multi_turn/benchmark_serving_multi_turn.py`, which
+`affinity_spread_gate.py` (experiment 4.2c) uses as its workload driver rather
+than a bespoke generator. Neither package is imported by anything under
+`vllm/`, so the engine under measurement is unchanged — but the GH200 image
+needs them or 4.2c, 4.3 and 4.5 cannot run, and that is a five-minute
+discovery worth making here rather than there.
+
+Also staged for the same driver: `pg1184.txt` (Project Gutenberg #1184,
+2.8 MB) at `/mnt/beegfs/benishay/bench_data/`, the corpus its conversation
+generator samples from. On the rented box:
+`curl -sSL -o pg1184.txt https://www.gutenberg.org/cache/epub/1184/pg1184.txt`
+
 ## Toolchain present on the A100 cluster
 ```
 nvcc:   ABSENT — this is why FlashInfer JIT and DirectKV were unmeasurable here

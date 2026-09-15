@@ -365,6 +365,40 @@ wrong answer before):
 - B1 should admit ~7 riders at 8K. ~2 means the link constant is still 25.1
   somewhere; ~30 means `b_tok` is wrong for a 64-layer model.
 
+#### BUILT AND DRY-RUN ON A100, 2026-09-15 — `gate_goodput.py`
+
+`--mode gate` is 4.0 exactly as specified above: arm A rate sweep to the knee,
+`T0` from the peak, SLO at the multiple, then interleaved repeats of A and C at
+the peak rate, and a verdict that separates NO-GO from INCONCLUSIVE. Arm A is a
+plain server with no hybrid flag parsed at all — the arm 4.0b measured against
+stock. The three sanity checks are code, not habit: a load that never bound, an
+arm C whose tier histogram contains no `cpu` entries, and a failed run scored
+as a slow one all return exit 2, never a failed gate.
+
+Dry run on Qwen2.5-0.5B (A100, 300-block pool, b_hbm_max 2): the load bound at
+16.2 req/s, T0 and the SLO were derived, arm C created 13 riders, and the two
+repeats reproduced to **0.877 and 0.878 req/s** — the machinery discriminates.
+It returned NO-GO, which is the correct answer on PCIe with a 0.5B model and
+says nothing about GH200.
+
+**4.1's SLO dimension is now free, and this is the hours saved.** `--mode grid`
+sweeps rate once per (arm, context) with `--save-detailed`, then derives goodput
+at all five `T0` multiples offline: the SLO is a client-side threshold on
+per-request TPOT, not a server configuration, so the same requests are scored
+five times instead of run five times. 4.1 becomes {3 contexts} x {2 arms} x one
+sweep instead of {3} x {5} x {2}. **`--mode verify-goodput` proves the
+recomputation before anything rests on it** — it reproduced the server's own
+`request_goodput` to 0.0000% at a threshold that split the run 17/32. Run it
+once on the rented machine.
+
+Two defects the dry run caught, both of which would have cost rental time:
+* `--save-result` alone writes **only aggregates**. The per-request arrays live
+  behind `--save-detailed`, and without them every offline quantity is computed
+  over nothing — which the first verification reported as `0.000 vs 0.000`,
+  a 0.0000% difference, and a **PASS**. Missing data is now an error, and the
+  verification refuses any threshold where every request falls on the same side.
+* the T0 unit mismatch — see `SLO_GRID_DECISION.md`, "Correction 2026-09-15".
+
 ### 4.0b IS ARM A A REAL BASELINE?  — **RUN, PASSED (2026-09-12)**
 
 **Result: the disabled-path cost is $-0.08\%$.** Six valid runs, interleaved,
@@ -624,6 +658,60 @@ the trace path fights the harness, not the first choice.
 This is also what the paper needs independently: §6.1 now states that a
 homogeneous workload makes scored placement degenerate to arrival *by
 construction*, so a reviewer will look for the heterogeneous one.
+
+#### BUILT AND RUN ON A100, 2026-09-15 — `affinity_spread_gate.py`
+
+Driver is `benchmarks/multi_turn/benchmark_serving_multi_turn.py`, already in
+this tree (multi-turn conversations, per-turn output lengths from a
+distribution, Poisson delay per client), as §4.2c instructed — no bespoke
+generator. Engine side: `VLLM_KVPIPE_AFFINITY_TRACE=1` logs per-step
+min/p25/p50/p75/max of `host_affinity` over the running set, **plus the two
+components separately**, so an inert workload names its own cause.
+
+It runs a homogeneous CONTROL alongside, because a gate that only ever sees the
+workload it is meant to approve cannot fail. Measured: control 0.8% of steps
+show any spread, heterogeneous 100% — the instrument separates them by 14x on
+median spread.
+
+**Two findings, and the second changes what §4.3 can claim.**
+
+1. **Concurrency and generation spread both have to be large enough, and the
+   first attempt was not.** 16 conversations / 6 clients / rate 0.5 /
+   generation lognormal(128, max 768) gave a mean running set of 2.5 requests
+   and spread **0.029 — INERT**. 32 / 16 / 1.0 with generation lognormal(256,
+   max 2048) gives mean running 9.7 and spread **0.202 — PASS**. Those are now
+   the harness defaults, so the rented machine does not start from the inert
+   configuration. `--min-running 4` drops steps whose spread is zero by
+   construction.
+
+2. **The idle signal is identically zero in standard serving, and it carries
+   70% of the score's weight.** Measured `idle_spread = 0.000` in every run,
+   heterogeneous and control alike. The cause is structural, not a workload
+   defect: `host_affinity`'s idle term is seconds since a **running** request
+   last produced a token, but when each turn arrives as its own HTTP request, a
+   session waiting for its user holds *no running request at all* — it is not
+   idle, it is absent. So the reachable spread ceiling is `(1 - w_idle) x 1.0 =
+   0.30`, and the 0.202 measured is two thirds of that ceiling rather than a
+   fifth of 1.0.
+
+   **Consequence for §4.3: `scored` is, on any one-request-per-turn workload, a
+   remaining-generation ranking.** That is a real policy and it does
+   discriminate — but it is not the policy §6.1 describes, and the difference
+   should be settled before 16 GPU-hours are spent, not afterwards. Three ways
+   out, in order of honesty:
+   * **State it.** Report `scored` as remaining-generation ranking on serving
+     workloads, and keep the idle term for the deployment where it applies.
+   * **Re-weight** (`VLLM_KVPIPE_TIER_W_IDLE`, default 0.7). Lowering it raises
+     the ceiling toward 1.0 and makes the ablation measure the term that is
+     actually live. This changes the policy, so it is Ben's call, not a knob to
+     turn quietly.
+   * **Build the case the term was written for** — a session that holds KV
+     across a gap, i.e. prefix-cache-held or P/D-stashed sessions. That is the
+     agentic deployment the design argues about, and it is the only setting in
+     which the 0.70 weight is doing any work.
+
+   Gate before §4.3 runs: `affinity_spread_gate.py` exits 0. Exit 1 means the
+   workload is inert and the ablation would measure nothing.
 
 ### 4.3 Policy ablation — is the policy load-bearing?  (16 GPU-h)
 
