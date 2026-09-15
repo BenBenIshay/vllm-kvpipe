@@ -3,6 +3,7 @@
 """Attention layer with FlashAttention."""
 
 import copy
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -577,6 +578,278 @@ class FlashAttentionImpl(AttentionImpl):
 
         self.supports_quant_query_input = True
 
+    def _pool_cpu_override(
+        self, split, layer, query, key, value, output, num_actual_tokens,
+        sliding_window_size,
+    ) -> None:
+        """Overwrite CPU decode rows' attention output with attention over their
+        host-block-id pool (rung-d serve-more). The standard single pass already
+        ran for all rows; this replaces the CPU rows (whose resident KV is stale)
+        and folds this step's token into the pool."""
+        pool = split.rungd_pool
+        cpu_idx = split.cpu_idx
+        if (
+            pool is None or cpu_idx.numel() == 0
+            or split.rolling_block_table is None
+            or split.rolling_seqused_k is None
+        ):
+            return
+        ln = getattr(layer, "layer_name", None)
+        lidx = (split.rungd_layer_index or {}).get(ln, 0)
+        # Item 4: go through the KVTierBackend boundary so policy code never
+        # touches the mechanism. `split.tier_backend` is a StagedHostBackend
+        # wrapping this pool; DirectKVBackend slots in here on Hopper.
+        backend = getattr(split, "tier_backend", None)
+        if backend is None:
+            from vllm.v1.kv_tier_backend import StagedHostBackend
+            backend = StagedHostBackend(pool, 0)
+            split.tier_backend = backend
+        handle = backend.prepare_layer(lidx)
+        if key is not None and value is not None and split.cpu_cur_compact:
+            backend.write_token(
+                lidx, split.cpu_cur_compact, split.cpu_cur_offset,
+                split.cpu_cur_hostblock,
+                key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+                split.cpu_slot_pos, split.cpu_host_pos,
+            )
+        m = cpu_idx.numel()
+        out = output[:num_actual_tokens]
+        q_sub = query[:num_actual_tokens].index_select(0, cpu_idx)
+        # Allocate EXACTLY as the pre-refactor code did: from the model's own
+        # output tensor, not from q_sub. A backend must not be able to change
+        # the result's shape/dtype.
+        out_sub = torch.empty(
+            (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
+        )
+        descale_shape = (m, self.num_kv_heads)
+        from vllm.v1.kv_tier_backend import TierAttendCtx
+        backend.attend(
+            lidx, handle, q_sub,
+            TierAttendCtx(
+                block_table=split.rolling_block_table,
+                seqused_k=split.rolling_seqused_k,
+                scale=self.scale,
+                sliding_window=sliding_window_size,
+                softcap=self.logits_soft_cap,
+                fa_version=self.vllm_flash_attn_version,
+                alibi_slopes=self.alibi_slopes,
+                q_descale=layer._q_scale.expand(descale_shape),
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                sinks=self.sinks,
+                max_seqlen_k=getattr(split, "rolling_max_seqlen_k", None),
+                cu_seqlens_q=getattr(split, "cpu_cu_seqlens_q", None),
+            ),
+            out_sub,
+        )
+        out.index_copy_(0, cpu_idx, out_sub)
+        # Swap-semantics emulation, off by default. A swap design must persist
+        # this layer's whole slot before the buffer is reused; a streaming one
+        # (ours) has already written the only new bytes to the authoritative
+        # host mirror in write_token above. Measured, not assumed -- see
+        # RungdHostPool.writeback_layer.
+        wb = getattr(pool, "writeback_layer", None)
+        if wb is not None:
+            wb(lidx)
+
+    def _maybe_hybrid_two_pass(
+        self,
+        *,
+        layer: torch.nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        output: torch.Tensor,
+        num_actual_tokens: int,
+        max_seqlen_k: int,
+        seqused_k: torch.Tensor,
+        block_table: torch.Tensor,
+        sliding_window_size: list[int] | None,
+        causal: bool,
+    ) -> bool:
+        """Two-pass dual-region decode for hybrid tiered KV.
+
+        When the runner has published a per-step HBM/CPU row split (see
+        vllm/v1/hybrid_attn_ctx.py), split this decode's rows by tier and run
+        one flash_attn call per tier, each writing into its own rows of the
+        shared output buffer. Numerically validated in isolation by
+        benchmarks/kv_pipelining_bench/two_pass_attn_numeric_test.py.
+
+        Step 1 (current): both tiers read the SAME resident pool, so the result
+        is bitwise-equal to the single pass — this proves the split/gather/
+        scatter plumbing end-to-end without yet changing memory. Step 2 will
+        point the CPU pass at split.rolling_kv_caches[layer.layer_name] + the
+        rolling block table to deliver the HBM saving.
+
+        Returns True iff it fully wrote the output (caller skips the single
+        pass); False to fall back to the standard single pass.
+        """
+        from vllm.v1.hybrid_attn_ctx import get_hybrid_decode_split
+
+        split = get_hybrid_decode_split()
+        if split is None:
+            return False
+        hbm_idx = split.hbm_idx
+        cpu_idx = split.cpu_idx
+        n = num_actual_tokens
+        # The split must exactly partition this step's decode rows (pure decode,
+        # 1 query token per row). Any mismatch (padding / stale split / prefill
+        # mixed in) -> bail to the safe single pass.
+        if hbm_idx.numel() + cpu_idx.numel() != n or seqused_k.shape[0] != n:
+            return False
+
+        q = query[:num_actual_tokens]
+        out = output[:num_actual_tokens]
+
+        def _tier_pass(
+            idx: torch.Tensor,
+            k_cache: torch.Tensor,
+            v_cache: torch.Tensor,
+            bt: torch.Tensor,
+            seq: torch.Tensor,
+            pre_sliced: bool = False,
+        ) -> None:
+            m = idx.numel()
+            if m == 0:
+                return
+            q_sub = q.index_select(0, idx)
+            if pre_sliced:
+                # bt/seq are already in idx (=cpu) order (e.g. a compacted CPU
+                # block table); use directly, only the query is gathered.
+                seq_sub = seq
+                bt_sub = bt
+            else:
+                seq_sub = seq.index_select(0, idx)
+                bt_sub = bt.index_select(0, idx)
+            cu_q = torch.arange(0, m + 1, device=q.device, dtype=torch.int32)
+            out_sub = torch.empty(
+                (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
+            )
+            descale_shape = (m, self.num_kv_heads)
+            flash_attn_varlen_func(
+                q=q_sub,
+                k=k_cache,
+                v=v_cache,
+                out=out_sub,
+                cu_seqlens_q=cu_q,
+                max_seqlen_q=1,
+                seqused_k=seq_sub,
+                max_seqlen_k=max_seqlen_k,  # safe upper bound for a subset
+                softmax_scale=self.scale,
+                causal=causal,
+                alibi_slopes=self.alibi_slopes,
+                window_size=sliding_window_size,
+                block_table=bt_sub,
+                softcap=self.logits_soft_cap,
+                fa_version=self.vllm_flash_attn_version,
+                q_descale=layer._q_scale.expand(descale_shape),
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                s_aux=self.sinks,
+            )
+            out.index_copy_(0, idx, out_sub)
+
+        # HBM cohort -> resident full-N pool (== the R0 path).
+        _tier_pass(hbm_idx, key_cache, value_cache, block_table, seqused_k)
+
+        # CPU cohort. Three modes, in priority order:
+        #  (rung-c) rolling_from_resident: gather the CPU cohort's resident
+        #    blocks into a COMPACTED [0:W) layout and attend with the remapped
+        #    block table -> validates the compacted dual-region attention math.
+        #  (rung-d) rolling_kv_caches: per-layer rolling slot streamed from host.
+        #  (step 1) neither: same resident pool (bitwise-equal to single pass).
+        rk = None
+        if split.rolling_kv_caches is not None:
+            rk = split.rolling_kv_caches.get(getattr(layer, "layer_name", None))
+        if (
+            split.rungd_pool is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            # serve-more: CPU cohort KV in the host-block-id pool. Stream this
+            # layer's history -> rolling slot, write-redirect this step's token,
+            # attend the compacted slot. No resident block needed.
+            _pool = split.rungd_pool
+            _ln = getattr(layer, "layer_name", None)
+            _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
+            # (key_slot, value_slot): separate contiguous tensors, because the
+            # mirrors are block-major so their runs DMA without a CPU gather.
+            _k_slot, _v_slot = _pool.stream_layer(_lidx)
+            if key is not None and value is not None and split.cpu_cur_compact:
+                _pool.write_token(
+                    _lidx, split.cpu_cur_compact, split.cpu_cur_offset,
+                    split.cpu_cur_hostblock,
+                    key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+                )
+            _tier_pass(
+                cpu_idx, _k_slot, _v_slot,
+                split.rolling_block_table, split.rolling_seqused_k,
+                pre_sliced=True,
+            )
+        elif (
+            split.rungd
+            and split.rungd_streamer is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            # serve-more: stream this layer's CPU-cohort KV host mirror -> the
+            # k_window-shared rolling slot, then attend the compacted slot.
+            _st = split.rungd_streamer
+            _ln = getattr(layer, "layer_name", None)
+            _lidx = (split.rungd_layer_index or {}).get(_ln, 0)
+            # Stream this layer's seeded history (host mirror) -> rolling slot,
+            # then write-redirect THIS step's token into the slot + host so the
+            # CPU cohort needs no resident KV (what enables freeing its blocks).
+            _slot = _st.load_layer_rolling(_ln, _lidx)  # host history -> rolling
+            if (
+                key is not None and value is not None
+                and split.cpu_cur_compact is not None
+            ):
+                _st.write_current_token(
+                    _lidx,
+                    split.cpu_cur_resident, split.cpu_cur_compact,
+                    split.cpu_cur_offset,
+                    key.index_select(0, cpu_idx),
+                    value.index_select(0, cpu_idx),
+                )
+            if _slot is not None:
+                _k_slot, _v_slot = _slot.unbind(0)
+                _tier_pass(
+                    cpu_idx, _k_slot, _v_slot,
+                    split.rolling_block_table, split.rolling_seqused_k,
+                    pre_sliced=True,
+                )
+            else:
+                _tier_pass(cpu_idx, key_cache, value_cache, block_table, seqused_k)
+        elif (
+            split.rolling_from_resident
+            and split.cpu_sorted_ids is not None
+            and split.rolling_block_table is not None
+            and split.rolling_seqused_k is not None
+        ):
+            kc = key_cache.index_select(0, split.cpu_sorted_ids)
+            vc = value_cache.index_select(0, split.cpu_sorted_ids)
+            _tier_pass(
+                cpu_idx, kc, vc,
+                split.rolling_block_table, split.rolling_seqused_k,
+                pre_sliced=True,
+            )
+        elif rk is not None and split.rolling_block_table is not None:
+            r_kc, r_vc = rk.unbind(0)
+            _tier_pass(
+                cpu_idx, r_kc, r_vc,
+                split.rolling_block_table,
+                split.rolling_seqused_k
+                if split.rolling_seqused_k is not None
+                else seqused_k,
+                pre_sliced=split.rolling_seqused_k is not None,
+            )
+        else:
+            _tier_pass(cpu_idx, key_cache, value_cache, block_table, seqused_k)
+        return True
+
     def forward(
         self,
         layer: torch.nn.Module,
@@ -711,6 +984,105 @@ class FlashAttentionImpl(AttentionImpl):
                     if self.sliding_window is not None
                     else None
                 )
+                # Hybrid tiered-KV: if the runner published an HBM/CPU row split
+                # for this decode step, run attention as two passes (one per
+                # tier), each over its own KV region. Returns True only when it
+                # fully handled the step; otherwise fall through to the standard
+                # single pass (identical to upstream).
+                #
+                # VLLM_KVPIPE_HYBRID_TWOPASS=2 is a self-verify mode: compute the
+                # standard single pass into a scratch buffer on the SAME inputs
+                # and compare against the two-pass output, in-process, so the
+                # check is immune to cross-run batching nondeterminism.
+                # rung-d serve-more override: the standard single pass runs for
+                # ALL rows; then the CPU *decode* rows' output is overwritten
+                # with attention over their host-block-id pool. Works on any step
+                # (incl. while other requests prefill).
+                from vllm.v1.hybrid_attn_ctx import get_hybrid_decode_split
+                _split = get_hybrid_decode_split()
+                _pool_override = (
+                    _split is not None
+                    and getattr(_split, "rungd_pool", None) is not None
+                )
+                _hybrid_verify = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS") == "2"
+                _ref = None
+                if _hybrid_verify:
+                    _ref = torch.empty_like(output[:num_actual_tokens])
+                    flash_attn_varlen_func(
+                        q=query[:num_actual_tokens],
+                        k=key_cache,
+                        v=value_cache,
+                        out=_ref,
+                        cu_seqlens_q=cu_seqlens_q,
+                        max_seqlen_q=max_seqlen_q,
+                        seqused_k=seqused_k,
+                        max_seqlen_k=max_seqlen_k,
+                        softmax_scale=self.scale,
+                        causal=attn_metadata.causal,
+                        alibi_slopes=self.alibi_slopes,
+                        window_size=sliding_window_size,
+                        block_table=block_table,
+                        softcap=self.logits_soft_cap,
+                        scheduler_metadata=scheduler_metadata,
+                        fa_version=self.vllm_flash_attn_version,
+                        q_descale=layer._q_scale.expand(descale_shape),
+                        k_descale=layer._k_scale.expand(descale_shape),
+                        v_descale=layer._v_scale.expand(descale_shape),
+                        num_splits=attn_metadata.max_num_splits,
+                        s_aux=self.sinks,
+                    )
+                if not _pool_override and self._maybe_hybrid_two_pass(
+                    layer=layer,
+                    query=query,
+                    key=key,
+                    value=value,
+                    key_cache=key_cache,
+                    value_cache=value_cache,
+                    output=output,
+                    num_actual_tokens=num_actual_tokens,
+                    max_seqlen_k=max_seqlen_k,
+                    seqused_k=seqused_k,
+                    block_table=block_table,
+                    sliding_window_size=sliding_window_size,
+                    causal=attn_metadata.causal,
+                ):
+                    if _ref is not None:
+                        _o = output[:num_actual_tokens]
+                        _d = (_o.float() - _ref.float()).abs()
+                        _bad = int((_d.amax(dim=tuple(range(1, _d.ndim))) > 0).sum())
+                        logger.info(
+                            "HYBRID two-pass verify [%s]: max|diff|=%.3e "
+                            "mismatched_rows=%d/%d",
+                            getattr(layer, "layer_name", "?"),
+                            float(_d.max()), _bad, num_actual_tokens,
+                        )
+                    return output
+                # opt #5: when the pool override recomputes the CPU decode rows,
+                # skip their expensive KV reads in the standard pass (attend a
+                # single key; their output is overwritten below).
+                _seqused_std = seqused_k
+                _crr = getattr(_split, "cpu_req_rows", None) if _pool_override else None
+                # NOT `int(_crr.max())`: that is a device reduction plus a
+                # .item(), i.e. a full pipeline drain, run once per layer on
+                # the hot path. The runner already knows this value from the
+                # Python list it built the tensor from.
+                _crr_max = getattr(_split, "cpu_req_rows_max", None)
+                if (
+                    _crr is not None and _crr.numel() > 0
+                    and _crr_max is not None
+                    and _crr_max < seqused_k.shape[0]
+                ):
+                    # Loop-invariant: `seqused_k` comes from attn_metadata and
+                    # `_crr` from the split, so all 64 layers were allocating,
+                    # copying and scattering to produce the SAME tensor. The
+                    # split is rebuilt every step, so caching on it is scoped
+                    # correctly by construction.
+                    _seqused_std = getattr(_split, "seqused_masked", None)
+                    if (_seqused_std is None
+                            or _seqused_std.shape != seqused_k.shape):
+                        _seqused_std = seqused_k.clone()
+                        _seqused_std.index_fill_(0, _crr, 1)
+                        _split.seqused_masked = _seqused_std
                 flash_attn_varlen_func(
                     q=query[:num_actual_tokens],
                     k=key_cache,
@@ -718,7 +1090,7 @@ class FlashAttentionImpl(AttentionImpl):
                     out=output[:num_actual_tokens],
                     cu_seqlens_q=cu_seqlens_q,
                     max_seqlen_q=max_seqlen_q,
-                    seqused_k=seqused_k,
+                    seqused_k=_seqused_std,
                     max_seqlen_k=max_seqlen_k,
                     softmax_scale=self.scale,
                     causal=attn_metadata.causal,
@@ -734,6 +1106,21 @@ class FlashAttentionImpl(AttentionImpl):
                     num_splits=attn_metadata.max_num_splits,
                     s_aux=self.sinks,
                 )
+                if _pool_override:
+                    self._pool_cpu_override(
+                        _split, layer, query, key, value, output,
+                        num_actual_tokens, sliding_window_size,
+                    )
+                    if _ref is not None:
+                        _o = output[:num_actual_tokens]
+                        _d = (_o.float() - _ref.float()).abs()
+                        _bad = int((_d.amax(dim=tuple(range(1, _d.ndim))) > 0).sum())
+                        logger.info(
+                            "HYBRID two-pass verify [%s]: max|diff|=%.3e "
+                            "mismatched_rows=%d/%d",
+                            getattr(layer, "layer_name", "?"),
+                            float(_d.max()), _bad, num_actual_tokens,
+                        )
                 return output
 
         # Cascade attention (rare case).

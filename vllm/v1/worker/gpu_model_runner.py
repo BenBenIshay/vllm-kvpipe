@@ -819,6 +819,685 @@ class GPUModelRunner(
                 decode_threshold=self.reorder_batch_threshold,
             )
 
+    def _apply_rungd_block_rewrites(self, scheduler_output) -> None:
+        """Replace a request's entire block row with the list the scheduler
+        sent.
+
+        Promotion out of the host tier refills the null placeholders left by
+        the prefill reclaim. Those block ids sit at positions the runner
+        already has, so `new_block_ids` (which only appends) cannot carry
+        them -- this overwrites the row instead.
+        """
+        rewrites = getattr(scheduler_output, "rewrite_block_ids", None)
+        if not rewrites:
+            return
+        for req_id, block_ids in rewrites.items():
+            req_state = self.requests.get(req_id)
+            if req_state is None:
+                continue
+            req_state.block_ids = (list(block_ids),)
+            req_index = self.input_batch.req_id_to_index.get(req_id)
+            if req_index is None:
+                continue          # not in the persistent batch; added with the
+                                  # new block_ids above when it re-enters
+            self.input_batch.block_table.add_row(req_state.block_ids, req_index)
+
+    def _maybe_restore_promoted(self, scheduler_output, attn_metadata) -> None:
+        """Copy a promoted request's KV from the host pool back into its
+        resident blocks, before anything reads them.
+
+        The scheduler only commits a promotion after verifying the request has
+        resident blocks covering its WHOLE sequence (the hole left by its
+        host-tier steps is filled by that step's allocate_slots). Here we fill
+        those blocks with the authoritative host copy.
+        """
+        ids = getattr(scheduler_output, "promote_req_ids", None)
+        if not ids:
+            return
+        pool = getattr(self, "_rungd_pool", None)
+        if pool is None:
+            return
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        seq_lens = getattr(meta0, "seq_lens", None)
+        if bt is None or seq_lens is None:
+            logger.warning(
+                "hybrid-kv tiers: cannot restore promoted requests %s "
+                "(no block table this step); they will be re-promoted.", ids)
+            return
+        import math
+        bt_cpu = bt.cpu()
+        seq_cpu = seq_lens.cpu()
+        bs = self.cache_config.block_size
+        for i in range(min(len(self.input_batch._req_ids), bt_cpu.shape[0])):
+            rid = self.input_batch._req_ids[i]
+            if rid not in ids:
+                continue
+            nb = max(1, math.ceil(int(seq_cpu[i]) / bs))
+            if nb > bt_cpu.shape[1]:
+                logger.warning(
+                    "hybrid-kv tiers: promoted %s needs %d blocks but the "
+                    "block table has %d; skipping restore.",
+                    rid, nb, bt_cpu.shape[1])
+                continue
+            resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
+            pool.restore_req(rid, resident_ids)
+            # Its HBM copy is authoritative again; release the host extent.
+            pool.free_req(rid)
+
+    def _maybe_set_hybrid_decode_split(
+        self,
+        num_reqs: int,
+        num_tokens_unpadded: int,
+        req_kv_tiers: dict[str, str] | None = None,
+        attn_metadata=None,
+    ) -> None:
+        """Publish this step's HBM/CPU decode-row split for the attention impl.
+
+        Gated hard: only when VLLM_KVPIPE_HYBRID_TWOPASS=1, the step is a pure
+        decode (exactly one query token per request, so query-row i == request
+        index i), and the batch is genuinely mixed (both tiers present). In
+        every other case the split is cleared and attention runs its standard
+        single pass. This is the runner-side half of the two-pass dual-region
+        decode; see vllm/v1/hybrid_attn_ctx.py.
+        """
+        import os
+
+        from vllm.v1.hybrid_attn_ctx import (
+            HybridDecodeSplit,
+            clear_hybrid_decode_split,
+            set_hybrid_decode_split,
+        )
+
+        if os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS", "0") not in ("1", "2"):
+            return  # feature off — never touch the context ("2" = self-verify)
+        _dbg = os.environ.get("VLLM_KVPIPE_HYBRID_TWOPASS_DEBUG", "0") == "1"
+        # rung-d serve-more: pool-manage CPU DECODE rows on EVERY step (incl.
+        # steps where other requests prefill), via a standard-pass + CPU-decode
+        # override. This avoids losing a CPU request's tokens on non-pure-decode
+        # steps. Handled entirely here; returns before the two-pass gate.
+        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1":
+            self._setup_rungd_pool_path(
+                num_reqs, req_kv_tiers, attn_metadata, _dbg
+            )
+            return
+        # Pure decode only: one token per request keeps query rows aligned to
+        # request indices (and thus to block_table rows).
+        if num_tokens_unpadded != num_reqs or num_reqs == 0:
+            if _dbg:
+                logger.info(
+                    "HYBRID two-pass split SKIP (not pure decode): "
+                    "num_reqs=%d num_tokens=%d",
+                    num_reqs, num_tokens_unpadded,
+                )
+            clear_hybrid_decode_split()
+            return
+        # Prefer this step's fresh tiers from the scheduler (the same source the
+        # connector splits on); fall back to the InputBatch dict (set at add).
+        fresh = req_kv_tiers or {}
+        tiers = self.input_batch.kv_tier_by_req_id
+        r2i = self.input_batch.req_id_to_index
+        hbm_rows: list[int] = []
+        cpu_rows: list[int] = []
+        for req_id, idx in r2i.items():
+            if idx >= num_reqs:
+                continue
+            tier = fresh.get(req_id) or tiers.get(req_id, "hbm")
+            if tier == "cpu":
+                cpu_rows.append(idx)
+            else:
+                hbm_rows.append(idx)
+        # Only a genuinely mixed batch benefits from the split; a homogeneous
+        # batch is handled correctly (and faster) by the single pass.
+        if _dbg:
+            logger.info(
+                "HYBRID two-pass split: num_reqs=%d num_tokens=%d hbm=%d cpu=%d "
+                "tier_sample=%s",
+                num_reqs, num_tokens_unpadded, len(hbm_rows), len(cpu_rows),
+                {k: tiers.get(k, "hbm") for k in list(r2i)[:8]},
+            )
+        # rung-d serve-more: the CPU cohort must be pool-managed on EVERY pure-
+        # decode step (an all-CPU step still needs the pool, else its tokens go
+        # to resident and the pool loses them). Other paths need a genuine mix.
+        _free_gate = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+        if not cpu_rows or (not hbm_rows and not _free_gate):
+            clear_hybrid_decode_split()
+            return
+        dev = self.device
+        split = HybridDecodeSplit(
+            hbm_idx=torch.tensor(hbm_rows, dtype=torch.int64, device=dev),
+            cpu_idx=torch.tensor(cpu_rows, dtype=torch.int64, device=dev),
+        )
+        # Rung-c: compact the CPU cohort's resident blocks and give the CPU pass
+        # a remapped block table so it attends a compacted [0:W) layout. Proves
+        # the compacted dual-region attention == resident before the rung-d
+        # memory saving (host->rolling stream + block-manager free).
+        _rungd = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD", "0") == "1"
+        _free = os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_FREE", "0") == "1"
+        if _free:
+            # serve-more path: host-block-id pool, resident blocks reclaimed.
+            self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, _dbg)
+        elif _rungd or os.environ.get("VLLM_KVPIPE_HYBRID_ROLLING", "0") == "1":
+            self._build_rolling_compaction(split, cpu_rows, attn_metadata, _dbg)
+            if _rungd:
+                self._maybe_setup_rungd(split, _dbg)
+        if _rungd or _free:
+            # rung-d FREE: the CPU cohort's KV is fully host-managed, so skip its
+            # resident write (slot_mapping = -1). This makes the CPU rows'
+            # main-pool blocks unnecessary — the precondition for capping their
+            # allocation (serve-more). Gated separately so the =2 read/write
+            # verify (which references resident) stays valid without it.
+            if split.rungd and _free and os.environ.get(
+                "VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1"
+            ) == "1":
+                metas = attn_metadata
+                if isinstance(metas, dict):
+                    metas = list(metas.values())
+                elif not isinstance(metas, (list, tuple)):
+                    metas = [metas]
+                seen = set()
+                for m in metas:
+                    sm = getattr(m, "slot_mapping", None)
+                    if sm is None or id(sm) in seen:
+                        continue
+                    seen.add(id(sm))
+                    ci = torch.tensor(cpu_rows, dtype=torch.long, device=sm.device)
+                    ci = ci[ci < sm.shape[0]]
+                    sm.index_fill_(0, ci, -1)
+        set_hybrid_decode_split(split)
+
+    def _maybe_setup_rungd(self, split, dbg: bool) -> None:
+        """Attach the host-streamed rolling region (HybridCpuStreamer) so the CPU
+        pass reads its KV from a k_window-shared rolling region streamed from a
+        host mirror — the serve-more mechanism. Reuses the compaction fields set
+        by _build_rolling_compaction. Correctness gate keeps the CPU cohort
+        resident as an ignored backstop (save_layer captures the current token
+        from resident); the block-free comes after.
+        """
+        if split.cpu_sorted_ids is None or split.rolling_block_table is None:
+            return
+        from vllm.attention.layer import Attention
+        from vllm.v1.hybrid_cpu_stream import HybridCpuStreamer
+
+        if getattr(self, "_rungd_streamer", None) is None:
+            attn_layers = self.compilation_config.static_forward_context
+            kv_dict: dict = {}
+            for name, mod in attn_layers.items():
+                if isinstance(mod, Attention):
+                    kc = getattr(mod, "kv_cache", None)
+                    if kc and len(kc) > 0 and kc[0].numel() > 0:
+                        kv_dict[name] = kc[0]
+            if not kv_dict:
+                return
+            try:
+                ordered = list(self.kv_cache_config.kv_cache_groups[0].layer_names)
+            except Exception:
+                ordered = list(kv_dict.keys())
+            ordered = [n for n in ordered if n in kv_dict]
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            streamer = HybridCpuStreamer(kv_dict, ordered)
+            streamer.build_rolling_region(k_window, w_max_blocks=512)
+            self._rungd_streamer = streamer
+            self._rungd_layer_index = {n: i for i, n in enumerate(ordered)}
+            if dbg:
+                logger.info(
+                    "HYBRID rung-d: streamer ready, %d layers, k_window=%d",
+                    len(ordered), k_window,
+                )
+        streamer = self._rungd_streamer
+        try:
+            streamer.set_cpu_cohort(split.cpu_sorted_ids.tolist())
+        except ValueError as e:
+            if dbg:
+                logger.info("HYBRID rung-d: skip step (%s)", e)
+            return
+        # Seed each block's history to the host mirror once (before the forward
+        # writes this step's token); per-token updates come from the impl's
+        # write_current_token. This makes the CPU cohort's KV self-sufficient on
+        # host, with no dependence on resident for correctness.
+        streamer.seed_blocks(split.cpu_sorted_ids.tolist())
+        split.rungd = True
+        split.rungd_streamer = streamer
+        split.rungd_layer_index = self._rungd_layer_index
+
+    def _setup_rungd_pool_path(
+        self, num_reqs: int, req_kv_tiers, attn_metadata, dbg: bool
+    ) -> None:
+        """rung-d serve-more entry: identify CPU *decode* rows on ANY step and
+        pool-manage them (standard pass + CPU-decode override in the impl)."""
+        import os
+
+        from vllm.v1.hybrid_attn_ctx import (
+            HybridDecodeSplit,
+            clear_hybrid_decode_split,
+            set_hybrid_decode_split,
+        )
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        qsl = getattr(meta0, "query_start_loc", None)
+        if qsl is None or num_reqs == 0:
+            clear_hybrid_decode_split()
+            return
+        qsl_np = qsl.cpu().numpy()
+        fresh = req_kv_tiers or {}
+        tiers = self.input_batch.kv_tier_by_req_id
+        cpu_rows: list[int] = []       # request row index (block_table / seq_lens)
+        cpu_qidx: list[int] = []       # query token index of that row's decode token
+        stray_qidx: list[int] = []     # pool-managed rows with a non-decode shape
+        _pool = getattr(self, "_rungd_pool", None)
+        for i in range(num_reqs):
+            if i + 1 >= len(qsl_np):
+                break
+            rid = self.input_batch._req_ids[i]
+            tier = fresh.get(rid) or tiers.get(rid, "hbm")
+            qlen = int(qsl_np[i + 1] - qsl_np[i])
+            if qlen != 1:
+                # Not a decode row (prefill / chunked / speculative). If this
+                # request is already pool-managed its resident blocks may have
+                # been reclaimed and handed to someone else, so its write MUST
+                # still be suppressed -- writing there would corrupt another
+                # request's KV. The pool only tracks one token per step, so we
+                # also say so loudly: this shape is not supported.
+                if (
+                    tier == "cpu"
+                    and _pool is not None
+                    and rid in _pool.req_seeded
+                ):
+                    stray_qidx.extend(range(int(qsl_np[i]), int(qsl_np[i + 1])))
+                    if not getattr(self, "_rungd_stray_warned", False):
+                        logger.warning(
+                            "hybrid-kv tiers: pool-managed request %s scheduled "
+                            "with query length %d (expected 1). Its resident "
+                            "write is suppressed to protect reclaimed blocks, "
+                            "but the pool records only one token per step -- "
+                            "speculative decoding is not supported with the "
+                            "host tier.", rid, qlen)
+                        self._rungd_stray_warned = True
+                continue
+            if tier == "cpu":
+                cpu_rows.append(i)
+                cpu_qidx.append(int(qsl_np[i]))
+        if stray_qidx:
+            self._rungd_skip_cpu_resident_write(attn_metadata, stray_qidx, self.device)
+        if not cpu_rows:
+            clear_hybrid_decode_split()
+            return
+        dev = self.device
+        split = HybridDecodeSplit(
+            hbm_idx=torch.empty(0, dtype=torch.int64, device=dev),
+            cpu_idx=torch.tensor(cpu_qidx, dtype=torch.int64, device=dev),
+        )
+        # Request-row indices (for masking CPU rows out of the standard pass).
+        split.cpu_req_rows = torch.tensor(cpu_rows, dtype=torch.int64, device=dev)
+        split.cpu_req_rows_max = max(cpu_rows) if cpu_rows else None
+        self._maybe_setup_rungd_pool(split, cpu_rows, attn_metadata, dbg)
+        # Skip the CPU decode tokens' resident write. When the pool set up OK
+        # this is because their KV lives in the pool; when it FAILED (should not
+        # happen with h_max sized to capacity) it is DEFENSIVE — the scheduler
+        # already capped these requests' blocks, so a resident write would land
+        # in a reused block and corrupt it. Either way, skip the write.
+        if os.environ.get("VLLM_KVPIPE_HYBRID_RUNGD_NOWRITE", "1") == "1":
+            self._rungd_skip_cpu_resident_write(attn_metadata, cpu_qidx, dev)
+        if not split.rungd:
+            if not getattr(self, "_rungd_pool_fail_warned", False):
+                logger.warning(
+                    "HYBRID rung-d: pool could not manage %d CPU-tier requests "
+                    "this step; they degrade (resident write skipped to avoid "
+                    "corruption). Raise VLLM_KVPIPE_RUNGD_HMAX if this recurs.",
+                    len(cpu_qidx),
+                )
+                self._rungd_pool_fail_warned = True
+            clear_hybrid_decode_split()
+            return
+        set_hybrid_decode_split(split)
+
+    def _rungd_stash_prefill(self, rid: str, seqlen: int, pool) -> None:
+        """Keep this request's freshly-seeded prefill KV, keyed by its prompt.
+
+        Phase 1 of the local P/D emulation. The request prefilled normally into
+        HBM and was seeded into the host tier by the ordinary path, so what is
+        captured here is real model output. Keeping it under a prompt key lets
+        it outlive this request and be claimed later by a decode-side request
+        admitted with no HBM at all -- which is what the prefill node hands the
+        decode node, without needing two engines to show it.
+
+        Off unless VLLM_KVPIPE_RUNGD_PREFILL_STASH=1: it costs a full CPU copy
+        of every request's KV, which is only worth paying in the bench that
+        consumes it.
+        """
+        import os
+
+        if os.environ.get("VLLM_KVPIPE_RUNGD_PREFILL_STASH", "0") != "1":
+            return
+        from vllm.v1.hybrid_pool_admit import get_stash_key, mark_stash_ready
+
+        key = get_stash_key(rid)
+        if key is None or pool.has_stash(key):
+            return
+        try:
+            pool.stash_from_host(key, rid, seqlen)
+        except RuntimeError as e:
+            # Never fail the step over the stash: without it the request simply
+            # stays an ordinary seeded rider, which is still correct.
+            logger.warning("hybrid-kv tiers: could not stash prefill for %s "
+                           "(%s)", rid, e)
+            return
+        mark_stash_ready(key)
+        from vllm.v1 import hybrid_pool_admit as _hpa
+        logger.info("hybrid-kv tiers: PREFILL STASHED %s (%d tokens) key=%s "
+                    "ready_count=%d pid=%d -- its KV can now seed a rider that "
+                    "owns no HBM", rid, seqlen, key[:12],
+                    _hpa.stash_ready_count(), os.getpid())
+
+    def _rungd_take_external_delivery(self, rid: str, seqlen: int, pool) -> bool:
+        """Take delivery of a rider's externally-supplied KV, if any.
+
+        Returns True if this request's KV came from outside and the pool is now
+        holding it, so the caller must NOT fall back to seeding from resident
+        blocks the request never owned.
+
+        In a P/D deployment the source is the prefill node, handed over by a KV
+        connector. `VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD=1` substitutes a
+        synthetic fill so the CAPACITY question -- how many riders can be held
+        at a fixed HBM budget -- can be measured before that transport exists.
+        Synthetic KV makes generated TOKENS meaningless, exactly like the bench
+        connectors' fake fills, so it must never be used for a token-identity
+        comparison.
+        """
+        # `os` is imported per-function in this module, not at module scope.
+        import os
+
+        from vllm.v1.hybrid_pool_admit import is_preloaded
+
+        from vllm.v1.hybrid_pool_admit import get_stash_key
+
+        if not is_preloaded(rid):
+            return False
+        # Real KV first: a prompt whose prefill was actually computed and
+        # stashed is served from that, never from a fill value.
+        key = get_stash_key(rid)
+        if key is not None and pool.has_stash(key):
+            n = pool.preload_from_stash(rid, key)
+            logger.info("hybrid-kv tiers: PRELOAD DELIVERED %s (%d tokens, "
+                        "REAL prefill KV) -- rider is pool-served and owns "
+                        "no HBM", rid, n)
+            return True
+        if os.environ.get("VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD", "0") != "1":
+            # Marked preloaded but nothing delivered it: refuse rather than
+            # invent KV. Seeding from an empty block table would be silent
+            # garbage, which is worse than a loud failure.
+            logger.warning(
+                "hybrid-kv tiers: %s is marked pool-preloaded but no KV was "
+                "delivered for it; it will be served from whatever the pool "
+                "holds. Wire a delivery source, or set "
+                "VLLM_KVPIPE_RUNGD_SYNTHETIC_PRELOAD=1 for a capacity-only run.",
+                rid)
+            pool.mark_seeded(rid)
+            return True
+        kv = {}
+        fill = float(os.environ.get("VLLM_KVPIPE_RUNGD_PRELOAD_FILL", "0.015"))
+        # Announce it: "were riders actually served from the pool" is the
+        # question any capacity result has to answer, and with preloaded riders
+        # there is no reclaim event to count (they never held a block).
+        logger.info("hybrid-kv tiers: PRELOAD DELIVERED %s (%d tokens, "
+                    "synthetic) -- rider is pool-served and owns no HBM",
+                    rid, seqlen)
+        for ln in pool.layers:
+            shp = pool.host_k[ln].shape          # [H, bs, nkv, hd]
+            k = torch.full((seqlen, shp[2], shp[3]), fill,
+                           dtype=pool.host_k[ln].dtype)
+            kv[ln] = (k, k.clone())
+        pool.preload_req(rid, seqlen, kv)
+        return True
+
+    def _drain_rungd_seed_ack(self) -> list[str] | None:
+        """Hand the scheduler the requests seeded into the host pool since the
+        last step, and clear the buffer. Draining (rather than reporting the
+        cumulative set) keeps the message O(newly seeded) and makes a dropped
+        output fail safe: an unreported request simply keeps its resident
+        blocks."""
+        ack = getattr(self, "_rungd_seeded_ack", None)
+        if not ack:
+            return None
+        self._rungd_seeded_ack = []
+        return ack
+
+    def _rungd_skip_cpu_resident_write(
+        self, attn_metadata, cpu_qidx: list[int], dev
+    ) -> None:
+        """Set the CPU decode rows' slot_mapping to -1 so reshape_and_cache skips
+        their resident write (their KV is pool-managed, and their main-pool
+        blocks are capped)."""
+        metas = attn_metadata
+        if isinstance(metas, dict):
+            metas = list(metas.values())
+        elif not isinstance(metas, (list, tuple)):
+            metas = [metas]
+        seen = set()
+        qi = torch.tensor(cpu_qidx, dtype=torch.long, device=dev)
+        for m in metas:
+            sm = getattr(m, "slot_mapping", None)
+            if sm is None or id(sm) in seen:
+                continue
+            seen.add(id(sm))
+            q = qi[qi < sm.shape[0]].to(sm.device)
+            sm.index_fill_(0, q, -1)
+
+    def _maybe_setup_rungd_pool(
+        self, split, cpu_rows: list[int], attn_metadata, dbg: bool
+    ) -> None:
+        """Serve-more: manage the CPU cohort's KV in a host-block-id pool so its
+        main-pool blocks can be reclaimed. Seeds each request's prefill from
+        resident once (before the scheduler frees it), then grows + streams +
+        write-redirects purely in the pool's own id space."""
+        import math
+        import os
+
+        from vllm.attention.layer import Attention
+        from vllm.v1.hybrid_rungd_pool import RungdHostPool
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        sl = getattr(meta0, "seq_lens", None)
+        if bt is None or sl is None:
+            return
+        dev = self.device
+        bs = self.cache_config.block_size
+        cpu_idx_t = torch.tensor(cpu_rows, dtype=torch.int64, device=bt.device)
+        bt_cpu = bt.index_select(0, cpu_idx_t).cpu().numpy()
+        seq_cpu = sl.index_select(0, cpu_idx_t).cpu().numpy()
+        req_ids = [self.input_batch._req_ids[r] for r in cpu_rows]
+
+        if getattr(self, "_rungd_pool", None) is None:
+            attn_layers = self.compilation_config.static_forward_context
+            kv_dict: dict = {}
+            for name, mod in attn_layers.items():
+                if isinstance(mod, Attention):
+                    kc = getattr(mod, "kv_cache", None)
+                    if kc and len(kc) > 0 and kc[0].numel() > 0:
+                        kv_dict[name] = kc[0]
+            if not kv_dict:
+                return
+            try:
+                ordered = list(self.kv_cache_config.kv_cache_groups[0].layer_names)
+            except Exception:
+                ordered = list(kv_dict.keys())
+            ordered = [n for n in ordered if n in kv_dict]
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            t0 = kv_dict[ordered[0]]
+            # Size the pool so it CANNOT exhaust for a valid workload: every
+            # concurrent CPU-tier request can hold its full sequence. h_max =
+            # max_num_seqs * ceil(max_model_len/block_size); the active compact
+            # region (w_max) is at most all of them. Overridable for headroom.
+            max_bpr = max(1, math.ceil(int(self.max_model_len) / bs))
+            max_seqs = int(getattr(self.scheduler_config, "max_num_seqs", 256) or 256)
+            h_max = max_seqs * max_bpr + 8
+            # Override (mainly for tuning/tests); keep >= capacity in production.
+            _env_h = os.environ.get("VLLM_KVPIPE_RUNGD_HMAX", "").strip()
+            if _env_h:
+                try:
+                    h_max = int(_env_h)
+                except ValueError:
+                    pass
+            pool = RungdHostPool(
+                layer_names=ordered, kv_shape=tuple(t0.shape), block_size=bs,
+                k_window=k_window, h_max_blocks=h_max, w_max_blocks=h_max,
+                device=dev, dtype=t0.dtype,
+                # Item 1b: contiguous per-request host extents so the per-step
+                # refresh is a few big memcpys, not a block-granular gather.
+                blocks_per_req=max_bpr,
+            )
+            pool.resident = kv_dict
+            self._rungd_pool = pool
+            self._rungd_layer_index = {n: i for i, n in enumerate(ordered)}
+            if dbg:
+                logger.info("HYBRID rung-d POOL ready: %d layers, k_window=%d",
+                            len(ordered), k_window)
+        pool = self._rungd_pool
+
+        seeded_now: list[str] = []
+        try:
+            for i, rid in enumerate(req_ids):
+                seqlen = int(seq_cpu[i])
+                nb = max(1, math.ceil(seqlen / bs))
+                pool.ensure_req(rid, nb)
+                if rid not in pool.req_seeded:
+                    # A preloaded rider was admitted with NO main-pool blocks,
+                    # so there is no resident copy to seed from -- its block
+                    # table is empty and reading it would seed garbage. Its KV
+                    # is delivered externally instead (`preload_req`); here we
+                    # only take delivery of whatever has arrived.
+                    if self._rungd_take_external_delivery(rid, seqlen, pool):
+                        seeded_now.append(rid)
+                        continue
+                    resident_ids = [int(bt_cpu[i, j]) for j in range(nb)]
+                    pool.seed_req(rid, resident_ids)
+                    self._rungd_stash_prefill(rid, seqlen, pool)
+                    seeded_now.append(rid)
+            rolling_bt, seqused = pool.build_step(
+                req_ids, [int(seq_cpu[i]) for i in range(len(req_ids))]
+            )
+        except RuntimeError as e:
+            if dbg:
+                logger.info("HYBRID rung-d POOL skip (%s)", e)
+            return
+        cur_comp, cur_off, cur_hb = [], [], []
+        for i, rid in enumerate(req_ids):
+            p = int(seq_cpu[i]) - 1
+            c, off = pool.compact_of(rid, p)
+            cur_comp.append(c)
+            cur_off.append(off)
+            cur_hb.append(pool.req_blocks[rid][p // bs])
+        split.rungd = True
+        split.rungd_pool = pool
+        split.rungd_layer_index = self._rungd_layer_index
+        split.rolling_block_table = rolling_bt.to(dev)
+        split.rolling_seqused_k = seqused.to(dev)
+        # `seqused` is still on the CPU here, so this max is free -- unlike the
+        # per-layer `int(ctx.seqused_k.max())` it replaces.
+        split.rolling_max_seqlen_k = int(seqused.max()) if seqused.numel() else 0
+        split.cpu_cu_seqlens_q = torch.arange(
+            0, len(req_ids) + 1, device=dev, dtype=torch.int32)
+        split.cpu_cur_compact = cur_comp
+        split.cpu_cur_offset = cur_off
+        split.cpu_cur_hostblock = cur_hb
+        # Loop-invariant across layers: derive the write positions once.
+        if cur_comp:
+            _off = torch.tensor(cur_off, dtype=torch.long)
+            split.cpu_slot_pos = (
+                torch.tensor(cur_comp, dtype=torch.long) * bs + _off).to(dev)
+            split.cpu_host_pos = (
+                torch.tensor(cur_hb, dtype=torch.long) * bs + _off)
+        # Only acknowledge the seed once the whole per-step setup has succeeded,
+        # i.e. this request really is being served from the pool. If build_step
+        # had failed we fall back to the resident path for this step, and the
+        # scheduler must NOT have freed the blocks that path reads.
+        if seeded_now:
+            ack = getattr(self, "_rungd_seeded_ack", None)
+            if ack is None:
+                ack = self._rungd_seeded_ack = []
+            ack.extend(seeded_now)
+        if dbg:
+            logger.info("HYBRID rung-d POOL step: n_cpu=%d W=%d",
+                        len(req_ids), pool._w_cur)
+
+    def _build_rolling_compaction(
+        self, split, cpu_rows: list[int], attn_metadata, dbg: bool
+    ) -> None:
+        """Fill split's rung-c compaction fields from the built attn metadata."""
+        import numpy as np
+
+        meta0 = attn_metadata
+        if isinstance(meta0, dict):
+            meta0 = next(iter(meta0.values()), None)
+        elif isinstance(meta0, (list, tuple)):
+            meta0 = meta0[0] if meta0 else None
+            if isinstance(meta0, dict):
+                meta0 = next(iter(meta0.values()), None)
+        bt = getattr(meta0, "block_table", None)
+        sl = getattr(meta0, "seq_lens", None)
+        if bt is None or sl is None:
+            return  # cannot compact without metadata; CPU pass stays on resident
+        dev = self.device
+        block_size = self.cache_config.block_size
+        cpu_idx_t = torch.tensor(cpu_rows, dtype=torch.int64, device=bt.device)
+        bt_cpu = bt.index_select(0, cpu_idx_t).cpu().numpy()   # [n_cpu, max_blk]
+        seq_cpu = sl.index_select(0, cpu_idx_t)                 # [n_cpu] on device
+        seq_np = seq_cpu.cpu().numpy()
+        n_cpu, max_blk = bt_cpu.shape
+        # Valid blocks per row = ceil(seq/block_size); collect their resident ids.
+        n_valid = [int((int(s) + block_size - 1) // block_size) for s in seq_np]
+        all_blocks = sorted({
+            int(bt_cpu[r, j]) for r in range(n_cpu) for j in range(min(n_valid[r], max_blk))
+        })
+        cmap = {b: i for i, b in enumerate(all_blocks)}
+        remapped = np.zeros((n_cpu, max_blk), dtype=np.int32)
+        for r in range(n_cpu):
+            for j in range(min(n_valid[r], max_blk)):
+                remapped[r, j] = cmap[int(bt_cpu[r, j])]
+        split.rolling_from_resident = True
+        split.cpu_sorted_ids = torch.tensor(all_blocks, dtype=torch.int64, device=dev)
+        split.rolling_block_table = torch.from_numpy(remapped).to(dev)
+        split.rolling_seqused_k = seq_cpu.to(dev).to(torch.int32)
+        # Current-token position per CPU row (for the write-redirect).
+        cur_res, cur_cmp, cur_off = [], [], []
+        for r in range(n_cpu):
+            p = int(seq_np[r]) - 1
+            bidx = p // block_size
+            if bidx >= max_blk:
+                cur_res.append(-1); cur_cmp.append(-1); cur_off.append(0)
+                continue
+            rb = int(bt_cpu[r, bidx])
+            cur_res.append(rb)
+            cur_cmp.append(cmap.get(rb, -1))
+            cur_off.append(p % block_size)
+        split.cpu_cur_resident = cur_res
+        split.cpu_cur_compact = cur_cmp
+        split.cpu_cur_offset = cur_off
+        if dbg:
+            logger.info(
+                "HYBRID rolling compaction: n_cpu=%d W=%d max_blk=%d",
+                n_cpu, len(all_blocks), max_blk,
+            )
+
     # Note: used for model runner override.
     def _init_device_properties(self) -> None:
         """Initialize attributes from torch.cuda.get_device_properties"""
@@ -840,9 +1519,21 @@ class GPUModelRunner(
         new/resumed/paused/finished request in the batch.
         """
         # Remove finished requests from the cached states.
+        _rungd_pool = getattr(self, "_rungd_pool", None)
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
             self.num_prompt_logprobs.pop(req_id, None)
+            # rung-d: return the request's host-pool blocks + clear its seeded
+            # state so the host block-id pool does not leak over a long run.
+            if _rungd_pool is not None:
+                _rungd_pool.free_req(req_id)
+        # A preempted request recomputes its prefill from scratch into freshly
+        # allocated resident blocks, so the pool's copy of its KV -- and its
+        # "already seeded" mark -- are stale. Drop them, or it would be served
+        # from the previous attempt's host data.
+        if _rungd_pool is not None and scheduler_output.preempted_req_ids:
+            for req_id in scheduler_output.preempted_req_ids:
+                _rungd_pool.free_req(req_id)
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
         # scheduled_req_ids overlap. This happens when a request is aborted and
@@ -915,6 +1606,7 @@ class GPUModelRunner(
                 num_computed_tokens=new_req_data.num_computed_tokens,
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
+                kv_tier=(scheduler_output.req_kv_tiers or {}).get(req_id, "hbm"),
             )
             self.requests[req_id] = req_state
 
@@ -1061,6 +1753,11 @@ class GPUModelRunner(
         self.input_batch.condense()
         # Allow attention backend to reorder the batch, potentially
         self._may_reorder_batch(scheduler_output)
+        # Hybrid-KV: overwrite whole block rows for requests whose null
+        # placeholders the scheduler just refilled for promotion. Done after
+        # condense/reorder so the row indices are final, and before
+        # refresh_metadata so attention sees the new blocks.
+        self._apply_rungd_block_rewrites(scheduler_output)
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
@@ -3289,6 +3986,20 @@ class GPUModelRunner(
             # Mark KV scales as calculated after the first forward pass
             self.calculate_kv_scales = False
 
+        # Hybrid tiered-KV: compute this step's HBM/CPU row split so the
+        # attention impl can run a two-pass (dual-region) decode. No-op unless
+        # VLLM_KVPIPE_HYBRID_TWOPASS=1 and the step is a genuinely mixed pure
+        # decode; leaves the standard single-pass path untouched otherwise.
+        # Promotion phase 2 (runner half): restore host->resident BEFORE the
+        # split is computed and before attention runs. These requests' tier
+        # already reads "hbm", so their resident blocks must be correct now.
+        self._maybe_restore_promoted(scheduler_output, attn_metadata)
+
+        self._maybe_set_hybrid_decode_split(
+            num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers,
+            attn_metadata,
+        )
+
         # Run the model.
         # Use persistent buffers for CUDA graphs.
         with (
@@ -3532,6 +4243,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                kv_tier_seeded_req_ids=self._drain_rungd_seed_ack(),
             )
 
         if not self.use_async_scheduling:

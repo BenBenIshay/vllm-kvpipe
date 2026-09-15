@@ -91,6 +91,9 @@ class PipelinedDecodeBenchConnectorMetadata(KVConnectorMetadata):
     decode_block_runs: list[tuple[int, int]] = field(default_factory=list)
     decode_physical_block_ids: list[int] = field(default_factory=list)
     finished_req_ids: list[str] = field(default_factory=list)
+    req_kv_tiers: dict[str, str] = field(default_factory=dict)
+    cpu_decode_req_ids: list[str] = field(default_factory=list)
+    hbm_decode_req_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +125,20 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         # --- config knobs ---
         cache_cfg = vllm_config.cache_config
+        sched_cfg = vllm_config.scheduler_config
+        self._hybrid_tiers = bool(
+            getattr(sched_cfg, "enable_hybrid_kv_tiers", False)
+        )
         # This connector is used only for dummy decode-only P/D benchmarking.
         # Treat it as decode-only even if the derived cache flag is not visible
-        # yet during early engine construction.
-        self._decode_only = True
+        # yet during early engine construction — unless hybrid tiers keep full
+        # HBM-resident KV for the HBM cohort.
+        self._decode_only = not self._hybrid_tiers
         self._block_size = cache_cfg.block_size
         self._init_direct_k_window(
-            vllm_config, k_window=int(getattr(cache_cfg, "kv_k_window", 4)), decode_only=True
+            vllm_config,
+            k_window=int(getattr(cache_cfg, "kv_k_window", 4)),
+            decode_only=self._decode_only,
         )
 
         # Fill parameters (from extra config)
@@ -157,6 +167,18 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._decode_block_runs: list[tuple[int, int]] = []
         self._decode_physical_block_ids: list[int] = []
         self._worker_registered_reqs: set[str] = set()
+        self._hbm_tier_req_ids: set[str] = set()
+        # Hybrid mixed-batch (Option B) build gate. B0 (off): hybrid mode runs
+        # resident-only (no CPU-tier streaming) so the mixed step is correct and
+        # crash-free. B1 (VLLM_KVPIPE_HYBRID_STREAM=1) streams the CPU cohort's
+        # KV to CPU and refreshes their resident blocks per layer. Env-gated so
+        # the default stays on the safe B0 path while B1 is validated.
+        self._hybrid_stream_cpu: bool = bool(
+            int(os.environ.get("VLLM_KVPIPE_HYBRID_STREAM", "0"))
+        )
+        # Clean CPU-tier streamer (Option B), decoupled from DirectKWindow.
+        self._hybrid_streamer = None
+        self._hybrid_use_streamer: bool = False
 
         # Block inflation (decode-only P/D mode)
         self._num_blocks_pipelined: int | None = None
@@ -401,6 +423,24 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
 
         self._forward_context = forward_context
         self._has_decode_work = metadata.has_decode_work
+        # Skip the rolling-window prefetch/wait/save path when: (a) all decode
+        # reqs are HBM-tier, or (b) CPU streaming is not yet enabled (B0
+        # resident-only). In both cases every row reads resident HBM KV.
+        self._hybrid_hbm_only_decode = self._hybrid_tiers and metadata.has_decode_work and (
+            not metadata.cpu_decode_req_ids or not self._hybrid_stream_cpu
+        )
+        if self._hybrid_tiers and (
+            metadata.hbm_decode_req_ids or metadata.cpu_decode_req_ids
+        ) and not getattr(self, "_logged_cohort_split", False):
+            logger.info(
+                "HYBRID cohort split: %d hbm + %d cpu decode reqs "
+                "(stream_cpu=%s, hbm_only_path=%s)",
+                len(metadata.hbm_decode_req_ids),
+                len(metadata.cpu_decode_req_ids),
+                self._hybrid_stream_cpu,
+                self._hybrid_hbm_only_decode,
+            )
+            self._logged_cohort_split = True
         self._decode_max_seq_len = metadata.decode_max_seq_len
         self._decode_max_block_id = metadata.decode_max_block_id
         self._decode_block_runs = metadata.decode_block_runs
@@ -410,6 +450,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             if self._worker_state is not None:
                 self._worker_state.release_req_blocks(req_id)
             self._worker_registered_reqs.discard(req_id)
+            self._hbm_tier_req_ids.discard(req_id)
 
         phys_for_step = self._decode_physical_block_ids or [
             b
@@ -424,7 +465,20 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             self._fill_kv_on_gpu(metadata.reqs_to_fill)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
-            self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
+            if self._hybrid_tiers:
+                cpu_fills = {
+                    req_id: fill
+                    for req_id, fill in metadata.reqs_to_fill.items()
+                    if metadata.req_kv_tiers.get(req_id, "cpu") == "cpu"
+                }
+                for req_id in metadata.reqs_to_fill:
+                    if metadata.req_kv_tiers.get(req_id) == "hbm":
+                        self._hbm_tier_req_ids.add(req_id)
+                # B1 (clean streamer path) stages the CPU cohort lazily on the
+                # first decode step via HybridCpuStreamer.stage_new_blocks; no
+                # CpuKvTable staging here.
+            else:
+                self._stage_all_layers_to_cpu(metadata.reqs_to_fill)
             t2 = time.perf_counter()
             self._total_fill_time += t1 - t0
             self._total_stage_time += t2 - t1
@@ -436,8 +490,30 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
                 len(metadata.reqs_to_fill),
             )
 
+        # --- Hybrid CPU-tier streaming (Option B, clean path) --------------
+        # Decoupled from DirectKWindow: mirror the CPU cohort's resident blocks
+        # to host and refresh them per layer (per-layer hooks). Bypasses Phase 2.
+        self._hybrid_use_streamer = False
+        if (
+            self._hybrid_tiers
+            and self._hybrid_stream_cpu
+            and metadata.has_decode_work
+            and metadata.cpu_decode_req_ids
+        ):
+            self._ensure_hybrid_streamer()
+            if self._hybrid_streamer is not None:
+                self._hybrid_use_streamer = True
+                # decode_physical_block_ids is already restricted to the CPU cohort.
+                self._hybrid_streamer.stage_new_blocks(
+                    self._decode_physical_block_ids or []
+                )
+                return  # skip DirectKWindow Phase 2; hooks drive the streamer
+
         # --- Phase 2: Bind window buffers + prefetch -----------------------
         if not metadata.has_decode_work:
+            return
+
+        if self._hybrid_hbm_only_decode:
             return
 
         if prof is not None:
@@ -498,7 +574,23 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         if prof is not None:
             prof.fwd.start_load_host_ms += (time.perf_counter() - t_start) * 1000.0
 
+    def _ensure_hybrid_streamer(self) -> None:
+        if self._hybrid_streamer is not None or self._kv_caches is None:
+            return
+        from vllm.v1.hybrid_cpu_stream import HybridCpuStreamer
+        self._hybrid_streamer = HybridCpuStreamer(
+            self._kv_caches, list(self._layer_names)
+        )
+
     def wait_for_layer_load(self, layer_name: str) -> None:
+        # Clean hybrid streamer: refresh this layer's CPU-cohort resident blocks
+        # from the host mirror before attention reads them.
+        if getattr(self, "_hybrid_use_streamer", False):
+            if self._hybrid_streamer is not None:
+                self._hybrid_streamer.load_layer(layer_name)
+            return
+        if getattr(self, "_hybrid_hbm_only_decode", False):
+            return
         if self._worker_state is None:
             return
         prof = self._hook_profile
@@ -547,7 +639,15 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         attn_metadata: "AttentionMetadata",
         **kwargs: Any,
     ) -> None:
+        # Clean hybrid streamer: capture this layer's new decode-token KV for the
+        # CPU cohort back into the host mirror after attention.
+        if getattr(self, "_hybrid_use_streamer", False):
+            if self._hybrid_streamer is not None:
+                self._hybrid_streamer.save_layer(layer_name)
+            return
         if self._worker_state is None or not self._has_decode_work:
+            return
+        if getattr(self, "_hybrid_hbm_only_decode", False):
             return
         slot_mapping = getattr(attn_metadata, "slot_mapping", None)
         num_actual_tokens = getattr(attn_metadata, "num_actual_tokens", None)
@@ -864,6 +964,17 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             scheduler_output.scheduled_spec_decode_tokens.keys()
         )
         active_decode_req_ids = sorted(decode_req_ids) if decode_only else []
+        req_kv_tiers = dict(scheduler_output.req_kv_tiers or {})
+        if req_kv_tiers:
+            cpu_decode_req_ids = [
+                r for r in active_decode_req_ids if req_kv_tiers.get(r, "cpu") == "cpu"
+            ]
+            hbm_decode_req_ids = [
+                r for r in active_decode_req_ids if req_kv_tiers.get(r) == "hbm"
+            ]
+        else:
+            cpu_decode_req_ids = list(active_decode_req_ids)
+            hbm_decode_req_ids = []
         has_decode_work = len(active_decode_req_ids) > 0
 
         # When there are fills, the FIRST step has both new reqs (fill) and
@@ -898,7 +1009,17 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         if has_decode_work:
             max_bid = -1
             all_active_blocks: set[int] = set()
-            for blocks in self._active_req_blocks.values():
+            # Hybrid streaming: only the CPU-tier cohort's blocks are staged/
+            # streamed. Streaming HBM-tier blocks would round-trip (and corrupt)
+            # their resident KV through a CpuKvTable that was never staged for
+            # them. Restrict the prefetch/stage block set to the CPU cohort.
+            if self._hybrid_tiers and self._hybrid_stream_cpu:
+                block_src = (
+                    self._active_req_blocks.get(r) for r in cpu_decode_req_ids
+                )
+            else:
+                block_src = self._active_req_blocks.values()
+            for blocks in block_src:
                 if blocks:
                     max_bid = max(max_bid, max(blocks))
                     all_active_blocks.update(blocks)
@@ -911,7 +1032,10 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         ] if decode_block_runs else []
 
         layers_to_prefetch: list[str] = []
-        if self._k_window > 0 and has_work and has_decode_work:
+        pipelined_decode = (
+            self._k_window > 0 and has_work and len(cpu_decode_req_ids) > 0
+        )
+        if pipelined_decode:
             layers_to_prefetch = self._layer_names[: self._k_window]
 
         return PipelinedDecodeBenchConnectorMetadata(
@@ -925,6 +1049,9 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
             decode_block_runs=decode_block_runs,
             decode_physical_block_ids=decode_physical_block_ids,
             finished_req_ids=list(scheduler_output.finished_req_ids),
+            req_kv_tiers=req_kv_tiers,
+            cpu_decode_req_ids=cpu_decode_req_ids,
+            hbm_decode_req_ids=hbm_decode_req_ids,
         )
 
     def request_finished(
