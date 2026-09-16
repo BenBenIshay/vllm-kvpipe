@@ -853,11 +853,32 @@ def mode_gate(a) -> int:
     from vllm.v1.hybrid_kv_roofline import max_offload_batch
 
     seq_tokens = a.seq_tokens or (a.ctx + a.out_len)
+    # THE HIDE WINDOW IS THE DECODE STEP, NOT THE SLO.
+    #
+    # A rider's KV has to cross the link inside the step it is needed for, so
+    # the window is the DECODE STEP -- measured here as the median pooled ITL.
+    # Feeding B1 the SLO instead (derived from TPOT) is what over-admitted:
+    # TPOT is a per-request mean and carries prefill interference, so at
+    # ctx 2048 it read 108 ms against a 54 ms step -- exactly 2x -- and the
+    # 1.5x SLO on top made the budget 3x too large. B1 then admitted 7 riders
+    # where the window justifies 2, and the step grew by 167 ms.
+    #
+    # The roofline and the measurement agree on the step: 38.6-54.6 ms
+    # predicted at batch 16 / ctx 2048 on A100, 53.93 ms measured.
+    window_ms = {"itl": t0_sum["median_itl_ms"],
+                 "tpot": t0_sum["median_tpot_ms"],
+                 "slo": slo_ms}[a.hide_window]
+    # And only the overlapped fraction of the window is usable. The roofline
+    # assumes all of it; measured on this path it is ~23% with the
+    # double-buffered prefetch on and ~0% with it off.
+    eff_window = window_ms * a.overlap_eff
     riders = (a.riders if a.riders >= 0 else
-              max_offload_batch(seq_tokens=seq_tokens, itl_ms=slo_ms,
+              max_offload_batch(seq_tokens=seq_tokens, itl_ms=eff_window,
                                 x_eff_gbps=a.link_gbps, b_tok=hp["b_tok"]))
-    theta = slo_ms / 1000.0 * a.link_gbps * 1e9 / hp["b_tok"]
-    print(f"  budget = {slo_ms:.1f} ms x {a.link_gbps:g} GB/s / "
+    theta = eff_window / 1000.0 * a.link_gbps * 1e9 / hp["b_tok"]
+    print(f"  hide window = {a.hide_window.upper()} {window_ms:.1f} ms "
+          f"x overlap {a.overlap_eff:g} = {eff_window:.1f} ms")
+    print(f"  budget = {eff_window:.1f} ms x {a.link_gbps:g} GB/s / "
           f"{hp['b_tok']} B/tok = {theta:,.0f} token-slots")
     print(f"  at {seq_tokens:,} tokens per rider -> {riders} rider(s)"
           + ("  [OVERRIDDEN by --riders]" if a.riders >= 0 else ""))
@@ -1170,6 +1191,16 @@ def main() -> int:
                    help="unused by the gate: residents stay FULL (b_hbm_max = "
                         "measured capacity) so riders are additional rather "
                         "than substitutional")
+    p.add_argument("--hide-window", default="itl", choices=("itl", "tpot", "slo"),
+                   help="which measured quantity is the window a rider's KV "
+                        "must cross the link inside. Default itl = the decode "
+                        "step. 'tpot' carries prefill interference (2x the "
+                        "step at ctx 2048) and 'slo' adds the 1.5x on top; "
+                        "either over-admits riders that cannot hide.")
+    p.add_argument("--overlap-eff", type=float, default=1.0,
+                   help="fraction of the window that actually overlaps "
+                        "compute. The roofline assumes 1.0; measured ~0.23 "
+                        "with the double-buffered prefetch, ~0 without.")
     p.add_argument("--rungd-async", action="store_true",
                    help="arm C: enable the double-buffered prefetch "
                         "(VLLM_KVPIPE_RUNGD_ASYNC=1). Off by default in the "
