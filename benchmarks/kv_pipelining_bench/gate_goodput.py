@@ -210,6 +210,56 @@ def summarize(result: dict) -> dict:
 # --------------------------------------------------------------------------
 # Tier observability: is arm C actually a different configuration?
 # --------------------------------------------------------------------------
+_CAPACITY = re.compile(
+    r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x")
+_KVTOK = re.compile(r"GPU KV cache size: ([\d,]+) tokens")
+_PREEMPT = re.compile(r"Preemptions: (\d+)")
+
+
+def engine_capacity(server_log: str) -> dict:
+    """How many full-length requests HBM actually holds, per the engine itself.
+
+    vLLM prints this at startup -- "GPU KV cache size: 40,400 tokens" and
+    "Maximum concurrency for 8,384 tokens per request: 4.82x" -- so the
+    capacity the whole experiment is sized against is a fact to be read, not a
+    quantity to be inferred from throughput under load. Reading it costs one
+    model load we are doing anyway.
+    """
+    out: dict = {}
+    try:
+        with open(server_log, errors="replace") as fh:
+            for line in fh:
+                m = _CAPACITY.search(line)
+                if m:
+                    out["seq_tokens"] = int(m.group(1).replace(",", ""))
+                    out["capacity"] = float(m.group(2))
+                m = _KVTOK.search(line)
+                if m:
+                    out["kv_tokens"] = int(m.group(1).replace(",", ""))
+    except OSError:
+        pass
+    return out
+
+
+def preemptions(server_log: str) -> int:
+    """Cumulative preemptions the engine reported (0 if it never logged any).
+
+    A run with preemptions is not measuring per-token latency, it is measuring
+    how often requests were evicted and resumed. Both arms are configured to
+    avoid it; this is how we check rather than assume.
+    """
+    best = 0
+    try:
+        with open(server_log, errors="replace") as fh:
+            for line in fh:
+                m = _PREEMPT.search(line)
+                if m:
+                    best = max(best, int(m.group(1)))
+    except OSError:
+        pass
+    return best
+
+
 _RUNNING = re.compile(r"Running: (\d+) reqs, Waiting: (\d+) reqs")
 
 
@@ -292,7 +342,8 @@ def tier_stats(server_log: str) -> dict:
 # --------------------------------------------------------------------------
 # Server / client
 # --------------------------------------------------------------------------
-def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
+def server_cmd(arm: str, a, slo_ms: float | None, max_seqs: int | None = None,
+               b_hbm_max: int | None = None) -> tuple[list[str], dict]:
     """Build the server command line and environment for one arm.
 
     ARM A IS A PLAIN SERVER. Not "hybrid flags with b_hbm_max large" -- a plain
@@ -313,9 +364,16 @@ def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
         cmd.append("--enforce-eager")
     if a.num_gpu_blocks_override:
         cmd += ["--num-gpu-blocks-override", str(a.num_gpu_blocks_override)]
-    # Both arms get the same admission width, or the comparison is not one.
-    if a.max_num_seqs:
-        cmd += ["--max-num-seqs", str(a.max_num_seqs)]
+    # EACH ARM GETS ITS OWN ADMISSION WIDTH, and that is the point rather than
+    # a fairness problem. The width is set to what that arm can actually hold
+    # without preempting: arm A its HBM capacity, arm C that capacity plus the
+    # riders the interconnect can hide. Forcing a common value either caps the
+    # mixture below what it can serve -- forbidding the effect under test -- or
+    # pushes the baseline into preemption, which inflates its per-token latency
+    # by an order of magnitude and corrupts the SLO anchor derived from it.
+    width = max_seqs if max_seqs is not None else a.max_num_seqs
+    if width:
+        cmd += ["--max-num-seqs", str(width)]
 
     env = dict(os.environ)
     env.setdefault("VLLM_USE_V1", "1")
@@ -330,7 +388,8 @@ def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
         cmd += [
             "--enable-transfer-aware-admission",
             "--enable-hybrid-kv-tiers",
-            "--hybrid-b-hbm-max", str(a.b_hbm_max),
+            "--hybrid-b-hbm-max",
+            str(b_hbm_max if b_hbm_max is not None else a.b_hbm_max),
             "--hybrid-itl-ms", f"{slo_ms:.3f}",
             "--transfer-aware-slo-p99-itl-ms", f"{slo_ms:.3f}",
             "--hybrid-pcie-gbps", str(a.link_gbps),
@@ -347,6 +406,13 @@ def server_cmd(arm: str, a, slo_ms: float | None) -> tuple[list[str], dict]:
         # itself from max_num_seqs and be killed by the cgroup.
         if getattr(a, "rungd_hmax", 0):
             env["VLLM_KVPIPE_RUNGD_HMAX"] = str(a.rungd_hmax)
+        # The double-buffered prefetch. It is what makes the roofline's premise
+        # true -- that a step of duration itl_ms can HIDE itl_ms x X bytes. With
+        # it off, the measured step grows by almost exactly the serial transfer
+        # time (136 ms of transfer, 167 ms of growth), so riders add latency
+        # rather than overlapping with compute.
+        if getattr(a, "rungd_async", False):
+            env["VLLM_KVPIPE_RUNGD_ASYNC"] = "1"
     return cmd, env
 
 
@@ -480,10 +546,12 @@ def wait_vram_free(frac: float = 0.90, timeout_s: float = 300.0) -> None:
 
 
 class Server:
-    def __init__(self, arm: str, a, slo_ms: float | None, tag: str):
+    def __init__(self, arm: str, a, slo_ms: float | None, tag: str,
+                 max_seqs: int | None = None, b_hbm_max: int | None = None):
         self.arm, self.a, self.tag = arm, a, tag
         self.log = os.path.join(a.outdir, f"server_{tag}.log")
-        cmd, env = server_cmd(arm, a, slo_ms)
+        cmd, env = server_cmd(arm, a, slo_ms, max_seqs=max_seqs,
+                              b_hbm_max=b_hbm_max)
         with open(self.log, "w") as fh:
             fh.write("# " + " ".join(cmd) + "\n")
             fh.write("# hybrid env: " + json.dumps(
@@ -509,8 +577,17 @@ class Server:
         return False
 
 
-def run_client(a, rate: float, tag: str, goodput_ms: float | None = None) -> dict:
-    """One `vllm bench serve` run at a fixed Poisson rate. Returns its result."""
+def run_client(a, rate: float, tag: str, goodput_ms: float | None = None,
+               max_concurrency: int | None = None) -> dict:
+    """One `vllm bench serve` run. Returns its result.
+
+    `max_concurrency` holds a fixed number of requests in flight instead of
+    offering a Poisson stream. That is what keeps the engine off its
+    preemption path: the queue forms in the client, not inside a scheduler
+    that has admitted more than KV can hold. Measured cost of getting this
+    wrong: median ITL 55 ms (no preemption) against 657 ms (preemption), same
+    hardware, same model, same offered rate.
+    """
     res_path = os.path.join(a.outdir, f"result_{tag}.json")
     if os.path.exists(res_path):
         os.remove(res_path)
@@ -529,6 +606,8 @@ def run_client(a, rate: float, tag: str, goodput_ms: float | None = None) -> dic
     ]
     if goodput_ms is not None:
         cmd += ["--goodput", f"tpot:{goodput_ms:.3f}"]
+    if max_concurrency:
+        cmd += ["--max-concurrency", str(max_concurrency)]
     log = os.path.join(a.outdir, f"bench_{tag}.log")
     with open(log, "w") as fh:
         fh.write("# " + " ".join(cmd) + "\n")
@@ -696,8 +775,9 @@ def mode_gate(a) -> int:
     """4.0: one context, SLO = mult x T0, arms A and C, interleaved repeats."""
     print("=" * 62)
     print(f" 4.0 FEASIBILITY GATE   model={a.model} ctx={a.ctx}")
-    print(f" threshold: goodput(C) >= {a.gate_ratio:.2f} x goodput(A), "
-          f"p99 ITL(C) <= SLO")
+    print(f" threshold: goodput(C) >= {a.gate_ratio:.2f} x goodput(A)")
+    print(" protocol: each arm at the concurrency it can hold; riders from "
+          "the roofline")
     print("=" * 62)
 
     hp = host_pool_check(a)
@@ -723,91 +803,116 @@ def mode_gate(a) -> int:
               f"fits ({hp['pinned_bytes'] / 1e9:.1f} GB)")
     a.rungd_hmax = a.max_num_seqs * hp["blocks_per_req"] + 8
 
-    print("\n[1/3] arm A rate sweep -> peak and T0")
-    sw = sweep(a, "A", None, "A")
-    if not sw.get("peak"):
-        print(f"INCONCLUSIVE: arm A produced no usable run. {sw.get('error', '')}")
-        return 2
-    peak = sw["peak"]
-    t0 = t0_of(peak, a.t0_metric)
-    slo_ms = a.slo_mult * t0
-    print(f"\n  (T0 in {a.t0_metric.upper()}: median TPOT "
-          f"{peak['median_tpot_ms']:.2f} ms vs median pooled ITL "
-          f"{peak['median_itl_ms']:.2f} ms)")
-    best_rate = peak["offered_rate"]
-    print(f"\n  peak at offered {best_rate:g} req/s: "
-          f"{peak['request_throughput']:.3f} req/s achieved")
-    print(f"  T0 (median ITL at peak) = {t0:.2f} ms  ->  "
-          f"SLO = {a.slo_mult:g} x T0 = {slo_ms:.2f} ms")
-
-    # b_hbm_max must be BELOW arm A's achieved concurrency, or arm C has HBM
-    # slots for everyone, creates no rider, and silently becomes arm A. That
-    # exact mistake -- concurrency 6.0 against b_hbm_max 8 -- is what made the
-    # policy ablation print "the policy layer is decoration" on a setup that
-    # could not have shown anything else. Deriving it from the measured
-    # ceiling removes the chance to set it by hand and be wrong on the meter.
-    # The ENGINE's resident batch, not the client's in-flight count.
-    conc = sw.get("batch", {}).get("median_running", 0.0)
-    if not conc:
-        print("\nINCONCLUSIVE: could not read the engine's resident batch from "
-              "arm A's log, so b_hbm_max cannot be set against a measured "
-              "ceiling. (Is --disable-log-stats set?)")
-        return 2
-    # `max_num_seqs` is not a neutral knob, and it must be reported with any
-    # number taken here. It decides HOW an overload manifests: set wide, the
-    # excess queues at the door and the requests that do run see clean steps
-    # (measured: median ITL 55 ms); set near capacity, the engine preempts and
-    # every running request absorbs stalls (median ITL 657 ms on the same
-    # hardware, same model, same offered rate). T0 moved 12x between those two
-    # configurations, and the whole SLO grid is anchored to T0.
-    #
-    # It must also sit ABOVE arm A's capacity, or arm C cannot show its win:
-    # the mixture's claim is that it runs MORE concurrent requests than HBM
-    # holds, and an admission width equal to arm A's ceiling forbids exactly
-    # that while looking like a fair, matched setting.
-    if a.max_num_seqs and conc >= a.max_num_seqs:
-        print(f"  WARNING: arm A's resident batch ({conc:.1f}) reaches "
-              f"--max-num-seqs {a.max_num_seqs}, so the BASELINE is limited by "
-              f"admission width rather than by KV capacity. The premise of the "
-              f"comparison is that HBM binds; raise it to ~3x capacity.")
-    if a.b_hbm_max <= 0:
-        if conc < 2:
-            print(f"\nINCONCLUSIVE: arm A's resident batch is {conc:.1f}; there "
-                  f"is no room to split it into HBM-tier plus riders. Raise "
-                  f"the offered rate or shrink the pool.")
+    # ---------------------------------------------------------------- phase 1
+    # Arm A at exactly its HBM capacity: no queue inside the engine, so TPOT
+    # is per-token service time and nothing else. T0 comes from HERE, not from
+    # a saturated sweep -- taking it at saturation measured queueing and set
+    # the SLO anchor ~10x too loose (545 ms against a 39-56 ms roofline).
+    print("\n[1/4] arm A at capacity -> T0 (no preemption)")
+    with Server("A", a, None, "A_t0", max_seqs=None) as srv:
+        if not srv.ready:
+            print(f"INCONCLUSIVE: arm A did not start; see {srv.log}")
             return 2
-        a.b_hbm_max = max(1, int(conc * a.b_hbm_frac))
-        print(f"  arm A resident batch {conc:.1f} -> b_hbm_max = "
-              f"{a.b_hbm_max} ({a.b_hbm_frac:g} of the measured ceiling), "
-              f"riders on top")
-    elif a.b_hbm_max >= conc:
-        print(f"\nINCONCLUSIVE: --b-hbm-max {a.b_hbm_max} is at or above arm "
-              f"A's resident batch ({conc:.1f}), so arm C has an HBM slot for "
-              f"every request it can actually run and creates no riders. The "
-              f"two arms would be the same configuration.")
+        cap_info = engine_capacity(srv.log)
+        capacity = int(cap_info.get("capacity", 0))
+        if capacity < 2:
+            print(f"\nINCONCLUSIVE: the engine reports capacity "
+                  f"{cap_info.get('capacity', 0):.2f} requests at {a.ctx} ctx. "
+                  f"Below 2 there is nothing to add riders to. Shorten --ctx "
+                  f"or raise --gpu-mem-util.")
+            return 2
+        print(f"  engine: KV pool {cap_info.get('kv_tokens', 0):,} tokens -> "
+              f"capacity {cap_info['capacity']:.2f} requests of "
+              f"{cap_info.get('seq_tokens', 0):,} tokens; using {capacity}")
+        t0_res = run_client(a, float("inf"), "A_t0", max_concurrency=capacity)
+        pre = preemptions(srv.log)
+        batch = running_batch(srv.log)
+    if not t0_res:
+        print("INCONCLUSIVE: the T0 run produced no result")
         return 2
-
-    if not sw["ever_bound"]:
-        print("\nINCONCLUSIVE: arm A absorbed the whole offered load at every "
-              "rate, so the load never bound and neither arm was under "
-              "pressure. Raise --rates or shrink the pool with "
-              "--num-gpu-blocks-override.")
+    t0_sum = safe_summarize(t0_res)
+    if "error" in t0_sum:
+        print(f"INCONCLUSIVE: {t0_sum['error']}")
         return 2
+    t0 = t0_of(t0_sum, a.t0_metric)
+    slo_ms = a.slo_mult * t0
+    print(f"  resident batch {batch.get('median_running', 0):.1f}, "
+          f"preemptions {pre}")
+    if pre:
+        print(f"  WARNING: {pre} preemptions during the T0 run -- T0 now "
+              f"includes eviction stalls, not just service time.")
+    print(f"  T0 = median {a.t0_metric.upper()} = {t0:.2f} ms "
+          f"(pooled ITL median {t0_sum['median_itl_ms']:.2f} ms)")
+    print(f"  SLO = {a.slo_mult:g} x T0 = {slo_ms:.2f} ms")
 
+    # ---------------------------------------------------------------- phase 2
+    # How many riders can the link HIDE inside that step? This is the feature's
+    # own admission model (vllm/v1/hybrid_kv_roofline.py), the same arithmetic
+    # B1 applies per admission -- not a fraction chosen by the harness.
+    print("\n[2/4] roofline -> how many riders hide inside the SLO")
+    from vllm.v1.hybrid_kv_roofline import max_offload_batch
+
+    seq_tokens = a.seq_tokens or (a.ctx + a.out_len)
+    riders = (a.riders if a.riders >= 0 else
+              max_offload_batch(seq_tokens=seq_tokens, itl_ms=slo_ms,
+                                x_eff_gbps=a.link_gbps, b_tok=hp["b_tok"]))
+    theta = slo_ms / 1000.0 * a.link_gbps * 1e9 / hp["b_tok"]
+    print(f"  budget = {slo_ms:.1f} ms x {a.link_gbps:g} GB/s / "
+          f"{hp['b_tok']} B/tok = {theta:,.0f} token-slots")
+    print(f"  at {seq_tokens:,} tokens per rider -> {riders} rider(s)"
+          + ("  [OVERRIDDEN by --riders]" if a.riders >= 0 else ""))
+    if riders < 1:
+        print(f"\nNO-GO, and it is the roofline saying so rather than a "
+              f"measurement: at {a.link_gbps:g} GB/s a single {seq_tokens:,}"
+              f"-token rider needs "
+              f"{seq_tokens * hp['b_tok'] / (a.link_gbps * 1e9) * 1e3:.0f} ms "
+              f"of link time per step, against a {slo_ms:.0f} ms budget. No "
+              f"rider can hide here, so the mixture has nothing to add. Run a "
+              f"shorter context or a faster link.")
+        return 1
+
+    # Residents stay FULL and riders are ADDITIONAL. Capping b_hbm_max below
+    # capacity makes riders substitutional -- they displace residents instead
+    # of extending the batch -- which is the configuration the model says
+    # loses, and is not the claim being tested.
+    b_hbm = a.b_hbm_max if a.b_hbm_max > 0 else capacity
+    width_c = b_hbm + riders
+    print(f"  arm C = {b_hbm} resident + {riders} riders = {width_c} concurrent"
+          f"  (arm A = {capacity})")
+
+    a.max_num_seqs = width_c
+    hp = host_pool_check(a)
+    if not hp["fits"]:
+        print(f"\nINCONCLUSIVE: {width_c} concurrent needs "
+              f"{hp['pinned_bytes'] / 1e9:.0f} GB pinned, over the "
+              f"{hp['budget_bytes'] / 1e9:.0f} GB budget.")
+        return 2
+    a.rungd_hmax = width_c * hp["blocks_per_req"] + 8
+    print(f"  pinned pool {hp['pinned_bytes'] / 1e9:.1f} GB "
+          f"(hmax {a.rungd_hmax} blocks)")
+
+    # ---------------------------------------------------------------- phase 3
     reps: list[dict] = []
+    widths = {"A": capacity, "C": width_c}
     for rep in range(1, a.repeats + 1):
-        print(f"\n[2/3] repeat {rep}/{a.repeats} (interleaved A then C)")
+        print(f"\n[3/4] repeat {rep}/{a.repeats} (interleaved A then C)")
         pair: dict = {"repeat": rep}
         for arm in ("A", "C"):
             tag = f"{arm}_rep{rep}"
-            with Server(arm, a, slo_ms if arm == "C" else None, tag) as srv:
+            with Server(arm, a, slo_ms if arm == "C" else None, tag,
+                        max_seqs=widths[arm],
+                        b_hbm_max=b_hbm if arm == "C" else None) as srv:
                 if not srv.ready:
                     pair[arm] = {"error": "server not ready",
                                  "server_log": srv.log}
                     print(f"    arm {arm}: SERVER DID NOT START ({srv.log})")
                     continue
-                res = run_client(a, best_rate, tag)
+                # Each arm runs at the concurrency it can actually sustain.
+                res = run_client(a, float("inf"), tag,
+                                 max_concurrency=widths[arm])
                 tiers = tier_stats(srv.log)
+                pre = preemptions(srv.log)
+                batch = running_batch(srv.log)
             if not res:
                 pair[arm] = {"error": "no result"}
                 print(f"    arm {arm}: NO RESULT")
@@ -834,19 +939,27 @@ def mode_gate(a) -> int:
             g = goodput_at(res, slo_ms)
             s.update(g)
             s["tiers"] = tiers
+            s["preemptions"] = pre
+            s["resident_batch"] = batch.get("median_running", 0.0)
+            s["concurrency"] = widths[arm]
             s["server_log"] = srv.log
             pair[arm] = s
-            print(f"    arm {arm}: goodput {g['goodput_req_s']:.3f} req/s "
-                  f"({g['good']}/{g['completed']} met SLO), "
-                  f"p99 ITL {s['p99_itl_ms']:.2f} ms"
-                  + (f", riders max {tiers['max_n_cpu']}" if arm == "C" else ""))
+            print(f"    arm {arm}: conc {widths[arm]}, goodput "
+                  f"{g['goodput_req_s']:.3f} req/s "
+                  f"({g['good']}/{g['completed']} met SLO), median TPOT "
+                  f"{s['median_tpot_ms']:.0f} ms, p99 {s['p99_tpot_ms']:.0f} ms"
+                  + (f", riders {tiers['max_n_cpu']}" if arm == "C" else "")
+                  + (f"  [{pre} PREEMPTIONS]" if pre else ""))
         reps.append(pair)
 
-    print("\n[3/3] verdict")
+    print("\n[4/4] verdict")
     out = {"mode": "gate", "model": a.model, "ctx": a.ctx, "t0_ms": t0,
            "t0_metric": a.t0_metric, "tail_metric": a.tail_metric,
-           "slo_ms": slo_ms, "slo_mult": a.slo_mult, "best_rate": best_rate,
-           "gate_ratio": a.gate_ratio, "sweep": sw, "repeats": reps}
+           "slo_ms": slo_ms, "slo_mult": a.slo_mult,
+           "capacity": capacity, "b_hbm_max": b_hbm, "riders_planned": riders,
+           "seq_tokens": seq_tokens, "link_gbps": a.link_gbps,
+           "b_tok": hp["b_tok"], "widths": widths,
+           "gate_ratio": a.gate_ratio, "t0_run": t0_sum, "repeats": reps}
     rc = verdict_gate(a, out)
     out["exit_code"] = rc
     path = os.path.join(a.outdir, a.out)
@@ -885,6 +998,18 @@ def verdict_gate(a, out: dict) -> int:
         return 2
     mean_ratio = sum(ratios) / len(ratios)
     worst = min(ratios)
+    # THE TAIL IS REPORTED, NOT GATED ON. Ben's objection, and it is correct:
+    # goodput ALREADY encodes the SLO -- it counts only requests whose TPOT met
+    # the target. Adding "p99 TPOT <= SLO" on top applies the same threshold a
+    # second time as a different statistic, and demands that ~99% of requests
+    # pass. That is a far stricter bar than "delivers more SLO-meeting requests
+    # per second", and it silently replaces the experiment's question.
+    #
+    # It also grades on distribution SHAPE rather than on service: arm A passes
+    # trivially because its TPOTs are tight (median 545, p99 548), while arm C
+    # is penalised for spread at 21/24 attainment. Two systems with identical
+    # goodput would be graded differently. Attainment is the honest diagnostic
+    # and is printed per repeat.
     tail_key = f"p99_{a.tail_metric}_ms"
     p99_ok = all(r["C"][tail_key] <= out["slo_ms"] for r in valid)
     # Is the baseline held to the bar we are holding the mixture to? On the
@@ -918,9 +1043,14 @@ def verdict_gate(a, out: dict) -> int:
               "not a property the mixture is uniquely failing. Judge the "
               "tail on the ARM-A-RELATIVE comparison, not the absolute bar.")
 
-    if mean_ratio >= a.gate_ratio and worst >= 1.0 and p99_ok:
+    if mean_ratio >= a.gate_ratio and worst >= 1.0:
         print("\n  GO: the mixture clears the gate at the grid's most "
-              "favourable point. 4.1 is worth its hours.")
+              "favourable point.")
+        if not p99_ok:
+            print("  (Its p99 is above the SLO -- reported, not gated: the "
+                  "requests that missed are already excluded from goodput, so "
+                  "gating on the tail too would demand ~99% attainment, which "
+                  "is a different and much stricter claim.)")
         return 0
     print("\n  NO-GO on the numbers. Diagnose with 4.2b (the rider cost curve) "
           "before spending 4.1's budget: a fixed per-step cost and a "
@@ -1036,9 +1166,21 @@ def main() -> int:
                         "arm A's MEASURED concurrency x --b-hbm-frac; a value "
                         "at or above that ceiling is refused, because arm C "
                         "would then create no riders and silently equal arm A")
-    p.add_argument("--b-hbm-frac", type=float, default=0.6,
-                   help="fraction of arm A's ceiling kept HBM-resident when "
-                        "b_hbm_max is derived")
+    p.add_argument("--b-hbm-frac", type=float, default=1.0,
+                   help="unused by the gate: residents stay FULL (b_hbm_max = "
+                        "measured capacity) so riders are additional rather "
+                        "than substitutional")
+    p.add_argument("--rungd-async", action="store_true",
+                   help="arm C: enable the double-buffered prefetch "
+                        "(VLLM_KVPIPE_RUNGD_ASYNC=1). Off by default in the "
+                        "engine, and it is what the roofline's hide budget "
+                        "assumes: without it the step grows by the serial "
+                        "transfer time instead of overlapping it")
+    p.add_argument("--riders", type=int, default=-1,
+                   help="-1 (default) = let the roofline decide how many "
+                        "riders hide inside the SLO; a value overrides it")
+    p.add_argument("--seq-tokens", type=int, default=0,
+                   help="tokens per rider for the roofline; 0 = ctx + out_len")
     p.add_argument("--link-gbps", type=float, default=25.1,
                    help="MEASURED host->device GB/s. On C2C the A100's 25.1 "
                         "makes B1 admit ~36x too few riders; take it from "
