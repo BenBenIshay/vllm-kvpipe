@@ -128,9 +128,43 @@ def request_tpots(result: dict) -> list[float]:
     return out
 
 
-def goodput_at(result: dict, tpot_ms: float) -> dict:
+def request_itl_stat(result: dict, stat: str) -> list[float]:
+    """Per-request inter-token latency statistic, in seconds.
+
+    WHY THIS EXISTS RATHER THAN TPOT. The feature is a DECODE-NODE feature in a
+    P/D split: prefill happens on another node, and the decode node only
+    decodes. TPOT -- `(latency - ttft) / (output_len - 1)` -- is a per-request
+    mean, so on a co-located server it absorbs every step that was spent
+    prefilling somebody else's prompt. Measured at ctx 2048: median TPOT
+    107.8 ms against median ITL 53.9 ms, exactly 2x, with the roofline saying
+    38.6-54.6 ms. The extra half is prefill interference that the deployment
+    this feature targets does not have.
+
+    So the SLO belongs on ITL, which is also the quantity Pie reports
+    separately from queuing delay, and therefore the one a comparison against
+    them can be made on.
+    """
+    out: list[float] = []
+    for per in (result.get("itls") or []):
+        if not per:
+            continue
+        s = sorted(per)
+        if stat == "itl_p95":
+            out.append(s[min(len(s) - 1, int(round(0.95 * (len(s) - 1))))])
+        else:
+            out.append(statistics.median(s))
+    return out
+
+
+def goodput_at(result: dict, tpot_ms: float, metric: str = "tpot") -> dict:
     """SLO-attaining goodput (req/s) recomputed from a saved result file."""
-    tpots = request_tpots(result)
+    if metric.startswith("itl"):
+        if not has_detail(result):
+            raise NoDetail("result file has no per-request arrays; the client "
+                           "must run with --save-detailed")
+        tpots = request_itl_stat(result, metric)
+    else:
+        tpots = request_tpots(result)
     dur = float(result.get("duration") or 0.0)
     slo_s = tpot_ms / MS
     good = sum(1 for t in tpots if t <= slo_s)
@@ -957,7 +991,7 @@ def mode_gate(a) -> int:
                 pair[arm] = s
                 print(f"    arm {arm}: INVALID RUN -- {s['error']}")
                 continue
-            g = goodput_at(res, slo_ms)
+            g = goodput_at(res, slo_ms, a.goodput_metric)
             s.update(g)
             s["tiers"] = tiers
             s["preemptions"] = pre
@@ -1230,12 +1264,18 @@ def main() -> int:
                    help="gate SLO = this x T0 (plan: 1.5)")
     p.add_argument("--slo-mults", default="1.0,1.2,1.5,2.0,3.0",
                    help="grid: offline SLO points, as multiples of T0")
-    p.add_argument("--t0-metric", default="tpot", choices=("tpot", "itl"),
+    p.add_argument("--t0-metric", default="itl", choices=("tpot", "itl"),
                    help="quantity T0 is measured in. Default tpot, because "
                         "that is what goodput enforces; 'itl' reproduces the "
                         "plan's literal wording and runs ~1.7x looser (see "
                         "t0_of).")
-    p.add_argument("--tail-metric", default="tpot", choices=("tpot", "itl"),
+    p.add_argument("--goodput-metric", default="itl_median",
+                   choices=("tpot", "itl_median", "itl_p95"),
+                   help="what a request must satisfy to count as good. "
+                        "Default is its median ITL: the decode node's own "
+                        "service quality, free of the prefill interference "
+                        "TPOT carries on a co-located server.")
+    p.add_argument("--tail-metric", default="itl", choices=("tpot", "itl"),
                    help="quantity the p99 SLO condition is checked in")
     p.add_argument("--gate-ratio", type=float, default=1.10)
     p.add_argument("--repeats", type=int, default=3)
