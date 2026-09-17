@@ -902,16 +902,32 @@ def mode_gate(a) -> int:
     window_ms = {"itl": t0_sum["median_itl_ms"],
                  "tpot": t0_sum["median_tpot_ms"],
                  "slo": slo_ms}[a.hide_window]
-    # And only the overlapped fraction of the window is usable. The roofline
-    # assumes all of it; measured on this path it is ~23% with the
-    # double-buffered prefetch on and ~0% with it off.
-    eff_window = window_ms * a.overlap_eff
+    if a.admit_model == "hide":
+        # Conservative: admit only what fits inside the step itself, so the
+        # step does not grow at all.
+        eff_window = window_ms * a.overlap_eff
+    else:
+        # What B1 should actually do. The step may grow, but only into the
+        # headroom the SLO allows: the UNHIDDEN part of the transfer must fit
+        # in (SLO - T_step). With a fraction eta hidden, each rider leaks
+        # (1 - eta) of its link time into the step, so
+        #     r x S x b_tok x (1-eta) / X  <=  SLO - T_step
+        # which is the same thing as a window of (SLO - T_step) / (1-eta).
+        headroom = max(0.0, slo_ms - t0_sum["median_itl_ms"])
+        leak = max(1e-3, 1.0 - a.overlap_eff)
+        eff_window = headroom / leak
     riders = (a.riders if a.riders >= 0 else
               max_offload_batch(seq_tokens=seq_tokens, itl_ms=eff_window,
                                 x_eff_gbps=a.link_gbps, b_tok=hp["b_tok"]))
     theta = eff_window / 1000.0 * a.link_gbps * 1e9 / hp["b_tok"]
-    print(f"  hide window = {a.hide_window.upper()} {window_ms:.1f} ms "
-          f"x overlap {a.overlap_eff:g} = {eff_window:.1f} ms")
+    if a.admit_model == "hide":
+        print(f"  admit=hide: window {a.hide_window.upper()} {window_ms:.1f} ms "
+              f"x overlap {a.overlap_eff:g} = {eff_window:.1f} ms")
+    else:
+        print(f"  admit=slo: step {t0_sum['median_itl_ms']:.1f} ms, SLO "
+              f"{slo_ms:.1f} ms -> headroom {slo_ms - t0_sum['median_itl_ms']:.1f} ms; "
+              f"each rider leaks (1-{a.overlap_eff:g}) of its link time "
+              f"-> effective window {eff_window:.1f} ms")
     print(f"  budget = {eff_window:.1f} ms x {a.link_gbps:g} GB/s / "
           f"{hp['b_tok']} B/tok = {theta:,.0f} token-slots")
     print(f"  at {seq_tokens:,} tokens per rider -> {riders} rider(s)"
@@ -1225,6 +1241,12 @@ def main() -> int:
                    help="unused by the gate: residents stay FULL (b_hbm_max = "
                         "measured capacity) so riders are additional rather "
                         "than substitutional")
+    p.add_argument("--admit-model", default="slo", choices=("slo", "hide"),
+                   help="how riders are admitted. 'slo': the UNHIDDEN part of "
+                        "the transfer must fit in (SLO - decode step) -- the "
+                        "real constraint, and it needs --overlap-eff. 'hide': "
+                        "admit only what fits inside the step, so the step "
+                        "does not grow at all.")
     p.add_argument("--hide-window", default="itl", choices=("itl", "tpot", "slo"),
                    help="which measured quantity is the window a rider's KV "
                         "must cross the link inside. Default itl = the decode "
