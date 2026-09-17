@@ -183,10 +183,20 @@ def main() -> int:
     p.add_argument("--riders", default="0,1,2,4,6,8")
     p.add_argument("--short-len", type=int, default=8)
     p.add_argument("--long-len", type=int, default=72)
-    p.add_argument("--repeats", type=int, default=2)
+    p.add_argument("--repeats", type=int, default=3,
+                   help="3 minimum: with 2 the median is the mean, so a single "
+                        "bad differencing sample corrupts the point")
     p.add_argument("--dtype", default="float16")
     p.add_argument("--gpu-mem-util", type=float, default=0.90)
-    p.add_argument("--link-gbps", type=float, default=25.1)
+    p.add_argument("--link-gbps", type=float, default=0.0,
+                   help="effective host->device GB/s. 0 = MEASURE it here. "
+                        "Never leave the A100's 25.1 on a C2C machine: every "
+                        "eta and every projection scales with it.")
+    p.add_argument("--force-riders", action="store_true", default=True,
+                   help="run exactly the requested rider count by disabling "
+                        "B1's gate for the measurement (default on)")
+    p.add_argument("--no-force-riders", dest="force_riders",
+                   action="store_false")
     p.add_argument("--connector", action="store_true",
                    help="DECODE-NODE emulation: attach "
                         "PipelinedDecodeBenchConnector, whose "
@@ -214,12 +224,26 @@ def main() -> int:
     os.environ["VLLM_KVPIPE_HYBRID_TWOPASS"] = "1"
     os.environ["VLLM_KVPIPE_HYBRID_RUNGD_RECLAIM"] = "1"
     os.environ["VLLM_KVPIPE_TIER_POLICY"] = "arrival"
+    if a.force_riders:
+        # This experiment measures the COST at a chosen rider count; B1 deciding
+        # a different one would make the curve a picture of the controller
+        # rather than of the mechanism. `hide_budget_ms()` prefers the MEASURED
+        # resident-only step, so raising --hybrid-itl-ms alone does not lift the
+        # gate -- the measured-budget path has to be switched off too. Without
+        # both, A100 pinned every point at 2 riders.
+        os.environ["VLLM_KVPIPE_B1_MEASURED"] = "0"
+        os.environ.pop("VLLM_KVPIPE_ADMIT_MARGINAL", None)
     if a.rungd_async:
         os.environ["VLLM_KVPIPE_RUNGD_ASYNC"] = "1"
     tok = os.path.join(ROOT, "hf_token")
     if os.path.exists(tok) and not os.environ.get("HF_TOKEN"):
         with open(tok) as fh:
             os.environ["HF_TOKEN"] = fh.read().strip()
+
+    if a.link_gbps <= 0:
+        from gh200_preflight import measure_h2d_gbps
+        a.link_gbps = measure_h2d_gbps()
+        print(f"measured pinned H2D bandwidth: {a.link_gbps:.1f} GB/s")
 
     print("=" * 66)
     print(f" 4.2b RIDER COST CURVE   {a.model}")
@@ -276,7 +300,23 @@ def main() -> int:
                   f"stream {m['stream_bytes_per_step'] / 1e9:6.3f} GB/step, "
                   f"back {m['writeback_bytes_per_step'] / 1e9:5.3f}, "
                   f"tiers {m['tiers_long']}")
-        step = statistics.median([m["step_ms"] for m in reps])
+        # ROBUST ESTIMATOR, and it needs to be. Differencing two wall times
+        # occasionally yields an implausible step -- a slow short run makes the
+        # difference too small (measured: 24.73 ms against a 53.4 ms baseline,
+        # i.e. riders apparently making the step FASTER). With two repeats the
+        # median is just the mean, so one such sample dragged the r=2 point from
+        # 71 ms to 48 ms and the fit returned F = -56 ms. Discard samples below
+        # the rider-free baseline -- adding work cannot shorten a step -- then
+        # take the median of what remains.
+        cand = [m["step_ms"] for m in reps]
+        if rows:
+            floor = rows[0]["step_ms"] * 0.95
+            kept = [x for x in cand if x >= floor]
+            if len(kept) < len(cand):
+                print(f"      discarded {len(cand) - len(kept)} implausible "
+                      f"sample(s) below the {floor:.1f} ms baseline")
+            cand = kept or cand
+        step = statistics.median(cand)
         gbs = statistics.median([m["stream_bytes_per_step"] for m in reps])
         gbw = statistics.median([m["writeback_bytes_per_step"] for m in reps])
         rows.append({"riders": r, "step_ms": step,
@@ -299,10 +339,96 @@ def main() -> int:
               f"{(dt / r if r else 0):>9.2f} {row['stream_gb_per_step']:>9.3f} "
               f"{link_ms:>9.2f} {eta:>6.2f}")
 
-    # The admission rule this curve exists to feed: adding a rider raises
-    # throughput while its step cost is smaller than the share of the step an
-    # average request already occupies.
-    print("\nmarginal rule:  admit while dT/step < 1/(B_resident + r)")
+    # ------------------------------------------------------------------ fit
+    # THE DELIVERABLE, and it must be on screen in hour one rather than fitted
+    # afterwards. dT(r) = F + c*r, and the two terms behave completely
+    # differently:
+    #   F  a FIXED per-step cost charged the moment ANY rider exists -- per-layer
+    #      hooks, the pool attention override, the two-pass path. It is
+    #      uncorrelated with bytes moved (0.5B: 7.4 ms against 0.27 ms of
+    #      transfer per rider) and a faster link does NOT shrink it.
+    #   c  the per-rider cost: the unhidden part of that rider's transfer, which
+    #      DOES scale with the link.
+    # Their ratio decides everything, because F has to be amortised:
+    #   gain(r) = (1 + r/N) / (1 + (F + c*r)/T) > 1   iff   r > F/(T/N - c)
+    # So there is a MINIMUM rider count below which the feature cannot pay, and
+    # a controller admitting one rider at a time pays F alone on the first and
+    # never climbs out of it.
+    # ------------------------------------------------------------ cost model
+    # MEASURED SHAPE, and it is not linear -- dT/rider RISES (9.1 -> 11.0 ->
+    # 15.6 ms at r = 2, 4, 6), so fitting dT = F + c*r returns a negative fixed
+    # cost and means nothing. What the data fits is a KINK:
+    #
+    #     step  ~=  max(T_compute, r * S * b_tok / X)  +  overhead
+    #
+    # Below the knee the riders' aggregate transfer still fits inside a step and
+    # is (imperfectly) hidden; above it the step IS the transfer and every extra
+    # rider costs its full link time. The knee is
+    #
+    #     r_knee = T_compute * X / (S * b_tok)
+    #
+    # which is exactly B1's byte budget -- so B1 identifies the right boundary,
+    # and the thing it misses is that even BELOW the knee the overhead is real.
+    # A100 measured: knee 2.4 riders, overhead 6.6-18.1 ms.
+    print("\n" + "=" * 66)
+    print(" COST MODEL   step ~= max(T_compute, T_transfer) + overhead")
+    out_fit: dict = {}
+    per_rider_gb = next((row["stream_gb_per_step"] / row["riders"]
+                         for row in rows if row["riders"] > 0
+                         and row["stream_gb_per_step"] > 0), 0.0)
+    if per_rider_gb <= 0:
+        print("  no rider traffic recorded -- cannot model. Check --connector "
+              "and that GB/step > 0.")
+    else:
+        per_rider_ms = per_rider_gb * 1e9 / (a.link_gbps * 1e9) * 1000.0
+        knee = base / per_rider_ms
+        print(f"  per-rider transfer      = {per_rider_ms:7.2f} ms "
+              f"({per_rider_gb:.3f} GB at {a.link_gbps:.1f} GB/s)")
+        print(f"  compute step            = {base:7.2f} ms")
+        print(f"  KNEE r = T/per-rider    = {knee:7.2f} riders "
+              f"(beyond this the step IS the transfer)")
+        oh = []
+        for row in rows:
+            r = row["riders"]
+            if not r:
+                continue
+            bound = max(base, r * per_rider_ms)
+            o = row["step_ms"] - bound
+            oh.append(o)
+            print(f"    r={r:2d}: max(compute, transfer) = {bound:7.2f} ms, "
+                  f"measured {row['step_ms']:7.2f} -> overhead {o:6.2f} ms")
+        ovh = statistics.median(oh) if oh else float("nan")
+        out_fit = {"per_rider_ms": per_rider_ms, "knee_riders": knee,
+                   "overhead_ms": ovh, "compute_step_ms": base}
+        print(f"  overhead (median)       = {ovh:7.2f} ms")
+        # NEVER PROJECT PAST THE DATA. The knee can sit far beyond the sweep
+        # (0.5B: knee 31.6 riders from points measured only to r=4), and the
+        # overhead is not guaranteed to stay flat out there -- extrapolating
+        # gave "2.06x at 31 riders" from two measurements. Cap the operating
+        # point at the largest rider count actually measured and say so.
+        r_measured_max = max(row["riders"] for row in rows)
+        r_best = max(1, min(int(knee), r_measured_max))
+        if knee > r_measured_max:
+            print(f"\n  NOTE: the knee ({knee:.1f} riders) lies BEYOND the "
+                  f"sweep (max {r_measured_max}). The best operating point is "
+                  f"not yet measured -- re-run with --riders up to "
+                  f"{int(knee) + 2} before quoting a gain.")
+        gain = ((1 + r_best / a.batch)
+                / (1 + (max(0.0, r_best * per_rider_ms - base) + ovh) / base))
+        out_fit["r_best"] = r_best
+        out_fit["gain_at_r_best"] = gain
+        print(f"\n  best operating point: r = {r_best} riders -> "
+              f"{gain:.2f}x decode throughput")
+        if gain > 1.0:
+            print(f"  VERDICT: the feature PAYS here, best at ~{r_best} riders.")
+        else:
+            print(f"  VERDICT: it does not pay on this substrate -- at the knee "
+                  f"({knee:.1f} riders) the overhead alone ({ovh:.1f} ms on a "
+                  f"{base:.1f} ms step) exceeds what {r_best} extra requests "
+                  f"buy. A faster link raises the knee; it does not remove the "
+                  f"overhead.")
+
+    print("\nmarginal rule (per measured point):")
     for row in rows:
         r = row["riders"]
         if not r:
@@ -316,7 +442,7 @@ def main() -> int:
               f"decode tok/s {tput * 1000:6.1f} vs {base_tput * 1000:6.1f} "
               f"({tput / base_tput:.3f}x)")
 
-    out = {"model": a.model, "ctx": a.ctx, "batch": a.batch,
+    out = {"fit": out_fit, "model": a.model, "ctx": a.ctx, "batch": a.batch,
            "link_gbps": a.link_gbps, "async": a.rungd_async,
            "short_len": a.short_len, "long_len": a.long_len, "rows": rows}
     path = os.path.join(a.outdir, a.out)
