@@ -71,6 +71,10 @@ class TransferAwareAdmissionController:
         "_probe_results",
         "_ema_window",
         "_migrate_warmup_steps",
+        # Marginal-throughput admission (measured step growth, not byte volume).
+        "_admit_marginal",
+        "_overlap_eff_bootstrap",
+        "_marginal_announced",
         # KV bytes per token, derived from the model rather than hand-set.
         "_b_tok_cached",
         # B1 hide budget measured from real forward iterations.
@@ -154,6 +158,13 @@ class TransferAwareAdmissionController:
         # startup transient and a harmful demotion looked beneficial.
         self._migrate_warmup_steps: int = int(
             os.environ.get("VLLM_KVPIPE_MIGRATE_WARMUP", "24") or 24)
+        # Marginal-throughput admission. Off by default: it changes which
+        # requests are admitted, so it is opt-in until the GH200 numbers are in.
+        self._admit_marginal: bool = (
+            os.environ.get("VLLM_KVPIPE_ADMIT_MARGINAL", "0") == "1")
+        self._overlap_eff_bootstrap: float = float(
+            os.environ.get("VLLM_KVPIPE_OVERLAP_EFF", "1.0") or 1.0)
+        self._marginal_announced: bool = False
 
     # ------------------------------------------------- KV bytes per token
 
@@ -704,11 +715,79 @@ class TransferAwareAdmissionController:
 
         env_cap = max_offload_from_env()
         over_env_cap = env_cap is not None and cpu_count >= env_cap
-        if (not over_env_cap) and (cpu_bytes + new_bytes) <= budget_bytes:
-            self._req_tier[request.request_id] = "cpu"
-            return True, "hybrid_cpu"
+        if over_env_cap:
+            return False, "hybrid_offload_cap"
+        if (cpu_bytes + new_bytes) > budget_bytes:
+            # The link physically cannot carry it inside a step. This stays a
+            # hard ceiling under either criterion.
+            return False, "hybrid_offload_cap"
 
-        return False, "hybrid_offload_cap"
+        if self._admit_marginal and not self._marginal_ok(
+                new_bytes, cpu_bytes, x_eff, len(running_requests)):
+            return False, "hybrid_marginal_refused"
+
+        self._req_tier[request.request_id] = "cpu"
+        return True, "hybrid_cpu"
+
+    # ------------------------------------------- marginal-throughput criterion
+
+    def overlap_efficiency(self, cpu_bytes: float, x_eff_gbps: float) -> float:
+        """Fraction of rider transfer that actually hides behind compute.
+
+        MEASURED, not assumed. The byte budget's premise is that a step of
+        length T can absorb T x X bytes for free; on A100 only 60% of them hid,
+        so a byte-legal admission still grew the step by 17.8 ms and cost 16%
+        of decode throughput. eta is what closes that gap:
+
+            eta = 1 - (step_with_riders - step_resident_only) / (bytes / X)
+
+        Both step times are already tracked -- `_resident_only_ms_ema` samples
+        only steps with no rider running, which is exactly the clean baseline
+        this needs. Returns the bootstrap value until riders exist to measure.
+        """
+        if cpu_bytes <= 0 or x_eff_gbps <= 0:
+            return self._overlap_eff_bootstrap
+        base = self._resident_only_ms_ema
+        now = self._resident_step_ms_ema
+        if base <= 0 or now <= 0:
+            return self._overlap_eff_bootstrap
+        serial_ms = cpu_bytes / (x_eff_gbps * 1e9) * 1000.0
+        if serial_ms <= 0:
+            return self._overlap_eff_bootstrap
+        eta = 1.0 - max(0.0, now - base) / serial_ms
+        return min(1.0, max(0.0, eta))
+
+    def _marginal_ok(self, new_bytes: float, cpu_bytes: float,
+                     x_eff_gbps: float, num_running: int) -> bool:
+        """Would this rider raise total throughput, or just add latency?
+
+        Throughput is `batch / step`. Adding one request multiplies the batch by
+        `(B+1)/B` and the step by `(T+dT)/T`, so it is worth admitting exactly
+        when
+
+            dT / T  <  1 / B
+
+        with `dT = (1 - eta) x bytes / X` -- the part of its transfer that fails
+        to hide. This replaces "do the bytes fit", which is necessary but not
+        sufficient: at 25.1 GB/s the bytes for two riders fit the budget while
+        costing 16% of decode throughput.
+        """
+        b = max(1, num_running)
+        step_ms = self._resident_step_ms_ema or self._resident_only_ms_ema
+        if step_ms <= 0:
+            return True                     # no measurement yet; do not block
+        eta = self.overlap_efficiency(cpu_bytes, x_eff_gbps)
+        dt_ms = (1.0 - eta) * new_bytes / (x_eff_gbps * 1e9) * 1000.0
+        ok = (dt_ms / step_ms) < (1.0 / b)
+        if not self._marginal_announced:
+            self._marginal_announced = True
+            logger.info(
+                "B1 marginal-throughput admission ACTIVE: eta=%.2f measured, "
+                "step=%.2f ms, batch=%d -> a rider costing %.2f ms is %s "
+                "(threshold %.2f ms)",
+                eta, step_ms, b, dt_ms, "worth it" if ok else "refused",
+                step_ms / b)
+        return ok
 
     # ------------------------------------------------------ telemetry hooks
 
