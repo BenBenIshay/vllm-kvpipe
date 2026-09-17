@@ -187,6 +187,17 @@ def main() -> int:
     p.add_argument("--dtype", default="float16")
     p.add_argument("--gpu-mem-util", type=float, default=0.90)
     p.add_argument("--link-gbps", type=float, default=25.1)
+    p.add_argument("--connector", action="store_true",
+                   help="DECODE-NODE emulation: attach "
+                        "PipelinedDecodeBenchConnector, whose "
+                        "get_num_new_matched_tokens reports all but one prompt "
+                        "token as already computed. vLLM then SKIPS the prefill "
+                        "forward pass and the connector fills those KV blocks "
+                        "directly -- which is what a P/D decode node sees when "
+                        "KV arrives from the prefill node. Without it the node "
+                        "prefills locally, and a rider cannot be created while "
+                        "HBM is full because its prefill needs resident blocks "
+                        "(measured: riders cap at 2 however many are offered).")
     p.add_argument("--rungd-async", action="store_true", default=True)
     p.add_argument("--no-rungd-async", dest="rungd_async", action="store_false")
     p.add_argument("--seed", type=int, default=1234)
@@ -215,6 +226,7 @@ def main() -> int:
     print(f" ctx {a.ctx}  batch {a.batch} (fixed)  riders {riders}")
     print(f" step time by differencing {a.short_len} vs {a.long_len} tokens "
           f"-- prefill cancels")
+    print(f" rig: {'DECODE NODE (connector, prefill skipped)' if a.connector else 'co-located (local prefill)'}")
     print("=" * 66)
 
     import numpy as np
@@ -225,6 +237,14 @@ def main() -> int:
     all_prompts = [{"prompt_token_ids":
                     rng.integers(vocab_lo, vocab_hi, size=a.ctx).tolist()}
                    for _ in range(a.batch + max(riders))]
+
+    extra: dict = {}
+    if a.connector:
+        from vllm.config import KVTransferConfig
+        extra["kv_transfer_config"] = KVTransferConfig(
+            kv_connector="PipelinedDecodeBenchConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"fill_mean": 0.015, "fill_std": 0.0})
 
     llm = LLM(model=a.model, dtype=a.dtype,
               enable_prefix_caching=False,
@@ -237,7 +257,7 @@ def main() -> int:
               hybrid_b_hbm_max=a.batch,
               hybrid_itl_ms=1e9,            # the SWEEP sets riders, not B1
               transfer_aware_slo_p99_itl_ms=0.0,
-              hybrid_pcie_gbps=a.link_gbps)
+              hybrid_pcie_gbps=a.link_gbps, **extra)
     cfg = llm.llm_engine.vllm_config.scheduler_config
 
     print("\nwarming up (one throwaway generation)")
