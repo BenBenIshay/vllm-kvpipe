@@ -38,31 +38,34 @@ ulimit -l                   # pinned-page limit. "unlimited" is what you want
 A low `ulimit -l` fails later as an unexplained crash, so check it before
 spending a model load.
 
-## 2. Get the code and build (the long pole)
+## 2. Get the code, then ONE command
 
 ```bash
 git clone -b hybrid-kv-tiers https://github.com/BenBenIshay/vllm-kvpipe
 cd vllm-kvpipe
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install -U pip
-TORCH_CUDA_ARCH_LIST=9.0a pip install -e .      # aarch64 + sm_90a, UNMEASURED duration
-pip install pandas xlsxwriter                    # benchmark-only, needed by 4.2c/4.5
-export HF_HUB_CACHE=/path/with/250GB
-export HF_TOKEN=...                              # or drop the hf_token file in place
+export HF_HUB_CACHE=/path/with/250GB        # optional; defaults to ./hf_cache
+export HF_TOKEN=...                          # or drop the hf_token file in place
+bash benchmarks/kv_pipelining_bench/gh200_setup.sh
 ```
 
-The venv from the cluster is **x86_64 and cannot be copied** — only the
-checkpoint is portable, and HF's CDN will almost certainly beat copying it from
-here. Start the download in the background while the build runs:
+That builds the environment AND runs the bring-up gate, so §3 below happens
+automatically. It:
 
-```bash
-huggingface-cli download Qwen/Qwen2.5-32B-Instruct &
-```
+* starts the 62 GB checkpoint download **in the background** and builds while
+  it downloads (they contend for nothing; in sequence they cost an extra hour),
+* finds a real python 3.12 rather than assuming the binary is named that,
+* **times every stage** -- the build on aarch64 has never been measured, so the
+  "8 hours, expect 1-3" in the plan is a stop-loss and not an estimate. After
+  this run it is a number,
+* is **resumable**: a failure at minute 50 does not cost the first 50,
+* stops itself at the 8 h time-box (`TIMEBOX_MIN=`) rather than letting a bad
+  build eat the rental.
 
-Time-box the build at the plan's 8 hours. If it overruns, release and fix
-offline — a failed bring-up is cheap, a day of debugging on the meter is not.
+The cluster's `.venv` is **x86_64 and cannot be copied** -- only the checkpoint
+is portable, which is why the script downloads it from HF rather than expecting
+you to bring it.
 
-## 3. Bring-up gate
+## 3. Bring-up gate (run automatically by §2; here for re-runs)
 
 ```bash
 bash benchmarks/kv_pipelining_bench/gh200_bringup.sh
