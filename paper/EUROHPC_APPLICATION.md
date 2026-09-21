@@ -124,7 +124,8 @@ orthogonal: a bounce buffer costs HBM but buys the only opportunity to overlap.
 | WP5 | **interconnect-bounded count vs a uniform offload fraction** — the direct test of the contribution | 8 |
 | WP6 | per-request placement and mid-flight migration — confirmation | 4 |
 | WP7 | **vs Pie's swap semantics** (reconstructed; already validated at exactly 2.00× link traffic on our hardware) | 8 |
-| WP8 | **vs DirectKV** — their artifact if available, else our SM90a backend | 12 |
+| WP8a | **DirectKV artifact triage** — build it, run its unit tests, measure what fraction of decode steps reach its fast kernel. Gates WP8b | 2 |
+| WP8b | **vs DirectKV**, ratio-matched against each engine's own baseline (they build on SGLang, we on vLLM) | 10 |
 | WP9 | composition with fp8 KV quantisation — exactness preserved, capacity multiplied | 4 |
 | WP10 | negative control — Llama-3.1-8B, where the model predicts no benefit | 4 |
 | | **total measurement** | **74** |
@@ -170,7 +171,8 @@ is spent measuring rather than developing.
 | risk | mitigation |
 |---|---|
 | **fp8 70B does not take the fp8 kernel path on SM90** and dequantises to 140 GB, exceeding one GH200 | Verified at bring-up before any measurement. Fallback: Qwen2.5-32B fp16 as headline (fully validated in our suite), or 70B fp16 with tensor parallelism across 2 GH200 — noting that TP introduces all-reduce traffic as a confound |
-| **DirectKV artifact may not be public** (WP8) | Our own SM90a backend exists as a skeleton but is untested; if neither path works, WP8 is reported as a qualitative comparison and its hours revert to WP4/WP7 |
+| **DirectKV comparison is cross-engine** — their artifact is public (`github.com/shutianluo/DirectKV`) and Hopper-only, so JUPITER is the first machine on which it can run at all, but it is built on SGLang while ours is vLLM | Compare each system against **its own engine's baseline** and contrast the ratios, rather than putting two engines' absolute numbers side by side. Their own paper reports SGLang as the fastest engine when memory suffices, so the engine difference is real and must be controlled, not ignored |
+| **Their artifact's fast kernel is gated on 64-aligned sequence length**; during decode that condition recurs once every 64 steps, with a per-request fallback path otherwise. If that is what the published artifact does, a naive head-to-head would measure an artifact property rather than their design | WP8a measures the fast-path hit rate first and gates WP8b on it. If the artifact is dominated by its fallback, we report that as a measured property of the code, make no claim about their published numbers, and revert the hours to WP4/WP7 |
 | **aarch64 + SM90a build time is unmeasured** | Scripted, resumable and time-boxed at 8 hours; overrun means stopping and fixing offline |
 | Pinned-page limits on the host | Checked in the first minutes; the failure mode is silent otherwise |
 
