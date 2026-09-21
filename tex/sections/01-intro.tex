@@ -39,10 +39,14 @@ memory for running ones.
 
 \paragraph{Two memories, managed as one.} This paper builds a
 \textbf{heterogeneous memory system for LLM decode}: HBM and host DRAM managed
-as a single KV memory, with per-request placement, capacity-aware admission,
-and migration between tiers under load. The system decides where each
-request's KV lives, how much traffic the interconnect can absorb per step
-without breaking the resident cohort's latency, and when a request should move.
+as a single KV memory. Its load-bearing decision is \emph{how many} requests to
+serve from the host tier, and the answer comes from the interconnect rather
+than from memory. A host-tier request must move its entire KV across the link
+once per decoded token, so the number that can be sustained is set by what the
+link delivers inside a decode step --- a quantity this system measures rather
+than declares. Around that decision sit the mechanisms it requires: an
+allocator in which a host-tier request holds no device blocks, per-request
+placement, and migration between tiers under load.
 
 That framing is not how the field currently treats the second memory. Existing
 systems use one memory or the other, statically and totally. Stock vLLM and
@@ -78,6 +82,23 @@ column compares like with like.}
 \label{tab:endpoints}
 \end{table}
 
+Writing that sum out states the contribution exactly. For requests of $S$
+tokens at $b_{\mathrm{tok}}$ KV bytes each, the resident cohort is a
+\emph{memory} quantity and the host cohort is a \emph{bandwidth} one:
+%
+\begin{equation}
+B \;=\; \underbrace{\frac{\Ckv}{S\,b_{\mathrm{tok}}}}_{\text{device capacity}}
+\;+\;
+\underbrace{\frac{\mathrm{ITL}\cdot\Xlink}{S\,b_{\mathrm{tok}}}}_{\text{interconnect}}
+\label{eq:two-terms}
+\end{equation}
+%
+The second term does not contain $\Ckv$. Admission is thereby decoupled from
+device capacity and bounded instead by what the link can deliver within a step
+--- which is the decision this paper is about, and the one no existing system
+makes: the endpoints in Table~\ref{tab:endpoints} set the host cohort to zero
+or to everything, neither of which consults the interconnect at all.
+
 \paragraph{When is a second memory tier worth having?} Before building one we
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
 capacity multiplier $1 + (\Xlink/\BW)(\HBM/\Ckv)$, where $\Ckv$ is the device
@@ -108,17 +129,29 @@ its successes.
       host-tier request holds no device blocks at all, so tiered requests are
       additive rather than substitutional --- the property that makes the
       interior point of Table~\ref{tab:endpoints} reachable.
-\item \textbf{Per-request placement} driven by observable request state, with
-      no externally supplied service class, including the negative result that
-      context length --- the intuitive signal --- does not discriminate.
-\item \textbf{Interconnect-aware admission and closed-loop migration}: a
-      per-step transfer budget measured rather than declared, and migration
-      treated as a probe whose effect on latency is measured and reverted if
-      harmful.
+\item \textbf{Admission decoupled from device capacity and bounded by the
+      interconnect} (\S\ref{sec:design}): the host cohort of
+      Eq.~\ref{eq:two-terms} sized from a per-step transfer budget that is
+      \emph{measured} --- from the rider-free step time and the achieved link
+      bandwidth --- rather than declared as a constant. We show by ablation
+      that this derived count, and not a fixed offload fraction, is what
+      carries the result.
 \item \textbf{An implementation in vLLM v1 and an evaluation separating the
       memory system's contribution from the kernel's} (\S\ref{sec:eval}), by
-      running uniform offload and our manager on one substrate.
+      running uniform offload and our manager on one substrate, together with
+      two negative results we report rather than bury: per-request placement
+      driven by observable state did not separate from arrival order on our
+      substrate --- and context length, the intuitive signal, does not
+      discriminate at all --- while closed-loop migration measured its own
+      demotions as harmful and reverted them.
 \end{enumerate}
+
+We state the last of these deliberately. A host tier admits a policy design
+space --- which requests to move, and when to move them --- and we built that
+space and report that, at the rider counts a PCIe-class link permits, it does
+not yet pay. A policy choosing among two candidates cannot demonstrate value;
+whether it does so when the budget admits dozens is a question for a coherent
+interconnect, not a claim we make here.
 
 \paragraph{Scope.} We target a decode node in a prefill/decode-disaggregated
 deployment~\cite{distserve,splitwise,mooncake}, where a request arrives with

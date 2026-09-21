@@ -29,8 +29,9 @@ interconnects. Host-tier requests are \emph{additive} --- peak concurrency rises
 from 8 to 48 against a fixed KV pool --- and 78\% of a host-tier request's
 transfer overlaps compute. On PCIe the economics still do not close, which our
 own model predicts and we report as a validated negative that bounds the
-technique. We separate the policy's contribution from the mechanism's by
-running uniform offload and per-request placement on one substrate at a matched
-interconnect budget, and we report where the technique stops paying as
-carefully as where it starts.
+technique. The decision the system actually makes is \emph{how many} requests
+to offload, taken from a measured per-step transfer budget rather than a
+configured fraction; we isolate it by running a uniform offload fraction and
+our derived count on one substrate, and we report where the technique stops
+paying as carefully as where it starts.
 \end{abstract}
