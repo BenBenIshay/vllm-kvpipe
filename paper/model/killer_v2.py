@@ -13,13 +13,27 @@ fill it, bounded by (a) C2C hide budget and (b) the SLO itself.
 # term only. Paged KV uses eff_kv() below, which is NOT a constant.
 EFF_W, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
 
+# OVERHEAD is a 4 GB device reserve for activations, workspace and allocator
+# fragmentation. It is subtracted from HBM before C, so the paper must document
+# it: weights + C does NOT equal HBM.
+#
+# ETA_O: the fraction of a rider's transfer that actually overlaps compute.
+# Until 2026-09-22 this script assumed 1.0 implicitly -- the rider budget read
+# `n*u <= T*x`, i.e. a step of length T absorbs T*x bytes for free. It does not.
+# 0.62 is the only direct measurement (paper/data/rider_cost_4p2b.json: riders
+# added on top of a fixed resident batch, prefill cancelled by construction).
+# It is an A100/PCIe number used here for a C2C projection, which is an
+# assumption the paper states rather than hides.
+ETA_O = 0.62
+
 
 class HW:
     def __init__(s, n, hbm, bw, x, fl):
         s.n, s.hbm, s.bw, s.x, s.fl = n, hbm*1e9, bw*1e9, x*1e9, fl
 
 
-GH200 = HW("GH200-96",  96, 4000, 450, 495e12)
+GH200 = HW("GH200-96",  96, 4000, 450, 495e12)      # spec, unidirectional
+GH200M = HW("GH200-96", 96, 4000, 419, 495e12)      # measured H2D (Pie, same part)
 GH200H = HW("GH200-144", 141, 4800, 450, 495e12)
 A100 = HW("A100-80",    80, 2039,  25, 312e12)
 H100 = HW("H100-80(PCIe5)", 80, 3350, 55, 495e12)
@@ -47,8 +61,14 @@ MODELS = [
     # bytes) and should be measured before anything depends on them, because
     # the weight term sits in the capacity denominator: a heavier checkpoint
     # leaves LESS room for KV and therefore raises the projected gain.
-    M("Llama-8B  fp16",      32, 8, 128,  8),
-    M("Qwen-32B  fp16",      64, 8, 128, 32),
+    # measured: paper/model/p4_llama8b_a100.json weight_bytes = 16.06e9
+    M("Llama-8B  fp16",      32, 8, 128,  8, wgb=16.06),
+    # measured: paper/model/p4_qwen32b_a100.json weight_bytes = 65.53e9
+    M("Qwen-32B  fp16",      64, 8, 128, 32, wgb=65.53),
+    # weight-only fp8; KV stays fp16, so kvb is unchanged. Nominal: we have
+    # no fp8 checkpoint on disk, and the fp16 measurement (65.53 vs 64.0
+    # nominal) says to expect ~1.5 GB of scales here too.
+    M("Qwen-32B  fp8",       64, 8, 128, 32, wb=1),
     # RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8: 72.7 GB across 15 shards,
     # measured from the checkpoint 2026-08-12 (paper/GH200_EXPERIMENT_PLAN.md
     # section 2). Nominal 70x1 byte = 70 GB understates it by 2.7 GB.
@@ -99,7 +119,7 @@ def step_ms(m, hw, S, B_res, B_off=0.0, stage=1.0, f=0.0):
     return max(t_mem, t_cmp)*1e3
 
 
-def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0):
+def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0, eta_o=ETA_O):
     u = m.k*S
     C = hw.hbm - m.w - OVERHEAD
     if C <= 0 or u <= 0:
@@ -125,7 +145,7 @@ def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0):
         n = best + max(B_cap, 1.0)/64
         B_res = max(0.0, C/u - n*f)
         T = step_ms(m, hw, S, B_res, n, stage=stage, f=f)
-        if T <= slo_ms and n*u <= T*hw.x/1e3*1e3*(T/T) and n*u <= (T/1e3)*hw.x:
+        if T <= slo_ms and n*u <= (T/1e3)*hw.x*eta_o:
             best = n
         else:
             break
@@ -133,7 +153,7 @@ def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0):
     B_res = min(B0, max(0.0, C/u - n*f))
     T = step_ms(m, hw, S, B_res, n, stage=stage, f=f) if n > 0 else T0
     B_tot = B_res + n
-    return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound,
+    return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound, eta_o=eta_o,
                 n=n, B_tot=B_tot, T=T,
                 gain=(B_tot/T)/(B0/T0) if B0 > 0 else 0.0)
 

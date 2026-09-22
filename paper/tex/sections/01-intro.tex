@@ -69,16 +69,25 @@ is bounded by the sum:
 \small
 \begin{tabular}{lrr}
 \toprule
-Qwen-32B fp16, 8K, GH200-96 & KV read per step & batch \\
+\emph{Projected.} Qwen2.5-32B fp16, 8K, GH200-96 & KV read per step & batch \\
 \midrule
-all-HBM (vLLM, SGLang)  & 28\,GB HBM, \textbf{0 link} & 13 \\
-all-host (DirectKV)     & \textbf{0 HBM}, 15\,GB link & 7 \\
-\textbf{both (this paper)} & 28\,GB HBM \textbf{+} 15\,GB link & \textbf{19} \\
+all-HBM (vLLM, SGLang)      & 26.5\,GB HBM, \textbf{0 link} & 12 \\
+all-host (uniform offload)  & \textbf{0 HBM}, 8.8\,GB link & 4 \\
+\textbf{both (this paper)}  & 26.5\,GB HBM \textbf{+} 8.8\,GB link & \textbf{16} \\
 \bottomrule
 \end{tabular}
-\caption{Each single-memory design leaves one of the two KV paths completely
-unused. Weight traffic is identical in all three rows and excluded, so the
-column compares like with like.}
+\caption{Each single-memory design leaves one of the two KV paths unused.
+Weight traffic is identical in all three rows and excluded, so the column
+compares like with like. \textbf{These are projections}, computed by
+\texttt{model/killer\_v2.py} from: measured checkpoint $W = 65.5$\,GB, a 4\,GB
+device reserve for activations and fragmentation, hence $\Ckv = 26.5$\,GB;
+$\btok = 256$\,KiB so a request at 8K holds 2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms
+from Eq.~\ref{eq:step}; $\Xlink = 419$\,GB/s, the measured host-to-device rate
+on this part~\cite{pie}, not the 450\,GB/s spec figure; and $\effo = 0.62$.
+The last is the weakest input: it is measured on A100/PCIe
+(\S\ref{sec:eval:cost}) and assumed to carry to a coherent link, which is the
+first thing \S\ref{sec:eval} asks of one. At $\effo = 1$ the host row would
+read 6 and the total 18.}
 \label{tab:endpoints}
 \end{table}
 
