@@ -40,6 +40,32 @@ scan "UNDEFINED CITATIONS"   "Citation \`[^']*' on page .* undefined"
 scan "MULTIPLY-DEFINED"      "Label \`[^']*' multiply defined"
 scan "MISSING FILES"         "File \`[^']*' not found"
 
+# ---- source-level gates (do not need the log) --------------------------------
+src_status=0
+note() { echo "== $1 =="; shift; printf '  %s\n' "$@"; src_status=1; }
+
+# Raw non-ASCII breaks a pdfLaTeX build: main.tex loads no inputenc, and the
+# author kit may not either. tectonic (XeTeX) hides this, so gate on it here.
+mapfile -t nonascii < <(grep -rnP --include='*.tex' '[^\x00-\x7F]' "$PAPER_DIR/tex" 2>/dev/null | head -10)
+[[ ${#nonascii[@]} -gt 0 ]] && note "NON-ASCII IN SOURCE" "${nonascii[@]}"
+
+# Every numeric claim carries "% src: <file> @ <sha>". A src naming a file that
+# does not exist is worse than no src at all: it looks defensible and is not.
+missing=()
+while IFS= read -r line; do
+  f="${line#*% src: }"; f="${f%% @ *}"; f="${f%%,*}"; f="$(echo "$f" | xargs)"
+  [[ "$f" == *.json || "$f" == *.log || "$f" == *.py ]] || continue
+  [[ "$f" == *'*'* || "$f" == '<file>.json' ]] && continue   # globs + the convention example
+  [[ -e "$PAPER_DIR/../$f" || -e "$PAPER_DIR/$f" || -e "$f" ]] || missing+=("${line%%:*}: $f")
+done < <(grep -rn --include='*.tex' '% src:' "$PAPER_DIR/tex" 2>/dev/null)
+[[ ${#missing[@]} -gt 0 ]] && note "DEAD % src: POINTER" "${missing[@]}"
+
+# \todo / \needsgh error out under \draftfalse by design; catch them earlier.
+mapfile -t marks < <(grep -rn --include='*.tex' '\\todo{\|\\needsgh{' "$PAPER_DIR/tex" 2>/dev/null | head -10)
+[[ ${#marks[@]} -gt 0 ]] && note "UNRESOLVED DRAFT MARKER" "${marks[@]}"
+
+[[ $src_status -eq 1 ]] && status=1
+
 overfull="$(grep -c "Overfull \\\\hbox" compile.out 2>/dev/null || echo 0)"
 # Tectonic writes an .xdv first, so the page count lands in main.log, not stdout.
 pages="$(grep -oE "Output written on [^(]*\(([0-9]+) pages" main.log 2>/dev/null \
@@ -47,7 +73,7 @@ pages="$(grep -oE "Output written on [^(]*\(([0-9]+) pages" main.log 2>/dev/null
 
 echo
 if [[ $status -eq 0 ]]; then
-  echo "OK -- no undefined refs or citations."
+  echo "OK -- refs, citations, encoding and % src: pointers all clean."
 else
   echo "^ fix the above; they render as ?? or vanish in the PDF."
 fi
