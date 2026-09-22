@@ -197,7 +197,7 @@ riders & step (ms) & GB/step & $\effo$ \\
 \bottomrule
 \end{tabular}
 \end{center}
-% src: 4.2b rider cost curve @ 21ea9b18d
+% src: paper/data/rider_cost_4p2b.json @ 21ea9b18d
 %
 At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
 of $1/(N{+}r) = 0.056$, and decode throughput is $254$ tok/s against $296$ at
@@ -219,16 +219,20 @@ $\sim\!13$\,ms of overhead on a $53$\,ms step already exceeds what two extra
 requests buy. Whether that overhead survives onto a coherent interconnect is
 the question the next substrate has to answer, and it cannot be extrapolated
 from this one.
-% src: Phase 0 rider cost curve @ fb7e9db2a
+% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
 
 \paragraph{Swap semantics versus streaming.} A design whose offloaded unit is
 \emph{owned} by one side must write that unit back once per generated token; one
 whose device-side copy is a \emph{cache} need not (\S\ref{sec:related}). We
 measure the difference directly by writing each layer's slot back to the host
 mirror with the policy otherwise unchanged. The emulation is exact in extent:
-both arms read identical volume, and the write-back arm moves \textbf{2.00×}
-the total link traffic, with identical token output.
-% src: paper_runs/20260911_ablation_smoke.json
+both arms read the same $602$\,MB, and the write-back arm moves
+\textbf{$2.00\times$} the total link traffic, with token output verified
+identical. We report this as a mechanism check rather than a performance
+result: it is measured on Qwen2.5-0.5B at $512$ context, a configuration small
+enough that the ratio isolates the write-back leg without the step-time effects
+that dominate at the primary model's scale.
+% src: paper/data/ablation_swapback_20260911.json @ 74a5d9c58
 
 \subsection{Does the capacity model predict it?}
 \label{sec:eval:model}
