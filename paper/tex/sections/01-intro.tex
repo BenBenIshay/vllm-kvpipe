@@ -83,13 +83,13 @@ column compares like with like.}
 \end{table}
 
 Writing that sum out states the contribution exactly. For requests of $S$
-tokens at $b_{\mathrm{tok}}$ KV bytes each, the resident cohort is a
+tokens at $\btok{}$ KV bytes each, the resident cohort is a
 \emph{memory} quantity and the host cohort is a \emph{bandwidth} one:
 %
 \begin{equation}
-B \;=\; \underbrace{\frac{\Ckv}{S\,b_{\mathrm{tok}}}}_{\text{device capacity}}
+B \;=\; \underbrace{\frac{\Ckv}{S\,\btok{}}}_{\text{device capacity}}
 \;+\;
-\underbrace{\frac{\mathrm{ITL}\cdot\Xlink}{S\,b_{\mathrm{tok}}}}_{\text{interconnect}}
+\underbrace{\frac{\mathrm{ITL}\cdot\Xlink\cdot\effo}{S\,\btok{}}}_{\text{interconnect}}
 \label{eq:two-terms}
 \end{equation}
 %
@@ -101,8 +101,9 @@ or to everything, neither of which consults the interconnect at all.
 
 \paragraph{When is a second memory tier worth having?} Before building one we
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
-capacity multiplier $1 + (\Xlink/\BW)(\HBM/\Ckv)$, where $\Ckv$ is the device
-memory left after weights, and validate its structure against 54 measured
+capacity multiplier $1 + (\Xlink/\BW)\,\effo\,(\HBM/\Ckv)$, where $\Ckv$ is the
+device memory left after weights and $\effo$ is the fraction of a rider's
+transfer that overlaps compute, and validate its structure against 54 measured
 configurations. Two consequences contradict the obvious intuition. Long context
 does \emph{not} help: it shrinks the HBM-resident cohort and the affordable
 host cohort in the same proportion, leaving their ratio unchanged. And the
@@ -163,10 +164,14 @@ is what makes host-tier requests additive.
 host-tier requests raise peak concurrency from 8 to 48, itself a lower bound
 since 48 was the entire offered load.
 % src: paper/data/preload_capacity.json @ f3df05bdb
-In a separate experiment with real KV, 78\% of a host-tier request's transfer
-overlaps compute, yet the unhidden residual and a fixed per-step cost leave
-throughput 2.3\% short of not offloading at all.
-% src: paper/data/{hide_efficiency,pd_decode_goodput}.json @ f3df05bdb
+In a separate experiment that isolates a rider's cost --- riders added on top of
+a fixed resident batch, with prefill cancelled by construction --- only
+$\effo = 0.62$ of a host-tier request's transfer overlaps compute, and the
+unhidden residual costs $8.3$\,ms of a $54$\,ms step, leaving decode throughput
+$0.86\times$ that of not offloading at all.
+% src: 4.2b rider cost curve @ 21ea9b18d
+End to end, through the prefill handover, the deficit is $2.3\%$.
+% src: paper/data/pd_decode_goodput.json @ f3df05bdb
 That is what the model predicts for a 25\,GB/s link, and DirectKV reaches the
 same boundary from the kernel side, concluding that on PCIe theirs ``should be
 viewed primarily as a capacity-extension mechanism''. It fixes one end of the

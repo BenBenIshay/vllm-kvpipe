@@ -153,11 +153,12 @@ host-tier requests & ITL (ms) & tok/s \\
 3 & 74.98 & 57.0 \\
 \bottomrule
 \end{tabular}
-\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe. Fit:
-$9.6$\,ms fixed $+$ $4.7$\,ms per request, so \textbf{78\% of the transfer
-overlaps compute} --- the interconnect is not the binding cost at this scale.
-Throughput recovers toward the offload-free arm as requests are added but does
-not cross it within this sweep: three host-tier requests remain 0.9\% below it.}
+\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe. An
+affine fit gives $9.6$\,ms fixed $+$ $4.7$\,ms per request, implying $78\%$
+overlap. The direct measurement below supersedes both the functional form and
+the number. Throughput recovers toward the offload-free arm as requests are
+added but does not cross it within this sweep: three host-tier requests remain
+0.9\% below it.}
 \label{tab:ridercost}
 \end{table}
 % src: paper/data/hide_efficiency.json @ f3df05bdb
@@ -176,6 +177,49 @@ same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
 precisely the part that a faster interconnect does \emph{not} shrink, that
 split determines break-even on a coherent link, so the interconnect comparison
 uses ten host-tier counts rather than three.
+
+\paragraph{A third reading, and the one we keep.} The two above share a defect
+with the fit itself: all of them difference \emph{goodput} runs that still
+contain prefill, and the rider count they attribute cost to is the count
+\emph{offered}, not the count the system created. Measuring $\effo$ directly
+--- a fixed resident batch of 16 with riders added on top, step time obtained
+by differencing two generation lengths so that prefill cancels exactly, and the
+pool's own byte counters read alongside --- gives $\effo = 0.62$ at two riders,
+not $0.78$:
+%
+\begin{center}\small
+\begin{tabular}{rrrr}
+\toprule
+riders & step (ms) & GB/step & $\effo$ \\
+\midrule
+0 & 54.10 & 0.000 & --- \\
+2 & 70.79 & 1.115 & 0.62 \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: 4.2b rider cost curve @ 21ea9b18d
+%
+At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
+of $1/(N{+}r) = 0.056$, and decode throughput is $254$ tok/s against $296$ at
+$r{=}0$. \textbf{The A100 does not show the benefit}, which is what
+$\Xlink^{*} = \Ckv(1-\effo)/T$ predicts for a $25.1$\,GB/s link. An earlier
+$+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
+by hand from a co-located run, and we withdraw it.
+
+Two properties of the cost curve matter for the coherent-link projection. It is
+\textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
+($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$), so $\Delta T = F + cr$ fits a
+negative fixed cost and the fixed-versus-slope split above is not a meaningful
+decomposition. What the data fits is a kink, $T \approx \max(T_{\mathrm{compute}},
+r S \btok{}/\Xlink) + \text{overhead}$, with the knee at
+$r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
+which is where the byte budget of \S\ref{sec:design:admission} also lands. A
+faster link raises the knee but does not remove the overhead, and at the knee
+$\sim\!13$\,ms of overhead on a $53$\,ms step already exceeds what two extra
+requests buy. Whether that overhead survives onto a coherent interconnect is
+the question the next substrate has to answer, and it cannot be extrapolated
+from this one.
+% src: Phase 0 rider cost curve @ fb7e9db2a
 
 \paragraph{Swap semantics versus streaming.} A design whose offloaded unit is
 \emph{owned} by one side must write that unit back once per generated token; one
