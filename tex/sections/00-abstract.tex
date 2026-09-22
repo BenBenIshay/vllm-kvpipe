@@ -17,7 +17,8 @@ Both tiers are served in one forward pass, so weights are read once however the
 batch is split.
 
 We first derive when a second tier pays at all. The capacity multiplier is
-$1 + (\Xlink/\BW)(\HBM/\Ckv)$, it applies only above a latency gate we make
+$1 + (\Xlink/\BW)\,\effo\,(\HBM/\Ckv)$, where $\effo$ is the measured fraction
+of a rider's transfer that overlaps compute; it applies only above a latency gate we make
 explicit, and --- counter to intuition --- context length cancels, so the value
 tracks how much of memory the weights consumed rather than how long the
 requests are. The rules explain a published system's own unexplained result:
@@ -26,8 +27,9 @@ and faster on larger ones.
 
 We implement the design in vLLM and evaluate it on PCIe and coherent
 interconnects. Host-tier requests are \emph{additive} --- peak concurrency rises
-from 8 to 48 against a fixed KV pool --- and 78\% of a host-tier request's
-transfer overlaps compute. On PCIe the economics still do not close, which our
+from 8 to 48 against a fixed KV pool --- while a direct measurement of a rider's
+step-time cost puts $\effo$ at $0.62$, well short of the perfect overlap the
+budget assumes. On PCIe the economics still do not close, which our
 own model predicts and we report as a validated negative that bounds the
 technique. The decision the system actually makes is \emph{how many} requests
 to offload, taken from a measured per-step transfer budget rather than a

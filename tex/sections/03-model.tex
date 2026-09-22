@@ -22,7 +22,7 @@ unexplained.
 Let $\Xlink$ be the achieved interconnect bandwidth between host memory and the
 GPU, $\BW$ the achieved HBM bandwidth, $\HBM$ the device memory, $W$ the bytes
 of model weights, and $\Ckv = \HBM - W$ the memory left for KV cache. Let $S$
-be the context length and $k$ the KV bytes per token.
+be the context length and $\btok{}$ the KV bytes per token.
 
 A decode step reads every weight once and every resident KV byte once. Writing
 $\effw$ and $\effkv$ for the fraction of peak bandwidth each achieves --- we
@@ -31,14 +31,30 @@ step time at batch $B$ is
 %
 \begin{equation}
 \label{eq:step}
-\mathrm{ITL}(B) \;=\; \frac{W}{\BW \cdot \effw} \;+\; \frac{B \cdot S \cdot k}{\BW \cdot \effkv}.
+\mathrm{ITL}(B) \;=\; \frac{W}{\BW \cdot \effw} \;+\; \frac{B \cdot S \cdot \btok{}}{\BW \cdot \effkv}.
 \end{equation}
 %
-The capacity-limited batch is $B_{\mathrm{cap}} = \Ckv / (S k)$: the point at
+The capacity-limited batch is $B_{\mathrm{cap}} = \Ckv / (S \btok{})$: the point at
 which KV, not arithmetic, exhausts the device. A \emph{rider} is a request
 whose KV lives in host memory and streams over the interconnect during the
-step. The number of riders a step can absorb without lengthening it is
-$B_{\mathrm{off}} = \mathrm{ITL} \cdot \Xlink / (S k)$.
+step. That transfer is issued one layer ahead of the attention that consumes
+it, so it costs step time only to the extent that it fails to overlap compute.
+Writing $\effo \in (0,1]$ for the fraction that does overlap --- the
+\emph{overlap efficiency} --- the number of riders a step absorbs without
+lengthening it is
+%
+\begin{equation}
+\label{eq:boff}
+B_{\mathrm{off}} \;=\; \frac{\mathrm{ITL} \cdot \Xlink \cdot \effo}{S \btok{}}.
+\end{equation}
+%
+Setting $\effo = 1$ recovers the budget one writes down by reflex: that a step
+of length $T$ absorbs $T\Xlink$ bytes for free. It does not, and $\effo$ is not
+a correction factor we can leave implicit --- it multiplies the gain directly
+(\S\ref{sec:model:gain}), and on our A100/PCIe substrate it is $0.62$
+(\S\ref{sec:eval:cost}), which is the difference between predicting a gain and
+predicting a loss. We therefore treat it as a measured input throughout and
+report predictions as a range over it where it has not been measured.
 
 \subsection{(a) Context length cancels}
 
@@ -47,8 +63,8 @@ The ratio of riders to residents,
 \begin{equation}
 \label{eq:cancel}
 \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
-  \;=\; \frac{\mathrm{ITL}\cdot \Xlink / (S k)}{\Ckv / (S k)}
-  \;=\; \frac{\mathrm{ITL}\cdot \Xlink}{\Ckv},
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink \cdot \effo / (S \btok{})}{\Ckv / (S \btok{})}
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink \cdot \effo}{\Ckv},
 \end{equation}
 %
 is independent of $S$. Long context does not make offloading more attractive:
@@ -82,12 +98,13 @@ faster than one that is mostly KV, so $\mathrm{ITL}_0$ depends on the
 weight-to-KV ratio and the applicability gate in (d) is model-dependent rather
 than a property of the device.
 
-The transfer budget is still $\mathrm{ITL}\cdot\Xlink$, and most of it is still
+The transfer budget is still $\mathrm{ITL}\cdot\Xlink\cdot\effo$, and most of it is still
 bought with \emph{weight-read time}. On GH200, Qwen-32B spends roughly
 21\,ms of a 34\,ms step reading weights, during which nothing else contends for
 the interconnect. The opportunity is time, not spare bandwidth.
 
 \subsection{(c) The gain law}
+\label{sec:model:gain}
 
 Adding $B_{\mathrm{off}}$ riders to $B_{\mathrm{cap}}$ residents multiplies the
 served batch by
@@ -95,7 +112,7 @@ served batch by
 \begin{equation}
 \label{eq:gain}
 \text{gain} \;=\; 1 + \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
-      \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\frac{\HBM}{\Ckv},
+      \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\effo\cdot\frac{\HBM}{\Ckv},
 \end{equation}
 %
 substituting $\mathrm{ITL}_0 \approx \HBM/(\BW\,\bar\eta)$ into
@@ -108,10 +125,21 @@ ate}, not model size and not context length.
 That single observation is the section's most useful consequence, because it
 is counter to how the field selects evaluation models.
 
+Between the handicap and the amplifier sits $\effo$, the only term of the three
+that a serving system controls. It is also the term we can say least about: it
+is a property of the prefetch pipeline meeting a particular interconnect, and
+it is not portable across links. On NVLink-C2C at $350$\,GB/s the same law
+gives $1.87\times$ at $\effo{=}1$ and $1.20\times$ at $\effo{=}0.23$ --- so on
+the hardware where the technique is supposed to pay, $\effo$ spans most of the
+distance between a strong result and a marginal one. We state predictions for
+that regime as intervals over $\effo$ rather than as points, and measuring it
+on a coherent link is the first experiment we ask of one.
+% src: harness finding @ da7f59107 (rider cost curve, A100)
+
 Equation~\ref{eq:gain} is a first-order result and we are careful about what it
 does and does not include. It counts requests, not tokens per second, and it
-ignores two second-order effects: riders lengthen the step slightly (the link
-is not infinitely fast), and each rider costs a small, fixed share of device
+ignores two second-order effects: the residual $(1-\effo)$ of a rider's
+transfer lengthens the step, and each rider costs a small, fixed share of device
 memory for the rolling window it is streamed into. Table~\ref{tab:gain}
 therefore reports \emph{both} the capacity ratio the closed form approximates
 and the throughput gain once those two effects are charged, since a reader who
