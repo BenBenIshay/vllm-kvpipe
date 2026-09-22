@@ -53,7 +53,7 @@ call and are overwritten by the second. On A100 that single change was worth
 \label{sec:impl:sched}
 
 Three changes make a host-tier request hold no device blocks
-(\S\ref{sec:design:additive}): admission with an empty block list, a prompt
+(\S\ref{sec:design:admission}): admission with an empty block list, a prompt
 marked already computed so no prefill is scheduled, and deferral of a
 block-starved request at the head of the waiting queue so it does not block
 admissions that need no blocks at all. The third was found only by testing; the
