@@ -1,0 +1,153 @@
+% Appendix C -- the detailed adjudication of related work, moved out of
+% section 7 (2026-09-26) for the page limit. The body keeps every claim this
+% paper's positioning rests on; what is here is the evidence for those claims,
+% which a reviewer checking our reading of another paper will want and a reader
+% following the argument will not.
+
+\section{Related work in detail}
+\label{app:related}
+
+\paragraph{Where Pie's advantage comes from, and where it stops.} Pie's
+headline is $1.9\times$ over vLLM, and the regime that produces it is stated
+plainly in their \S5.3: they hold the physical KV cache fixed and sweep it from
+3 to 12\,GB, and report that Pie ``outperforms vLLM at smaller GPU KV cache
+sizes and achieve similar performance at the largest memory capacity
+(12\,GB)'', because ``when GPU memory capacity is small, vLLM suffers from
+significant recomputation''. As memory grows, ``the improvement ratio gradually
+decreases until Pie and vLLM perform similarly''.
+
+The gain is therefore \emph{avoided recomputation} in a memory-starved engine,
+not additional capacity converted into work. That distinction matters for what
+each system can claim. A device large enough that the baseline stops preempting
+is a device on which Pie's reported advantage has already converged to zero ---
+and their entire sweep, 3 to 12\,GB of KV, sits below the operating point we
+study, where a 32B model on a 96\,GB device leaves $\Ckv \approx 22$--28\,GB.
+
+\paragraph{A consequence of the layer unit: the return leg.} Choosing the layer
+as the unit of management has a second effect, on traffic rather than on
+policy. In Pie a layer's KV \emph{lives} on one side or the other, and the
+GPU-side buffer it occupies is needed by the next layer arriving, so a layer
+that has just been computed --- and has therefore just had this token's $K,V$
+appended to it --- must be written back in full. Their swap controller says so
+directly: it initiates ``a swap-out for the `coldest layer', defined as the last
+layer that finished computation''. Every offloaded byte therefore crosses the
+interconnect \textbf{twice per generated token}, and the return leg is the
+slower direction (371 vs 419\,GB/s by their own measurement).
+
+Our rolling region is not the home of the data but a cache of it: the host
+mirror stays authoritative and each step's new $K,V$ is written to it directly,
+so a slot can be overwritten without persisting anything. DirectKV's kernel has
+the same property, appending only the newly projected $K,V$ to CPU memory. The
+resulting difference in per-token traffic is not marginal:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+per generated token & to device & to host \\
+\midrule
+Pie~\cite{pie} & offloaded KV & \textbf{the same KV again} \\
+DirectKV~\cite{directkv} & all KV & one token's $K,V$ \\
+\textbf{this paper} & selected requests' KV & one token's $K,V$ \\
+\bottomrule
+\end{tabular}
+\caption{Per byte of offloaded KV, a design whose offloaded unit is \emph{owned}
+by one side must return it; one whose device-side copy is a \emph{cache} need
+not. Pie moves two bytes where the other two move one, and its return leg uses
+the slower direction of the link.}
+\label{tab:traffic}
+\end{table}
+
+Table~\ref{tab:traffic} states the consequence. This is not a criticism of
+Pie's design so much as a property of its unit:
+a whole layer's cache cannot be left dirty on the device when the buffer is
+reclaimed for the next layer. It does mean that comparisons of interconnect
+pressure between these systems must count both directions.
+
+\paragraph{On comparing directly.} Pie has no public artifact --- its paper
+lists no repository, and we found none --- so a head-to-head against their
+implementation is not available to us. Nor would it isolate what we want:
+running two engines compares implementations, whereas the question here is
+whether \emph{choosing} which requests to offload beats spreading the same
+interconnect budget uniformly. \S\ref{sec:eval:ablation} therefore holds the
+mechanism fixed and varies the policy, and reports Pie's published figures
+alongside rather than reproducing them.
+
+
+\paragraph{The endpoint argument.} DirectKV \S6: ``During prefill, the manager
+stores the initial $K,V$ entries from each layer in CPU memory. During decode,
+the GPU reuses these cached entries directly, while only appending new $K,V$
+for the latest token'' --- and its Alg.~3 appends that new $K,V$ to CPU memory
+as well. \textbf{It places 100\% of KV on the host, for every request, always.}
+That is why it needs no scheduler: placement is static and total. Stock vLLM
+and SGLang are the opposite endpoint, at 0\%. Pie is the one system that is
+genuinely interior, and it reaches the interior by splitting \emph{layers}
+uniformly across all requests rather than by choosing requests --- so the
+per-request axis is unoccupied, and the optimum along it is interior
+(Table~\ref{tab:endpoints}). Note that the all-host endpoint leaves the device
+memory not holding weights entirely idle, which is why it loses to an
+HBM-resident baseline whenever that baseline fits --- the ordering DirectKV
+reports on Llama-3.1-8B, and one our gain law is consistent with
+(\S\ref{sec:model:directkv}).
+
+A natural objection to reading DirectKV \S8.1 as leaving the policy dimension
+open is that the vLLM and SGLang mechanisms it names --- continuous batching,
+prefix reuse, eviction, hierarchical KV caching --- already constitute KV
+policy. They do not, for our purposes: each decides \emph{reuse} and
+\emph{preemption}, that is, the residency of blocks belonging to a request that
+is \emph{not currently decoding}. None of them decides the tier of an
+\emph{actively decoding} request. Several systems do \emph{decode} from
+host-resident KV --- FlexGen, Pie, NEO and OmniServe among them --- so the state
+is not new; what is unoccupied is choosing, per request, which side of the
+memory such a request lives on.
+
+\paragraph{Policy, at other granularities.} OmniServe~\cite{omniserve} is the
+closest prior work on policy: it forms mixed GPU/host batches and admits
+host-tier work per layer under an SLO. The regime differs on three axes that
+change the problem. It targets PCIe-attached A100s with CPU-only hosts over
+RoCE; attention for host-tier requests is computed \emph{on the CPU}, so the
+trade is compute-for-capacity rather than bandwidth-for-capacity; and tiering
+is driven by an \emph{externally supplied} latency-sensitive/best-effort
+service class. Ours assumes a coherent interconnect, computes all attention on
+the GPU, and infers tier from observable request properties, so it applies in a
+single-class deployment where no such label exists.
+
+Fang et al.~\cite{calkv} --- whose title also claims the phrase ``heterogeneous
+memory system'', so the distinction is worth drawing sharply --- give a formal
+placement model and a
+simulated-annealing oracle bound on aggregate bandwidth. It is simulation only,
+on synthetically shrunk HBM, at \emph{token} granularity by importance, and it
+requires perfect foresight; its gains are contingent on 60--80\% attention
+sparsity, and it closes by explicitly calling for runtime policies. Its own
+results show migration overhead dominating below roughly 60\% sparsity. We
+make the testable counter-claim that \emph{request}-granularity migration
+avoids that thrash, because whole requests move once at controlled moments
+rather than pages chasing shifting token importance.
+
+\paragraph{Reducing the KV instead of relocating it.} ShadowKV~\cite{shadowkv}
+keeps a low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely,
+reporting support for a $6\times$ larger batch and $3.04\times$ throughput; KV
+quantization, Quest and H2O likewise shrink what must be stored. These change
+the model's output, and they compose with a memory system rather than competing
+with it: a smaller KV scales both the device-resident cohort and the affordable
+host cohort, leaving the ratio between them --- and hence the value of a second
+tier --- unchanged. That argument is analytical and we have not measured the
+composition; it is a prediction of Eq.~\ref{eq:cancel}, and a cheap one to
+falsify.
+
+
+\paragraph{Adjacent memory management.}
+InfiniGen~\cite{infinigen} attacks the same per-step transfer from the other
+end, speculating which tokens matter for the next layer and prefetching only
+those; it reduces the bytes a host-tier request must move, where we decide how
+many requests move bytes at all, and the two are complementary.
+CachedAttention~\cite{cachedattention} keeps the KV of \emph{inactive}
+conversation sessions in a hierarchical store so a later turn skips prefill ---
+the case \S\ref{sec:background} distinguishes from ours, and the reason our
+novelty claim is scoped to actively decoding requests rather than to
+host-resident KV in general. vAttention~\cite{vattention} changes how KV is
+\emph{allocated}, decoupling virtual from physical memory instead of paging in
+user space; it is orthogonal to placement, and a host tier built on it would
+face the same admission question we pose here.
+
