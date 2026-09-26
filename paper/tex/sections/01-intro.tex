@@ -150,7 +150,7 @@ hardware, is the question the model exists to answer.
 \item \textbf{A capacity model for heterogeneous KV memory}
       (\S\ref{sec:model}): a closed-form multiplier, a latency gate, and a
       fixed-cost gate. The step-time model beneath them is validated on A100;
-      the multiplier is tested in \S\ref{sec:eval}. Together the gates exclude
+      the multiplier itself is not yet tested. Together the gates exclude
       most configurations the field currently evaluates on, including some we
       would have liked to claim.
 \item \textbf{A two-tier KV memory manager} (\S\ref{sec:design}) in which a
@@ -170,10 +170,11 @@ hardware, is the question the model exists to answer.
       host-tier request costs} (\S\ref{sec:eval}): the overlap efficiency
       $\effo = 0.62$, the fixed per-step cost $F = 12.3$\,ms, and the
       non-affine shape of the cost curve --- the three quantities the second
-      gate turns on. Together with a negative result we report rather than
-      bury: on PCIe the closed-loop migration probe measures its own demotions
-      as harmful and reverts them, which is the correct action on a link that
-      cannot hide the transfer.
+      gate turns on. Together with the two limits the substrate imposes on
+      what we can claim: the placement ablation needs more host-tier requests
+      than a PCIe budget admits, and the migration probe needs a rider count at
+      which its verdict carries information. We implemented both and report
+      what they would test rather than a result they did not produce.
 \end{enumerate}
 
 We state the last of these deliberately. A host tier admits a policy design

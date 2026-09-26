@@ -34,7 +34,7 @@ bidirectional where a KV stream is not; we have not measured C2C.
 \paragraph{Exclusive access, for every absolute.} Each number we report as an
 absolute is taken on an idle, exclusively allocated device. This is not
 boilerplate: the same measurement on a contended node and on an idle one
-differed by $9.4\times$ (\S\ref{sec:impl:stash}). Ratios between arms run back
+differed by $9.4\times$ (Appendix~\ref{app:impl}). Ratios between arms run back
 to back are robust to contention; absolutes are not.
 
 \paragraph{Models.} Qwen2.5-32B fp16 as the primary model, because on a 96\,GB
@@ -49,7 +49,12 @@ not evaluate a 70B-class model: its capacity-limited batch is about seven
 requests, so a single request is 14\% and no result could separate an effect
 from a rounding artifact.
 
-\paragraph{Workloads.} ShareGPT and Alpaca under Poisson arrivals, via
+\paragraph{Workloads.} Every number reported in this section comes from a
+\emph{fixed-context, fixed-output, closed-loop} run: 2048 context and 64 output
+tokens, with the offered load and resident cohort stated per experiment. That is
+the right shape for isolating a rider's cost and the wrong shape for goodput,
+which is why \S\ref{sec:eval:goodput} is a protocol rather than a result. That
+protocol calls for ShareGPT and Alpaca under Poisson arrivals, via
 \texttt{vllm bench serve}. Two properties are required rather than preferred.
 Real traces are heavy-tailed in both prompt and generation length, which is the
 variation a \emph{per-request} placement policy exists to exploit --- on a
@@ -139,12 +144,16 @@ parallel control matches the resident-cohort cap, because an arm with a
 different cap is a different \emph{allocation} rather than a different policy;
 on A100 that distinction accounted for most of an apparent 14.5\% difference.
 
-The adaptive probe's verdict is reported as a result in its own right. On PCIe
-it measured demotion as harmful and reverted it, which is the correct action on
-a link that cannot hide the transfer. On a coherent link it should measure
-demotion as beneficial and keep it. If it does not, the host path carries a
-fixed per-step cost that survives a fast interconnect, and that is a finding we
-would rather publish than omit.
+The adaptive probe of \S\ref{sec:design:migration} is implemented but not
+reported here, and the reason is the same one that blocks the ablation. Its
+verdict compares goodput before and after a demotion; on a substrate where the
+budget admits two host-tier requests, a demotion moves one of them, and the
+resulting change is inside the noise the probe's own margin is set to absorb. We
+therefore state its prediction rather than a measurement: on PCIe it should
+revert, because no amount of freed capacity repays a step the link cannot hide;
+on a coherent link it should keep. If it keeps on PCIe or reverts on C2C, the
+model is wrong about which term dominates, and that is the finding we would
+report.
 
 \subsection{What a host-tier request costs}
 \label{sec:eval:cost}
@@ -186,8 +195,9 @@ of $1/(N{+}r) = 0.056$, and decode throughput --- derived as $B/\mathrm{ITL}$
 from the step times, not measured end to end --- is $254$ tok/s against $296$ at
 $r{=}0$. \textbf{The A100 does not show the benefit}, which is what
 the crossover bandwidth predicts. Setting the unhidden transfer equal to what
-the freed capacity buys gives $\Xlink^{*} = \Ckv(1-\effo)/T$, where $\Ckv$ here
-is the \emph{resident cohort's} KV, $8.59$\,GB at 16 requests and 2048 context,
+the freed capacity buys gives $\Xlink^{*} = K_{\mathrm{res}}(1-\effo)/T$, where $K_{\mathrm{res}}$ is the
+\emph{resident cohort's} KV --- a different quantity from $\Ckv$, and
+$8.59$\,GB at 16 requests and 2048 context ---
 and $T$ the rider-free step of $54.10$\,ms: $\Xlink^{*} = 60$\,GB/s. Our link
 runs at $25.1$, or $0.42\times$ the crossing, so the loss is predicted rather
 than surprising. The same number puts a coherent link's $419$\,GB/s well above
@@ -221,9 +231,11 @@ decomposition. What the data fits is a kink, $T \approx \max(T_{\mathrm{compute}
 r S \btok{}/\Xlink) + \text{overhead}$, with the knee at
 $r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
 which is where the byte budget of \S\ref{sec:design:admission} also lands. A
-faster link raises the knee but does not remove the overhead, and at the knee
-$\sim\!13$\,ms of overhead on a $53$\,ms step already exceeds what two extra
-requests buy. Whether that overhead survives onto a coherent interconnect is
+faster link raises the knee but does not remove the overhead. Three points do
+not resolve that overhead: it measures $18.1$, $8.6$ and $13.5$\,ms at
+$r = 2, 4, 6$, non-monotone, and the knee at $r = 2.4$ falls between the first
+two. Even its smallest value is $8.6$\,ms on a $53$\,ms step, which is most of
+what two extra requests buy. Whether that overhead survives onto a coherent interconnect is
 the question the next substrate has to answer, and it cannot be extrapolated
 from this one.
 % src: paper/data/rider_cost_phase0.json @ fb7e9db2a
@@ -275,13 +287,15 @@ part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
 $\times$1.03 in capacity --- barely anything once its riders are billed for the
 HBM bandwidth they consume. The second gate of \S\ref{sec:model:omits} then
 makes it a predicted \emph{negative}: charging $F$ and the unhidden residual
-gives $\times$0.75, and its $F^{*}$ is $-7.0$\,ms, meaning the residual alone
+gives $\times$0.78, and its $F^{*}$ is $-0.9$\,ms, meaning the residual alone
 exceeds what its capacity buys. The prediction is therefore unusually strong ---
 8B should lose on \emph{any} implementation, however cheap the fixed cost.
 
 \emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered
-through the prefill handover, throughput is 2.3\% \emph{below} not offloading
-at all.
+through the prefill handover, throughput is 2.3\% \emph{below} not offloading at
+all --- and the same run's median ITL rises from $50.5$ to $70.9$\,ms, $+40\%$.
+The throughput figure alone understates the loss: at a latency target anywhere
+near the baseline's own step time, that arm attains no goodput at all.
 % src: paper/data/pd_decode_goodput.json @ f3df05bdb
 That is what the model predicts for a 25\,GB/s link, and DirectKV reaches the
 same boundary from the kernel side, concluding that on PCIe theirs ``should be
@@ -298,7 +312,7 @@ than either endpoint. \emph{Prediction.} On this substrate, \textbf{no}:
 charging the fixed cost and the unhidden residual of \S\ref{sec:model:omits}
 makes the throughput form $\times0.85$ for our primary model even on a projected
 coherent link, and worse on this one. The capacity term alone does not rescue
-it: what would is $F$ falling below the $F^{*} = 4.0$\,ms that configuration can
+it: what would is $F$ falling below the $F^{*} = 3.8$\,ms that configuration can
 afford.
 
 We state the protocol here because it is the experiment the positive claim

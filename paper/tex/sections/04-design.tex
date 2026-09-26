@@ -99,7 +99,7 @@ Three consequences follow. Everything but attention is shared: QKV, the output
 projection and the MLP execute once over the whole batch, and a host-tier
 request adds one row to GEMMs whose cost is dominated by reading the weights ---
 negligible while those GEMMs remain memory-bound, which on an 8B model holds
-until batch 142 (\S\ref{sec:model:params}). The two attention calls are
+until batch 142 (Appendix~\ref{app:params}). The two attention calls are
 sequential on the same hardware, so they do not compete for SMs, and the
 second's cost scales with the host-tier rows rather than with the batch. And the
 first call does no wasted work for those rows: their \texttt{seqused\_k} is
@@ -318,9 +318,9 @@ decoration: the cancellation is exact only in the fluid limit with uniform
 context, and at long context both cohorts are small integers, so which requests
 are chosen begins to matter again through rounding
 (\S\ref{sec:model:omits}). \S\ref{sec:eval:ablation} is consistent with the
-first-order claim on our substrate, where the admission budget admits at most
-three host-tier requests --- a choice set too small for any ranking to separate
-from arrival order.
+first-order claim on our substrate, where the admission budget admits two
+host-tier requests --- a choice set too small for any ranking to separate from
+arrival order.
 
 The discriminating signal is \textbf{temporal}, and it is the lifetime effect
 above. On a decode node under continuous batching every admitted request
