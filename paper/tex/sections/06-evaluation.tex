@@ -1,13 +1,17 @@
 \section{Evaluation}
 \label{sec:eval}
 
-We ask five questions, in the order a reader should want them answered. Does a
-second memory tier raise \emph{goodput} --- requests served within a latency
-target --- rather than merely raw throughput? Does the placement policy
-contribute, or would uniform offloading do as well? What does a host-tier
-request cost, and how does that cost scale with the interconnect? Does the
-capacity model of \S\ref{sec:model} predict what we measure? And where does the
-technique stop paying?
+We ask five questions: does the mechanism work, what does a host-tier request
+cost, does the capacity model of \S\ref{sec:model} predict what we measure, is
+the placement policy load-bearing, and does a second tier raise \emph{goodput}
+--- requests served within a latency target --- rather than raw throughput?
+
+The order is deliberate and so is the honesty about which we can close. Every
+measurement here is on A100/PCIe, which \S\ref{sec:model:gate} predicts cannot
+pay, so this section establishes the mechanism, the cost structure and the
+model's \emph{negative} predictions, and states the last two questions as
+protocols with predictions attached. Each subsection opens with its question,
+the claim under test, and what the model predicts, before any number.
 
 \subsection{Setup}
 \label{sec:eval:setup}
@@ -68,33 +72,29 @@ comparison against a published figure is drawn, we state which engine version
 and workload each side used rather than presenting ratios as directly
 commensurable.
 
-\subsection{Does a second tier raise goodput?}
+\subsection{Does the mechanism work? Are host-tier requests additive?}
 \label{sec:eval:capacity}
 
-The decisive experiment holds the model, the device, the workload and the
-substrate fixed and varies only whether a second memory tier is used. We sweep
-the arrival rate upward until goodput stops rising --- that is, until the
-device is saturated --- and report goodput at a latency target anchored to the
-baseline's own measured step time rather than to a round number, since a target
-below an arm's step time is unsatisfiable by every arm and measures nothing.
+\emph{Question.} Does admitting a host-tier request consume device blocks?
+\emph{Claim under test.} That it does not, so the host cohort adds to the
+resident cohort rather than displacing it --- the property Table~1's interior
+point depends on. \emph{Prediction.} Concurrency should rise past the
+all-HBM capacity of the same pool, and it should do so without the device pool
+growing.
 
-Two properties of this design are worth stating in advance, because they are
-what make a result interpretable. A target at the baseline's own floor is the
-one a host-tier request is \emph{least} able to meet, since it adds per-step
-latency; a very loose target admits everything and discriminates nothing. The
-informative regime is between them. And below the applicability gate of
-Eq.~\ref{eq:gate} the model predicts \emph{no} benefit at any rate, so the
-tightest points of the sweep are a prediction we can be wrong about in public.
-
-\emph{The capacity mechanism, measured independently of the economics.} On
-A100 we can separate whether host-tier requests are \emph{additive} from
-whether they pay. Against a fixed KV pool, host-tier requests raise peak
-concurrency from 8 to 48 --- and 48 is a lower bound, being the entire offered
-load.
+Against a fixed KV pool, host-tier requests raise peak concurrency from 8 to 48,
+and 48 is a lower bound because it was the entire offered load.
 % src: paper/data/preload_capacity.json @ f3df05bdb
-KV is delivered synthetically in this experiment, so it establishes capacity
-only and its generated tokens are not meaningful; goodput with real KV is
-\S\ref{sec:eval:cost}.
+This is a \textbf{mechanism check and not a performance result}, and three
+things bound what it shows. KV is delivered synthetically, so the generated
+tokens are not meaningful. No latency target is applied and none is met: the
+admission roofline of \S\ref{sec:design:admission} permits about two host-tier
+requests at this context, so serving 48 implies step times far outside any SLO.
+And the pool is deliberately small, which is the same device-shrinking we
+criticise elsewhere --- justified here only because the quantity under test is
+whether admission touches the pool at all, not how fast the result runs. What it
+establishes is that zero-block admission decouples the host cohort from the
+device pool. Whether that decoupling pays is \S\ref{sec:eval:cost}.
 
 That result also isolates why the system model matters. An earlier design
 capped a host-tier request's block \emph{growth} while leaving its prefill
@@ -304,6 +304,34 @@ same boundary from the kernel side, concluding that on PCIe theirs ``should be
 viewed primarily as a capacity-extension mechanism\ldots bounded by CPU--GPU
 interconnect bandwidth''. We report it as a validated negative that fixes one
 end of the bandwidth axis rather than as a disappointment.
+
+\subsection{Does a second tier raise goodput?}
+\label{sec:eval:goodput}
+
+\emph{Question.} The one an operator actually asks. \emph{Claim under test.}
+That at a matched latency target the mixture serves more requests per second
+than either endpoint. \emph{Prediction.} On this substrate, \textbf{no}:
+\S\ref{sec:model:gate} puts A100/PCIe below the gate, and charging the fixed
+cost of \S\ref{sec:model:omits} makes the throughput form
+$\times0.93$ for our primary model. On a coherent link the same arithmetic turns
+positive only if the fixed cost falls with the host CPU; the capacity term alone
+does not rescue it.
+
+We state the protocol here because it is the experiment the positive claim
+requires and it is not yet run. Hold model, device, workload and substrate
+fixed; vary only whether a second tier is used; sweep arrival rate until goodput
+stops rising; report goodput at a target anchored to the baseline's own measured
+full-pool step time rather than a round number, since a target below an arm's
+step time is unsatisfiable by every arm and measures nothing. A target at the
+baseline's floor is the one a host-tier request is \emph{least} able to meet,
+because it adds per-step latency; a very loose target admits everything and
+discriminates nothing; the informative regime is between them. Reporting
+requires the fixed cost to be measured on the same machine, since it is what the
+prediction turns on.
+
+The PCIe half of that comparison is \S\ref{sec:eval:negative}: with real KV
+through the prefill handover, throughput is $2.3\%$ below not offloading, which
+is the predicted sign.
 
 \subsection{Correctness}
 \label{sec:eval:correct}
