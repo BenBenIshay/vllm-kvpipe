@@ -1,0 +1,96 @@
+% Appendix D -- two design figures moved out of section 4 (2026-09-26) for the
+% page limit. Both illustrate structure the body states in prose; the three that
+% stayed (the per-layer execution split, the compaction, and the k-slot
+% pipeline) show things prose cannot.
+
+\section{Additional design figures}
+\label{app:figures}
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=2mm},
+  mem/.style={box, fill=black!4},
+  hot/.style={box, fill=blue!8, draw=blue!45},
+  lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
+  arr/.style={-{Latex[length=2mm]}, thick},
+]
+\node[mem, minimum width=3.2cm] (hk) at (0,0)
+     {\texttt{host\_k}[$\ell$]\ \ \texttt{host\_v}[$\ell$]};
+\node[lbl] (hkl) at (0,-0.85) {one pinned pair per layer,\\block-major, addressed by\\\textbf{host block id}};
+\node[draw, dashed, rounded corners=3pt, fit=(hk)(hkl), inner sep=2.5mm] (hostbox) {};
+\node[font=\bfseries\small] at (0,1.15) {Host DRAM};
+
+\node[mem, minimum width=3.6cm] (pool) at (8.0,0.95)
+     {paged KV pool\\[-1pt]{\scriptsize device-tier requests}};
+\node[hot, minimum width=3.6cm] (roll) at (8.0,-0.95)
+     {rolling region\\[-1pt]{\scriptsize $k$ slots $\times\ W$ blocks}\\[-1pt]{\scriptsize layer $\ell$ uses $\ell \bmod k$}};
+\node[draw, dashed, rounded corners=3pt, fit=(pool)(roll), inner sep=2.5mm] (devbox) {};
+\node[font=\bfseries\small] at (8.0,2.3) {GPU HBM};
+
+\node[box, minimum width=2.5cm] (attn) at (14.0,0)
+     {attention\\layer $\ell$\\[-1pt]{\scriptsize one forward pass}};
+
+\draw[arr, blue!65] (hostbox.east|-hk) -- (4.4,0) -- (4.4,-0.95) -- (roll.west);
+\node[lbl, text=blue!70] at (3.3,1.15)
+     {\texttt{stream\_layer}($\ell$)\\refresh slot $\ell \bmod k$\\contiguous runs, H2D};
+
+\draw[arr, black!60] (pool.east) -- (11.6,0.95) -- (attn.north west);
+\node[lbl] at (11.55,1.55) {device\\block table};
+
+\draw[arr, black!60] (roll.east) -- (11.6,-0.95) -- (attn.south west);
+\node[lbl] at (11.55,-1.55) {compacted\\block table};
+
+\draw[arr, red!60] (attn.south) -- (14.0,-2.9) -- (0,-2.9) -- (hostbox.south);
+\node[lbl, text=red!70] at (7.0,-3.25)
+     {\texttt{write\_token}($\ell$): this step's new $K,V$ $\rightarrow$ host mirror (authoritative) \emph{and} the current slot};
+\end{tikzpicture}
+\caption{\textbf{Data path.} A host-tier request's KV lives in per-layer pinned
+host mirrors addressed by an independent \emph{host block id} space. Once per
+step the active cohort's blocks are compacted into a rolling region of $k$
+device slots (Fig.~\ref{fig:compact}); once per layer the slot for
+$\ell \bmod k$ is refreshed (Fig.~\ref{fig:pipeline}). Attention runs over both
+tiers in one forward pass, each tier reading its own block table.}
+\label{fig:arch}
+\end{figure*}
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  st/.style={draw, rounded corners=2pt, align=center, minimum height=7.5mm,
+             minimum width=1.95cm, inner sep=1.2mm, fill=black!3},
+  hs/.style={st, fill=blue!10, draw=blue!45},
+  arr/.style={-{Latex[length=1.5mm]}},
+  ed/.style={font=\scriptsize\itshape, text=black!60, align=center},
+]
+\node[st] (wait) at (0,0) {waiting};
+\node[hs] (adm)  at (2.9,1.35) {admitted host-tier\\{\scriptsize 0 device blocks}};
+\node[hs] (dec)  at (6.0,1.35) {decoding\\host-tier};
+\node[st] (res)  at (6.0,-1.35) {decoding\\device-tier};
+\node[st] (fin)  at (9.6,0) {finished};
+
+\draw[arr] (wait) -- node[ed, above, sloped] {tier $=$ host} (adm);
+\draw[arr] (wait) -- node[ed, below, sloped] {tier $=$ device} (res);
+\draw[arr] (adm)  -- node[ed, above, align=center] {\textbf{worker ack}\\KV present} (dec);
+\draw[arr] (dec)  -- node[ed, above, sloped] {done} (fin);
+\draw[arr] (res)  -- node[ed, below, sloped] {done} (fin);
+
+% migration: two vertical arrows, separated so their labels never meet
+\draw[arr] ([xshift=-7mm]res.north) -- ([xshift=-7mm]dec.south);
+\node[ed, anchor=east, align=right] at (5.15,0)
+     {\textbf{demote}\\on seed ack:\\release blocks};
+\draw[arr, dashed] ([xshift=7mm]dec.south) -- ([xshift=7mm]res.north);
+\node[ed, anchor=west, align=left] at (6.85,0)
+     {\textbf{promote}\\atomic refill};
+\end{tikzpicture}}
+\caption{\textbf{Request lifecycle.} A request admitted directly to the host
+tier never allocates a device block. A resident request that is demoted releases
+its blocks only after the worker acknowledges that its KV reached the host ---
+releasing on the assumption that it did would destroy the request's history.
+Promotion refills the block list atomically; a partial refill is treated as a
+failed promotion and the request stays on the host tier.}
+\label{fig:lifecycle}
+\end{figure}
