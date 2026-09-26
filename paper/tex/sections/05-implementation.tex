@@ -39,7 +39,7 @@ find its own data and alias another request's (\S\ref{sec:design:spaces}).
 \label{sec:impl:attn}
 
 Attention is the only operation that distinguishes the tiers
-(\S\ref{sec:design:exec}). We subclass the FlashAttention backend's forward
+(\S\ref{sec:design:exec}). We subclass the FlashAttention~\cite{flashattention2} backend's forward
 path. Device-tier rows are served by the standard call; host-tier rows are
 gathered with \texttt{index\_select}, attended against the rolling slot with the
 compacted block table, and scattered back into the shared output with

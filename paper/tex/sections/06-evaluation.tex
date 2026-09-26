@@ -213,9 +213,25 @@ $\Xlink^{*} = \Ckv(1-\effo)/T$ predicts for a $25.1$\,GB/s link. An earlier
 $+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
 by hand from a co-located run, and we withdraw it.
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figs/f6.pdf}
+\caption{The cost of a host-tier request is not affine. Below the knee the
+aggregate transfer still fits inside a step and is imperfectly hidden; above it
+the step \emph{is} the transfer and each request costs its full link time. The
+shaded area is overhead the kink model does not carry --- roughly 13\,ms on a
+53\,ms step at the knee, which is more than two extra requests buy. A faster
+interconnect moves the knee right; it does not shrink the shaded area.
+Qwen2.5-32B, 2048 context, 16 device-tier residents, A100/PCIe at a measured
+25.1\,GB/s, 3 repeats with under 1\% spread.}
+% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
+\label{fig:costcurve}
+\end{figure}
+
 Two properties of the cost curve matter for the coherent-link projection. It is
 \textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
-($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$), so $\Delta T = F + cr$ fits a
+($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$; Fig.~\ref{fig:costcurve}), so
+$\Delta T = F + cr$ fits a
 negative fixed cost and the fixed-versus-slope split above is not a meaningful
 decomposition. What the data fits is a kink, $T \approx \max(T_{\mathrm{compute}},
 r S \btok{}/\Xlink) + \text{overhead}$, with the knee at
