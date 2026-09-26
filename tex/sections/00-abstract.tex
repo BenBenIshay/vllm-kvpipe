@@ -23,7 +23,8 @@ the question into one falsifiable number per configuration.
 
 We implement this in vLLM and measure it on PCIe --- the regime the model calls
 unfavourable, and where it is duly negative. Host-tier requests are
-\emph{additive}, raising peak concurrency from 8 to 48 against a fixed pool;
+\emph{additive}, raising peak concurrency from 8 to 48 against a fixed pool ---
+at $0.53\times$ the throughput, so this is a mechanism check and not a result;
 overlap efficiency is $0.62$ and the fixed cost $12.3$\,ms. Coherent-interconnect
 results are pending and stated throughout as predictions.
 \end{abstract}

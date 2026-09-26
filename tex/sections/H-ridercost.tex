@@ -6,6 +6,10 @@
 \section{The superseded rider sweep}
 \label{app:ridercost}
 
+Table~\ref{tab:ridercost} is the four-point sweep \S\ref{sec:eval:cost} sets
+aside, kept here because the 78\% overlap figure it implies appeared in earlier
+drafts and a reader who has met that number should see what replaced it.
+
 Sweeping the number of host-tier requests on an otherwise identical engine and
 fitting
 $\mathrm{ITL}(r) = \mathrm{ITL}_0 + \text{fixed} + r\cdot c$
@@ -59,12 +63,12 @@ sustains. A third reading of a single two-request point is worse still --- it
 cannot distinguish a steep slope from a large intercept, and read that way it
 implies 89\% of the transfer fails to overlap, which the sweep contradicts. What
 settles the cost is an experiment that holds the resident batch fixed and adds
-riders on top, which is what follows.
+riders on top, which is the measurement \S\ref{sec:eval:cost} keeps.
 
 The fixed-versus-slope split is also unstable at three points: two runs of the
 same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
 precisely the part that a faster interconnect does \emph{not} shrink, that
 split determines break-even on a coherent link, and three points cannot fix it.
 Any interconnect comparison therefore needs the sweep run at ten host-tier
-counts or more; the curve below is the first step of that and still stops at
+counts or more; the curve in \S\ref{sec:eval:cost} is the first step of that and still stops at
 six.

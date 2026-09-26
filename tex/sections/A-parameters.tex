@@ -61,6 +61,6 @@ intensity equals the GQA group size --- 8 for 70B, 4 for 8B --- against an
 H100 balance point near 116 FLOP/byte, so attention sits 14--29$\times$ below
 the compute roof. At batch 8, 70B spends 7\% of its step on arithmetic.
 % src: paper/model/compute_check.py @ 2bfc6ca5e
-Llama-8B at 4K does cross into compute-bound at batch 142, which is a further
+Llama-8B at 4K crosses the arithmetic-intensity balance point at batch 142, while its step remains memory-bound by about $4\times$, which is a further
 reason it is the wrong model to evaluate on.
 

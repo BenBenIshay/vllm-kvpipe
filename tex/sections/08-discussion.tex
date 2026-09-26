@@ -34,9 +34,13 @@ our staging buffer through the same backend interface without touching the
 policy; the two are ordered by operating point rather than by quality
 (\S\ref{sec:discussion:coherence}).
 
-Moving to a new platform requires re-measuring four quantities: achieved
+Moving to a new platform requires re-measuring five quantities: achieved
 interconnect bandwidth, achieved device bandwidth for weights and for paged KV,
-and the fixed per-step cost. The rules do not change; their inputs do. This is
+the overlap efficiency $\effo$, and the fixed per-step cost. The last two are
+the ones the second gate turns on, and $\effo$ is the one with no sensitivity
+analysis anywhere: at $\effo = 1$ the four rows of Table~\ref{tab:gain} read
+$\times$0.96, $\times$0.99, $\times$1.09 and $\times$1.22, which is the sign of
+the headline. The rules do not change; their inputs do. This is
 why we report the fixed cost separately from the per-byte cost rather than as a
 single slope --- only one of the two shrinks when the interconnect improves, and
 a system calibrated on their sum will mispredict itself on the next generation.
