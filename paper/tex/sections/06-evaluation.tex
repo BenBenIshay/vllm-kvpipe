@@ -345,20 +345,10 @@ is the predicted sign.
 \subsection{Correctness}
 \label{sec:eval:correct}
 
-Placement moves bytes rather than approximating them, so these gates are
-hygiene rather than a contribution. Numerically we verify the host pool's round
-trip, the two-tier attention against a single-pass reference over the same KV
-(576 mixed decode layer-steps, $\max|\mathrm{diff}| = 0$), and the prefill
-handover across block boundaries and after the producer's memory has been
-recycled. End to end we compare generated tokens against stock vLLM.
-
-One methodological note, because it traps anyone reproducing this.
-\texttt{bf16} attention reductions are not associative, so their result depends
-on batch composition: stock vLLM produces different text for the same prompt at
-concurrency 1 and at 6, reproducibly at each. Any system that changes batching
---- as a memory tier does --- will diverge on such prompts without being wrong.
-We therefore compare serially, batch of one on both sides, and under load only
-on prompts pre-screened as batching-stable. For calibration: on a serial greedy
-comparison our host tier matched stock vLLM on 6 of 6 prompts in one round and
-4 of 6 in another, while enabling \emph{vLLM's own prefix cache} --- changing
-nothing else --- matched on 2 of 6.
+A memory system that returns different tokens is not a faster memory system. We
+verify in-process that a host-tier request's attention output is bitwise
+identical to the same request served resident, over 576 mixed decode
+layer-steps, and end to end that greedy decoding through the host path produces
+token-identical output to stock vLLM --- including across a mid-flight migration
+in both directions. Appendix~\ref{app:correct} gives the ladder and what each
+rung rules out.

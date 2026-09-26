@@ -1,0 +1,59 @@
+% Appendix A -- parameter measurement, moved out of section 3 (2026-09-26) to
+% keep the body within the MLSys page limit. Nothing here is needed to follow
+% the argument; all of it is needed to check it.
+
+\section{Measured parameters and sensitivity}
+\label{app:params}
+
+A100-80 PCIe; two models; 41 single-shot configurations plus a
+13-configuration $n{=}3$ repeat sweep; distinct random contexts; prefix caching
+disabled.
+% src: paper/model/p4_llama8b_a100_rep3.json @ 2bfc6ca5e
+
+\paragraph{Weight read is efficient and stable.} $\effw = 0.75$ of peak
+($\approx$1450\,GB/s), consistent across both models, all contexts, and robust
+to the $\effkv$ assumed at $B{=}1$ (0.739--0.773 over that whole range).
+
+\paragraph{Paged KV read is neither.} $\effkv$ degrades by $1.6\times$ with the
+KV working set (Table~\ref{tab:effkv}):
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+KV working set & 4.3\,GB & 8.6\,GB & 17--34\,GB & 43\,GB & 51.5\,GB \\
+\midrule
+$\effkv$ & 0.77 & 0.72 & 0.54--0.56 & 0.49 & 0.46 \\
+\bottomrule
+\end{tabular}
+\caption{Paged KV read efficiency is not a constant. Error bars from $n{=}3$
+repeats are $\pm0.02$--$0.04$; the degradation is far outside them.}
+\label{tab:effkv}
+\end{table}
+
+This is the real correction to the model. It also bears on how such models are
+built elsewhere: \textbf{a roofline that charges KV at one fixed bandwidth will
+be optimistic at the capacity-bound operating point}, because that is where
+$\effkv$ is worst. We measured this on one GPU and one kernel generation
+(A100, FlashAttention-2 era), so we state it as a property of what we measured
+rather than of the literature.
+
+\paragraph{A caveat at kernel granularity.} The claim that only total KV bytes
+matter holds at three of four same-byte test points but breaks at 17.2\,GB
+($B{=}32,S{=}4096$ gives 0.561 against $B{=}16,S{=}8192$ at 0.747). The cause
+is a reproducible anomaly at $B{=}32,S{=}4096$ that also appeared in an
+independent earlier run --- an attention-kernel scheduling artifact, most
+likely a split-KV heuristic in the attention kernel choosing a different
+partitioning at the larger batch, not measurement noise ($\pm0.61$\,ms
+against a $\sim$3\,ms deviation). The aggregate law holds; the
+per-configuration surface has kernel-regime steps.
+
+\paragraph{Compute is not the binding term.} Decode-attention arithmetic
+intensity equals the GQA group size --- 8 for 70B, 4 for 8B --- against an
+H100 balance point near 116 FLOP/byte, so attention sits 14--29$\times$ below
+the compute roof. At batch 8, 70B spends 7\% of its step on arithmetic.
+% src: paper/model/compute_check.py @ 2bfc6ca5e
+Llama-8B at 4K does cross into compute-bound at batch 142, which is a further
+reason it is the wrong model to evaluate on.
+

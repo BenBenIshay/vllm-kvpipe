@@ -1,0 +1,24 @@
+% Appendix B -- the correctness ladder, moved out of section 6 (2026-09-26) for
+% the page limit. A reviewer who doubts the mechanism should read this; one who
+% doubts the economics should not need to.
+
+\section{Correctness ladder}
+\label{app:correct}
+
+Placement moves bytes rather than approximating them, so these gates are
+hygiene rather than a contribution. Numerically we verify the host pool's round
+trip, the two-tier attention against a single-pass reference over the same KV
+(576 mixed decode layer-steps, $\max|\mathrm{diff}| = 0$), and the prefill
+handover across block boundaries and after the producer's memory has been
+recycled. End to end we compare generated tokens against stock vLLM.
+
+One methodological note, because it traps anyone reproducing this.
+\texttt{bf16} attention reductions are not associative, so their result depends
+on batch composition: stock vLLM produces different text for the same prompt at
+concurrency 1 and at 6, reproducibly at each. Any system that changes batching
+--- as a memory tier does --- will diverge on such prompts without being wrong.
+We therefore compare serially, batch of one on both sides, and under load only
+on prompts pre-screened as batching-stable. For calibration: on a serial greedy
+comparison our host tier matched stock vLLM on 6 of 6 prompts in one round and
+4 of 6 in another, while enabling \emph{vLLM's own prefix cache} --- changing
+nothing else --- matched on 2 of 6.
