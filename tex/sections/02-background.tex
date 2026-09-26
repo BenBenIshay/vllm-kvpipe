@@ -53,10 +53,8 @@ Offloading KV to host memory is an old idea that a new interconnect has
 changed. Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV to the GPU
 every decode step costs more than the step itself, so host memory could only
 ever be a \emph{swap} target: somewhere to park a request that is not currently
-running. NVLink-C2C moves 450\,GB/s in each direction,\footnote{The commonly
-quoted 900\,GB/s is bidirectional. A KV stream is unidirectional
-host-to-device, so 450\,GB/s is the figure that bounds it, and we measure
-rather than assume even that.} and at that rate the bytes a decoding request
+running. NVLink-C2C moves 450\,GB/s in each direction (\S\ref{sec:intro}), and at that
+rate the bytes a decoding request
 needs can cross the link inside the time the GPU spends reading its own
 weights.
 
