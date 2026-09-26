@@ -58,7 +58,7 @@ request \emph{additive} rather than merely relocated, and which
 
 That framing is not how the field currently treats the second memory. What
 varies between existing systems is \emph{how much} KV sits on the host; what
-none of them varies is \emph{whose}. Stock vLLM~\cite{vllm} and SGLang keep 100\% in HBM;
+none of them varies is \emph{whose}. Stock vLLM~\cite{vllm} and SGLang~\cite{sglang} keep 100\% in HBM;
 when it does not fit, requests wait. DirectKV, which contributes the zero-copy
 attention kernel that makes host-resident KV efficient at all, keeps 100\% on
 the host for every request always --- its \S6 stores each layer's initial $K,V$
@@ -88,8 +88,8 @@ is bounded by the sum:
 \emph{Projected.} Qwen2.5-32B fp16, 8K, GH200-96 & KV read per step & batch \\
 \midrule
 all-HBM (vLLM, SGLang)      & 26.5\,GB HBM, \textbf{0 link} & 12 \\
-all-host (uniform offload)  & \textbf{0 HBM}, 8.8\,GB link & 4 \\
-\textbf{both (this paper)}  & 26.5\,GB HBM \textbf{+} 8.8\,GB link & \textbf{16} \\
+all-host (uniform offload)  & \textbf{0 HBM}, 14.2\,GB link & 6 \\
+\textbf{both (this paper)}  & 26.5\,GB HBM \textbf{+} 14.2\,GB link & \textbf{18} \\
 \bottomrule
 \end{tabular}
 \caption{Each single-memory design leaves one of the two KV paths unused.
@@ -98,12 +98,11 @@ compares like with like. \textbf{These are projections}, computed by
 \texttt{model/killer\_v2.py} from: measured checkpoint $W = 65.5$\,GB, a 4\,GB
 device reserve for activations and fragmentation, hence $\Ckv = 26.5$\,GB;
 $\btok = 256$\,KiB so a request at 8K holds 2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms
-from Eq.~\ref{eq:step}; $\Xlink = 419$\,GB/s, the measured host-to-device rate
-on this part~\cite{pie}, not the 450\,GB/s spec figure; and $\effo = 0.62$.
-The last is the weakest input: it is measured on A100/PCIe
-(\S\ref{sec:eval:cost}) and assumed to carry to a coherent link, which is the
-first thing \S\ref{sec:eval} asks of one. At $\effo = 1$ the host row would
-read 6 and the total 18.}
+from Eq.~\ref{eq:step}; and $\Xlink = 419$\,GB/s, the measured host-to-device
+rate on this part~\cite{pie} rather than the 450\,GB/s spec figure. These are
+\emph{capacity} counts: they say how many requests fit, not how fast they are
+served, and \S\ref{sec:model:omits} shows the difference is what decides whether
+the technique pays.}
 \label{tab:endpoints}
 \end{table}
 
@@ -126,12 +125,11 @@ or to everything, neither of which consults the interconnect at all.
 
 \paragraph{When is a second memory tier worth having?} Before building one we
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
-capacity multiplier $1 + (\Xlink/\BW)(\effo/\bar\eta)(\HBM/\Ckv)$, where $\Ckv$
-is the device memory left after weights, $\effo$ the fraction of a rider's
-transfer that overlaps compute, and $\bar\eta$ the fraction of peak bandwidth the
-device achieves reading a full pool. The step-time model underneath it is validated
-on 54 measured configurations; the multiplier itself is tested in
-\S\ref{sec:eval}. Two consequences contradict the obvious intuition. Long
+capacity multiplier $1 + \Xlink/(\BW\,\bar\eta)\cdot(\HBM/\Ckv)$, where $\Ckv$
+is the device memory left after weights and $\bar\eta$ the fraction of peak
+bandwidth the device achieves reading a full pool. The step-time model underneath it is validated
+per model on 41 measured configurations; the multiplier itself is not yet
+tested, and \S\ref{sec:eval} says what testing it requires. Two consequences contradict the obvious intuition. Long
 context does \emph{not} help: to first order it shrinks the HBM-resident cohort
 and the affordable host cohort in the same proportion, leaving their ratio
 unchanged. And the value of a second tier tracks \textbf{how much of memory the
@@ -162,17 +160,19 @@ hardware, is the question the model exists to answer.
       interconnect} (\S\ref{sec:design}): the host cohort of
       Eq.~\ref{eq:two-terms} sized from a per-step transfer budget that is
       \emph{measured} --- from the rider-free step time and the achieved link
-      bandwidth --- rather than declared as a constant. We show by ablation
-      that this derived count, and not a fixed offload fraction, is what
-      carries the result.
-\item \textbf{An implementation in vLLM v1 and an evaluation separating the
-      memory system's contribution from the kernel's} (\S\ref{sec:eval}), by
-      running uniform offload and our manager on one substrate, together with
-      two negative results we report rather than bury: per-request placement
-      driven by observable state did not separate from arrival order on our
-      substrate --- and context length, the intuitive signal, does not
-      discriminate at all --- while closed-loop migration measured its own
-      demotions as harmful and reverted them.
+      bandwidth --- rather than declared as a constant. Whether the derived
+      count beats a fixed offload fraction is the ablation
+      \S\ref{sec:eval:ablation} specifies and cannot yet run: on PCIe the
+      budget admits at most two or three host-tier requests, and no policy
+      distinguishes itself on a choice set that small.
+\item \textbf{An implementation in vLLM v1, and a measured account of what a
+      host-tier request costs} (\S\ref{sec:eval}): the overlap efficiency
+      $\effo = 0.62$, the fixed per-step cost $F = 12.3$\,ms, and the
+      non-affine shape of the cost curve --- the three quantities the second
+      gate turns on. Together with a negative result we report rather than
+      bury: on PCIe the closed-loop migration probe measures its own demotions
+      as harmful and reverts them, which is the correct action on a link that
+      cannot hide the transfer.
 \end{enumerate}
 
 We state the last of these deliberately. A host tier admits a policy design
@@ -195,7 +195,8 @@ since 48 was the entire offered load.
 In a separate experiment that isolates a rider's cost --- riders added on top of
 a fixed resident batch, with prefill cancelled by construction --- only
 $\effo = 0.62$ of a host-tier request's transfer overlaps compute, and the
-unhidden residual costs $8.3$\,ms of a $54$\,ms step, leaving decode throughput
+unhidden residual costs $8.3$\,ms \emph{per rider} --- two riders grew a
+$54.1$\,ms step to $70.8$, or $31\%$ --- leaving decode throughput
 $0.86\times$ that of not offloading at all.
 % src: paper/data/rider_cost_4p2b.json @ 21ea9b18d
 End to end, through the prefill handover, the deficit is $2.3\%$.

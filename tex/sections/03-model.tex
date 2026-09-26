@@ -21,7 +21,10 @@ unexplained.
 
 Let $\Xlink$ be the achieved interconnect bandwidth between host memory and the
 GPU, $\BW$ the achieved HBM bandwidth, $\HBM$ the device memory, $W$ the bytes
-of model weights, and $\Ckv = \HBM - W$ the memory left for KV cache. Let $S$
+of model weights, and $\Ckv = \HBM - W - \mathcal{R}$ the memory left for KV cache, where
+$\mathcal{R}$ is a device reserve for activations, workspace and allocator
+fragmentation ($4$\,GB on the parts we consider). Every equation and table below
+uses this definition. Let $S$
 be the context length and $\btok{}$ the KV bytes per token.
 
 A decode step reads every weight once and every resident KV byte once. Writing
@@ -36,24 +39,24 @@ step time at batch $B$ is
 %
 The capacity-limited batch is $B_{\mathrm{cap}} = \Ckv / (S \btok{})$: the point at
 which KV, not arithmetic, exhausts the device. A rider's KV lives in host memory
-and streams over the interconnect during the step. That transfer is issued one layer ahead of the attention that consumes
-it, so it costs step time only to the extent that it fails to overlap compute.
-Writing $\effo \in (0,1]$ for the fraction that does overlap --- the
-\emph{overlap efficiency} --- the number of riders a step absorbs without
-lengthening it is
+and streams over the interconnect during the step. A step of length
+$\mathrm{ITL}$ cannot carry more than $\mathrm{ITL}\cdot\Xlink$ bytes across the
+link whatever else is true, so the rider cohort is bounded by
 %
 \begin{equation}
 \label{eq:boff}
-B_{\mathrm{off}} \;=\; \frac{\mathrm{ITL} \cdot \Xlink \cdot \effo}{S \btok{}}.
+B_{\mathrm{off}} \;=\; \frac{\mathrm{ITL} \cdot \Xlink}{S \btok{}}.
 \end{equation}
 %
-Setting $\effo = 1$ recovers the budget one writes down by reflex: that a step
-of length $T$ absorbs $T\Xlink$ bytes for free. It does not, and $\effo$ is not
-a correction factor we can leave implicit --- it multiplies the gain directly
-(\S\ref{sec:model:gain}), and on our A100/PCIe substrate it is $0.62$
-(\S\ref{sec:eval:cost}), which is the difference between predicting a gain and
-predicting a loss. We therefore treat it as a measured input throughout and
-report predictions as a range over it where it has not been measured.
+This is a \emph{capacity} bound and nothing more: it says how many riders' bytes
+fit, not what they cost. The transfer is issued one layer ahead of the attention
+that consumes it, and the fraction of its time that does \emph{not} reappear as
+added step time is the \textbf{overlap efficiency} $\effo \in (0,1]$. Perfect
+overlap is the exception --- on A100/PCIe we measure $\effo = 0.62$
+(\S\ref{sec:eval:cost}) --- but $\effo$ does not belong in this equation. It
+describes what the bytes cost once carried, not how many fit, and charging it
+here as well as in the throughput form (\S\ref{sec:model:omits}) would count it
+twice.
 
 \subsection{(a) Context length cancels}
 \label{sec:model:cancel}
@@ -63,8 +66,8 @@ The ratio of riders to residents,
 \begin{equation}
 \label{eq:cancel}
 \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
-  \;=\; \frac{\mathrm{ITL}\cdot \Xlink \cdot \effo / (S \btok{})}{\Ckv / (S \btok{})}
-  \;=\; \frac{\mathrm{ITL}\cdot \Xlink \cdot \effo}{\Ckv},
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink / (S \btok{})}{\Ckv / (S \btok{})}
+  \;=\; \frac{\mathrm{ITL}\cdot \Xlink}{\Ckv},
 \end{equation}
 %
 is independent of $S$. Long context does not make offloading more attractive:
@@ -74,32 +77,54 @@ seems like the regime where moving KV off-device should pay most. It is not.
 What a long context buys the rider in freed HBM, it spends again in per-step
 transfer.
 
-\paragraph{Validated on hardware.} Equation~\ref{eq:step} predicts that ITL
-depends on batch and context only through their product. Across 54
-configurations on two models (Llama-3.1-8B, Qwen2.5-32B) on an A100-80, ITL is
-linear in total KV tokens $B \cdot S$ with $R^2 = 0.975$, and the residuals are
-unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$, $-0.09$, $+0.00$
-ms). $B{=}16,S{=}4096$ and $B{=}8,S{=}8192$ both measure $17.17$ ms.
+\paragraph{Validated on hardware, per model.} Equation~\ref{eq:step} makes two
+claims: that ITL depends on batch and context only through their product
+$B\cdot S$, and that the intercept is the weight term $W/(\BW\effw)$. We test
+them on an A100-80 over 41 single-shot configurations --- 27 on Llama-3.1-8B, 14
+on Qwen2.5-32B --- plus 13 three-repeat points drawn from the same grid.
+
+Within each model, ITL is linear in $B\cdot S$: $R^2 = 0.975$ for Llama-3.1-8B
+with residuals unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$,
+$-0.09$, $+0.00$\,ms), and $R^2 = 0.92$ for Qwen2.5-32B. $B{=}16,S{=}4096$ and
+$B{=}8,S{=}8192$ both measure $17.17$\,ms. \textbf{Pooling the two models is
+meaningless and we do not report it} --- the fit across both is $R^2 = 0.19$,
+because Eq.~\ref{eq:step}'s intercept is model-dependent, which is the whole
+content of \S\ref{sec:model:modeldep}.
+
+That intercept is the sharper test, because it is a quantity we can predict
+rather than fit. The fitted intercepts are $9.4$\,ms for Llama-3.1-8B and
+$43.6$\,ms for Qwen2.5-32B; $W/(\BW\effw)$ predicts $10.5$ and $42.9$\,ms.
+Agreement within $1.1$\,ms across a $4\times$ range of weight footprint, with
+$\effw$ calibrated on $B{=}1$ points where the KV term is negligible, is what
+gives us confidence in the decomposition Eq.~\ref{eq:step} asserts.
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
 We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
 with identical prompts in both runs, so prefill and warmup cancel; context
 grows across the $N_2-N_1$ tokens, which the differencing does not remove.
 
 \subsection{(b) The step time is model-dependent}
+\label{sec:model:modeldep}
 
 At capacity a step reads all of device memory once, which invites the
 simplification $\mathrm{ITL}_0 \approx \HBM/\BW$: a quantity fixed by the
-device alone. It does not hold. Full-pool ITL on A100-80 is $79.3$ ms for
-Llama-8B against $55.7$ ms for Qwen2.5-32B,
-% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
-a $1.4\times$ spread across two models on identical hardware. The cause is that
+device alone. It does not hold. Evaluating Eq.~\ref{eq:step} at each model's
+own pool gives a full-pool ITL of $79$\,ms for Llama-3.1-8B against $56$\,ms for
+Qwen2.5-32B --- a $1.4\times$ spread across two models on identical hardware.
+These two are \emph{projections}, not measurements: the largest working sets we
+could fit on an 80\,GB part measure $69.7$ and $50.9$\,ms, and the full-pool
+points extrapolate the $\effkv$ curve of \S\ref{sec:model:params} beyond them.
+% src: paper/model/p4_llama8b_a100.json @ 2bfc6ca5e
+% src: paper/model/p4_qwen32b_a100.json @ 2bfc6ca5e
+% NOTE: the full-pool step times are EXTRAPOLATED from these files via the
+% eff_kv curve of appendix A, not read from them. Largest measured: 69.7 and
+% 50.9 ms. The cause is that
 weights and paged KV do not stream at the same efficiency
 (\S\ref{sec:model:params}): a model that is mostly weights reads device memory
 faster than one that is mostly KV, so $\mathrm{ITL}_0$ depends on the
 weight-to-KV ratio and the applicability gate in (d) is model-dependent rather
 than a property of the device.
 
-The transfer budget is still $\mathrm{ITL}\cdot\Xlink\cdot\effo$, and most of it is still
+The transfer budget is still $\mathrm{ITL}\cdot\Xlink$, and most of it is still
 bought with \emph{weight-read time}. On GH200, Qwen-32B spends roughly
 21\,ms of a 34\,ms step reading weights, during which nothing else contends for
 the interconnect. The opportunity is time, not spare bandwidth. It is not free,
@@ -115,7 +140,7 @@ served batch by
 \begin{equation}
 \label{eq:gain-exact}
 \text{gain} \;=\; 1 + \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
-      \;=\; 1 + \frac{\mathrm{ITL}_0 \cdot \Xlink \cdot \effo}{\Ckv}.
+      \;=\; 1 + \frac{\mathrm{ITL}_0 \cdot \Xlink}{\Ckv}.
 \end{equation}
 %
 That is exact in the fluid limit, and it is the form to compute with. To read the
@@ -126,7 +151,7 @@ actually achieves (\S\ref{sec:model:params}):
 %
 \begin{equation}
 \label{eq:gain}
-\text{gain} \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\frac{\effo}{\bar\eta}
+\text{gain} \;\approx\; 1 + \frac{\Xlink}{\BW\,\bar\eta}
                           \cdot\frac{\HBM}{\Ckv}.
 \end{equation}
 %
@@ -142,32 +167,15 @@ ate}, not model size and not context length.
 That single observation is the section's most useful consequence, because it
 is counter to how the field selects evaluation models.
 
-Between the handicap and the amplifier sits $\effo$, the only term of the three
-that a serving system controls. It is also the term we can say least about: it
-is a property of the prefetch pipeline meeting a particular interconnect, and
-it is not portable across links. On NVLink-C2C at the measured
-$419$\,GB/s~\cite{pie} the same law gives $1.45\times$ at $\effo{=}1$ and
-$1.27\times$ at the $\effo{=}0.62$ we measure on PCIe --- so on the hardware
-where the technique is supposed to pay, $\effo$ is worth about two thirds of
-the headline. We therefore state predictions for that regime as an interval
-over $\effo$ rather than as a point, with $\effo{=}1$ as a ceiling and not an
-estimate. The lower end is genuinely open: $\effo$ is a property of the
-prefetch pipeline meeting a particular link, so the PCIe value is a
-placeholder until a coherent link is measured, which is the first experiment
-we ask of one.
-% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
-
-Equation~\ref{eq:gain} is a first-order result and we are careful about what it
-does and does not include. It counts requests, not tokens per second, and it
-ignores two second-order effects: the residual $(1-\effo)$ of a rider's
-transfer lengthens the step, and each rider costs a small, fixed share of device
-memory for the rolling window it is streamed into. Table~\ref{tab:gain}
-therefore reports \emph{both} the capacity ratio the closed form approximates
-and the throughput gain once those two effects are charged. A reader
-recomputing Eq.~\ref{eq:gain} by hand for the Qwen-32B fp16 row gets
-$\times$1.33 against the $\times$1.27 tabulated; the difference is the
-displacement term, since each host-tier request costs $k/L$ of a resident's
-blocks for the rolling region, which the closed form does not carry.
+Equation~\ref{eq:gain} is a \emph{capacity} result: it counts requests the
+device can hold, not requests per second it can serve. Two effects separate the
+two, and \S\ref{sec:model:omits} charges both. Each rider costs $k/L$ of a
+resident's blocks for the rolling window it streams into, so the resident cohort
+shrinks slightly as the host cohort grows --- which is why
+Table~\ref{tab:gain}'s capacity column ($\times$1.48 for Qwen2.5-32B fp16) sits
+below a hand recomputation of Eq.~\ref{eq:gain} ($\times$1.54). And the unhidden
+fraction $(1-\effo)$ of every rider's transfer lands on the step. Neither is
+negligible, and the second is what decides the paper.
 
 \begin{table}[t]
 \centering
@@ -176,26 +184,28 @@ blocks for the rolling region, which the closed form does not carry.
 \toprule
 Model (GH200-96) & weights & $\Ckv$ & $\HBM/\Ckv$ & ITL$_0$ & capacity & tput \\
 \midrule
-Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & $\times$1.11 & $\times$1.14 \\
-Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & $\times$1.15 & $\times$1.17 \\
-Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & $\times$1.27 & $\times$1.29 \\
-Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.39 & $\times$1.41 \\
+Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & $\times$1.22 & $\times$0.75 \\
+Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & $\times$1.28 & $\times$0.77 \\
+Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & $\times$1.48 & $\times$0.86 \\
+Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.67 & $\times$0.96 \\
 \bottomrule
 \end{tabular}
 \caption{\emph{All rows are projections}, not measurements. A second memory
 tier is an amplifier on $\HBM/\Ckv$ and the table is monotone in it.
 $\Ckv = \HBM - W - 4$\,GB, the last term a device reserve for activations,
 workspace and allocator fragmentation --- so weights and $\Ckv$ do not sum to
-$\HBM$. \emph{capacity} is $B_{\mathrm{tot}}/B_0$ and \emph{tput} is
-$(B_{\mathrm{tot}}/T)/(B_0/T_0)$. \textbf{tput exceeds capacity because a rider
-displaces $k/L$ of a resident's blocks}, so the resident cohort's KV read
-shrinks and the step gets \emph{shorter}; neither column charges the fixed
-per-step cost of using the host path at all, which \S\ref{sec:model:omits}
-adds. Weight figures are measured checkpoints except Qwen-32B fp8, for which we
-hold no checkpoint and quote the nominal size; the fp16 row measures 65.5\,GB
-against a nominal 64.0, so the fp8 row is likely optimistic by a similar
-margin. \textbf{The two Qwen-32B rows differ only in weight precision}, which
-isolates $\HBM/\Ckv$ from every other architectural variable.}
+$\HBM$, and Eq.~\ref{eq:gate} uses the same definition. \emph{capacity} is
+$B_{\mathrm{tot}}/B_0$, charging the $k/L$ of a resident's blocks each rider
+displaces at $k{=}4$. \emph{tput} is Eq.~\ref{eq:gain-tput}, which additionally
+charges the fixed per-step cost $F = 12.3$\,ms and the unhidden residual
+$\Delta$ (12--17\,ms across these rows). \textbf{Every row loses on tput while
+every row gains on capacity}: that gap, not the multiplier, is the paper's
+result, and \S\ref{sec:model:omits} says what would close it. Weight figures are
+measured checkpoints except Qwen-32B fp8, for which we hold no checkpoint and
+quote the nominal size; the fp16 row measures 65.5\,GB against a nominal 64.0,
+so the fp8 row is likely optimistic by a similar margin. \textbf{The two
+Qwen-32B rows differ only in weight precision}, which isolates $\HBM/\Ckv$ from
+every other architectural variable.}
 % src: paper/model/tables.py @ this commit (wraps model/killer_v2.py:analyze,
 % S=8192, GH200-96 at the measured 419 GB/s, slo=50 ms, stage=0, eta_o=0.62)
 \label{tab:gain}
@@ -223,18 +233,16 @@ up: quantizing \emph{weights} is not neutral to a memory system, it actively
 removes its headroom, while quantizing \emph{KV} scales both cohorts together
 and composes.
 
-\paragraph{The model predicts a held-out configuration, and is biased low.} The
-two efficiencies are calibrated on disjoint parts of the same A100 sweeps:
-$\effw$ from the $B{=}1$ points, where the KV term is negligible, and $\effkv$
-from sub-capacity working sets. The \emph{full-pool} step time is then a held-out
-configuration --- a different point on the sweep, not a different experiment, and
-we claim no more than that. Eq.~\ref{eq:step} predicts 74.4\,ms for Llama-8B and
-51.1\,ms for Qwen-32B against 79.3 and 55.7 measured. Both are low, by 6.2\% and
-8.3\%: a one-sided residual is a missing term rather than noise, and the likely
-candidate is that $\effkv$ continues to degrade past the largest working set we
-could fit on an 80\,GB part. What the comparison does establish is the
-\emph{spread}, which a single-efficiency model gets structurally wrong by
-predicting equality: $1.46\times$ predicted against $1.42\times$ measured.
+\paragraph{What is and is not held out.} $\effw$ is calibrated on the $B{=}1$
+points, where the KV term is negligible, and $\effkv$ on sub-capacity working
+sets, so the two come from disjoint parts of the same sweeps. The full-pool step
+times above are \emph{not} an independent check on them --- they are computed
+from those same fits, so comparing Eq.~\ref{eq:step} against them would be
+circular and we do not. The genuine out-of-sample test is the intercept
+recovery of \S\ref{sec:model:cancel}: $\effw$ fitted at $B{=}1$ predicts the
+intercept of a regression over the whole grid, on both models, to within
+$1.1$\,ms. Measuring a real full-pool step on a device large enough to hold one
+would be the stronger test, and we have not run it.
 
 Several of these parameters are measured with error, so it is worth asking
 which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
@@ -268,10 +276,14 @@ transfer budget, and lowers the predicted gain.
 Equation~\ref{eq:gain} counts requests. A serving system is paid in requests
 \emph{per second}, and the two differ by a term the gain law does not carry: a
 fixed per-step cost $F$ for using the host path at all, independent of how many
-riders use it. It is not small. On A100 we measure $F = 12.3$\,ms against a
-$54$\,ms step (\S\ref{sec:impl:cost}), and it is launch-bound --- roughly $640$
-extra kernel launches per step --- rather than bandwidth-bound, so a faster
-link does not shrink it. Charging it gives the throughput form
+riders use it. It is not small: $F = 12.3$\,ms against a $54$\,ms step on A100.
+Two independent routes give that number, which matters because one of them comes
+from a fit \S\ref{sec:eval:cost} later rejects. The intercept of the rider sweep
+puts it at $9.6$--$12.3$\,ms depending on the run; counting operations puts it
+at $640$ extra kernel launches per step, about ten across 64 layers at
+$0.19$\,ms each, which is $12.2$\,ms (\S\ref{sec:impl:cost}). We use the
+launch-count figure, since it survives the affine fit's collapse. Being
+launch-bound rather than bandwidth-bound, a faster link does not shrink it. Charging it gives the throughput form
 %
 \begin{equation}
 \label{eq:gain-tput}
@@ -286,16 +298,32 @@ gate of \S\ref{sec:model:gate}: the technique pays only when the capacity gain
 exceeds the fixed-cost penalty, that is when
 $B_{\mathrm{off}}/B_{\mathrm{cap}} > (F + \Delta)/\mathrm{ITL}_0$.
 
-Applying it to Table~\ref{tab:gain} at the measured A100 $F$ is sobering. The
-penalty factor $\mathrm{ITL}_0/(\mathrm{ITL}_0 + F)$ is $0.79$ for Llama-8B and
-$0.73$ for Qwen-32B fp16, so the projected $\times$1.11 and $\times$1.27 become
-$\times$0.88 and $\times$0.93 --- losses --- and only the 70B row survives, at
-$\times$1.01. \textbf{If the A100's fixed cost carries to a coherent link, the
-gain law's capacity win is cancelled by it across most of the table.} We state
-this as the paper's principal open risk rather than a footnote. $F$ is the
-quantity \S\ref{sec:eval} must measure first on new hardware, and we resist the
-temptation to assume it away: it depends on the host CPU and the layer count,
-neither of which is fixed by the interconnect.
+\textbf{Applied to Table~\ref{tab:gain}, this gate closes every row.} At the
+measured $F$, the capacity gains of $\times$1.22 to $\times$1.67 become
+throughput ratios of $\times$0.75, $\times$0.77, $\times$0.86 and $\times$0.96.
+Not one configuration pays, including the 70B that the capacity model likes
+most. We report that rather than tune around it, because the shape of the result
+is more useful than its sign: inverting Eq.~\ref{eq:gain-tput} gives the fixed
+cost each configuration could afford,
+%
+\begin{equation}
+\label{eq:fstar}
+F^{*} \;=\; \Big(\tfrac{B_{\mathrm{tot}}}{B_0} - 1\Big)\mathrm{ITL}_0 - \Delta,
+\end{equation}
+%
+which is $-7.0$ and $-4.1$\,ms for the two small-amplifier rows --- negative,
+meaning $\Delta$ alone already exceeds what their capacity buys, so no
+implementation effort rescues them --- and $+4.0$\,ms for Qwen2.5-32B fp16 and
+$+9.7$\,ms for Llama-70B fp8.
+
+So the paper's positive claim reduces to one falsifiable number. Against a
+measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 21\% and the
+32B by a factor of three. \textbf{Measuring $F$ on a coherent link is therefore
+the first experiment we ask of one, ahead of measuring its bandwidth} --- $F$ is
+launch-bound rather than bandwidth-bound, so a faster interconnect does not touch
+it, but it scales with the host CPU and the layer count, and a Grace host is not
+the A100 node's host. If $F \ge 9.7$\,ms there, the technique does not pay
+anywhere in this table and we will say so.
 
 Equation~\ref{eq:gain} also omits four smaller terms, listed so that a reader
 can judge which might matter in a regime we did not measure. A rider's KV

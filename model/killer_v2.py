@@ -17,14 +17,25 @@ EFF_W, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
 # fragmentation. It is subtracted from HBM before C, so the paper must document
 # it: weights + C does NOT equal HBM.
 #
-# ETA_O: the fraction of a rider's transfer that actually overlaps compute.
-# Until 2026-09-22 this script assumed 1.0 implicitly -- the rider budget read
-# `n*u <= T*x`, i.e. a step of length T absorbs T*x bytes for free. It does not.
-# 0.62 is the only direct measurement (paper/data/rider_cost_4p2b.json: riders
-# added on top of a fixed resident batch, prefill cancelled by construction).
-# It is an A100/PCIe number used here for a C2C projection, which is an
-# assumption the paper states rather than hides.
+# ETA_O: the fraction of a rider's transfer that does NOT show up as added step
+# time. Measured at 0.62 (paper/data/rider_cost_4p2b.json: riders on top of a
+# fixed resident batch, prefill cancelled by construction; at r=2 the link time
+# is 44.4 ms and the step grew 16.69, so 1 - 16.69/44.4 = 0.62).
+#
+# WHERE IT BELONGS, corrected 2026-09-26. It is NOT a discount on the rider
+# budget. The budget is a hard physical ceiling -- a step of length T cannot
+# carry more than T*X bytes across the link, whatever fraction of them hides.
+# eta_o describes what the bytes COST once carried: (1-eta_o) of the transfer
+# time appears as added step time. So it belongs in the throughput form, not in
+# the capacity multiplier. Charging it in both, as this script did between
+# 2026-09-22 and 2026-09-26, counts it twice.
 ETA_O = 0.62
+
+# Fixed per-step cost of using the host path at all, ms. Launch-bound (~640
+# extra kernel launches), so a faster link does not shrink it, and it is NOT
+# machine-independent: it scales with layer depth and the host CPU.
+# paper/sections/05-implementation.tex.
+F_FIXED_MS = 12.3
 
 
 class HW:
@@ -119,7 +130,7 @@ def step_ms(m, hw, S, B_res, B_off=0.0, stage=1.0, f=0.0):
     return max(t_mem, t_cmp)*1e3
 
 
-def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0, eta_o=ETA_O):
+def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
     u = m.k*S
     C = hw.hbm - m.w - OVERHEAD
     if C <= 0 or u <= 0:
@@ -145,7 +156,7 @@ def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0, eta_o=ETA_O):
         n = best + max(B_cap, 1.0)/64
         B_res = max(0.0, C/u - n*f)
         T = step_ms(m, hw, S, B_res, n, stage=stage, f=f)
-        if T <= slo_ms and n*u <= (T/1e3)*hw.x*eta_o:
+        if T <= slo_ms and n*u <= (T/1e3)*hw.x:
             best = n
         else:
             break
@@ -153,9 +164,13 @@ def analyze(m, S, hw, slo_ms, kwin=8, stage=1.0, eta_o=ETA_O):
     B_res = min(B0, max(0.0, C/u - n*f))
     T = step_ms(m, hw, S, B_res, n, stage=stage, f=f) if n > 0 else T0
     B_tot = B_res + n
+    # The unhidden residual: (1-eta_o) of the riders' link time lands on the step.
+    delta_ms = (1 - eta_o) * (n*u/hw.x) * 1e3
+    cap_gain = B_tot/B0 if B0 > 0 else 0.0
     return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound, eta_o=eta_o,
-                n=n, B_tot=B_tot, T=T,
-                gain=(B_tot/T)/(B0/T0) if B0 > 0 else 0.0)
+                n=n, B_tot=B_tot, T=T, delta_ms=delta_ms, cap_gain=cap_gain,
+                gain=(B_tot/T)/(B0/T0) if B0 > 0 else 0.0,
+                gain_tput=cap_gain * T0/(T0 + F_FIXED_MS + delta_ms) if B0 > 0 else 0.0)
 
 
 def report(hw, slo, stage=1.0):

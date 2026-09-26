@@ -18,9 +18,10 @@
 
 A decode step is memory-bound by a wide margin. It reads every model weight
 once and every resident KV byte once, and performs arithmetic whose intensity
-equals the GQA group size --- 4 to 8 on current models, against a balance point
-of order $100$ FLOP/byte on the accelerators in question (116 on an H100, 98 on
-the A100-80 we measure). The consequence is that a decode engine runs at
+equals the GQA group size --- 4 to 8 on current models, against an \emph{achieved} balance point of
+order $100$ FLOP/byte on the accelerators in question (Appendix~\ref{app:params}
+derives 116 for a GH200 from measured efficiencies; the machine balance is
+higher still). The consequence is that a decode engine runs at
 single-digit arithmetic utilization, and what stops it running a larger batch
 is not the arithmetic but the bytes: KV cache exhausts the device long before
 the streaming multiprocessors (SMs) saturate. A recent trace-driven study of production serving reaches the
@@ -29,9 +30,11 @@ than token budget to be what binds~\cite{bottlenecks}.
 
 Which of the two reads dominates that step is a property of the model, not of
 the operating point, and the spread is large. At a full pool on an A100-80,
-Llama-3.1-8B spends $10.5$ of $79.3$\,ms reading weights --- 13\% weights,
-87\% KV --- while Qwen2.5-32B spends $42.9$ of $55.7$\,ms, which is 77\%
-weights and 23\% KV.
+Llama-3.1-8B spends $10.5$ of $79$\,ms reading weights --- 13\% weights, 87\%
+KV --- while Qwen2.5-32B spends $42.9$ of $56$\,ms, which is 77\% weights and
+23\% KV. The weight terms are measured; the step times they divide are
+projected to a full pool (\S\ref{sec:model:modeldep}), so read the split as
+approximate.
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
 Both are capacity-bound, and they sit at opposite ends of the same axis on
 identical hardware.
@@ -53,8 +56,9 @@ Offloading KV to host memory is an old idea that a new interconnect has
 changed. Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV to the GPU
 every decode step costs more than the step itself, so host memory could only
 ever be a \emph{swap} target: somewhere to park a request that is not currently
-running. NVLink-C2C moves 450\,GB/s in each direction (\S\ref{sec:intro}), and at that
-rate the bytes a decoding request
+running. NVLink-C2C is specified at 450\,GB/s in each direction and measured at
+419~\cite{pie} (\S\ref{sec:intro}); at the measured rate the bytes a decoding
+request
 needs can cross the link inside the time the GPU spends reading its own
 weights.
 
