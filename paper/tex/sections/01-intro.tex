@@ -46,17 +46,29 @@ once per decoded token, so the number that can be sustained is set by what the
 link delivers inside a decode step --- a quantity this system measures rather
 than declares. Around that decision sit the mechanisms it requires: an
 allocator in which a host-tier request holds no device blocks, per-request
-placement, and migration between tiers under load.
+placement, and migration between tiers under load. Throughout, the target is a
+decode node in a prefill/decode-disaggregated deployment, where a request
+arrives with its KV already computed --- the assumption that makes a host-tier
+request \emph{additive} rather than merely relocated, and which
+\S\ref{sec:background:pd} unpacks.
 
-That framing is not how the field currently treats the second memory. Existing
-systems use one memory or the other, statically and totally. Stock vLLM and
-SGLang keep 100\% of KV in HBM; when it does not fit, requests wait. DirectKV,
-which contributes the zero-copy attention kernel that makes host-resident KV
-efficient at all, keeps 100\% on the host for every request always --- its \S6
-stores each layer's initial $K,V$ in CPU memory during prefill and its Alg.~3
-appends new $K,V$ there during decode. That is precisely why it needs no
-memory management: placement is static and total, and its \S8.1 says the design
-``does not change scheduling, batching, or KV-management policies.''
+That framing is not how the field currently treats the second memory. What
+varies between existing systems is \emph{how much} KV sits on the host; what
+none of them varies is \emph{whose}. Stock vLLM and SGLang keep 100\% in HBM;
+when it does not fit, requests wait. DirectKV, which contributes the zero-copy
+attention kernel that makes host-resident KV efficient at all, keeps 100\% on
+the host for every request always --- its \S6 stores each layer's initial $K,V$
+in CPU memory during prefill and its Alg.~3 appends new $K,V$ there during
+decode --- which is why it needs no memory management, and its \S8.1 says the
+design ``does not change scheduling, batching, or KV-management policies.''
+Pie~\cite{pie} sits between them and is the closest prior work: it holds $m$ of
+a model's $n$ layers of KV on the host and tunes $m$ adaptively against measured
+swap time, so it genuinely uses both memories at once. But that split applies to
+every request identically. No request is ever fully absent from the device, and
+link bandwidth is therefore spent as a fixed fraction of \emph{every} request's
+KV rather than as the whole of a chosen few. \textbf{The gap is granularity,
+not existence}: systems place a uniform fraction of every request, and none
+decides per request.
 
 Neither is optimal, for a reason visible without measurement. An all-HBM server
 reads KV at HBM bandwidth and leaves the interconnect idle. An all-host server

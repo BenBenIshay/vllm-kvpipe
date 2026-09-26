@@ -153,9 +153,31 @@ interconnect budget uniformly. \S\ref{sec:eval:ablation} therefore holds the
 mechanism fixed and varies the policy, and reports Pie's published figures
 alongside rather than reproducing them.
 
-The two axes are orthogonal rather than competing, and we say so deliberately: a
-layer-split of the kind Pie performs could operate \emph{within} our device
-tier. We also adopt one of its measurements --- Pie reports GH200 NVLink-C2C at
+\paragraph{Why the request axis?} The two axes are not orthogonal, and it would
+be convenient but wrong to say so: a layer split and a request split spend the
+\emph{same} interconnect budget, and in the fluid model of \S\ref{sec:model} a
+layer split with the right $m/n$ fills both byte budgets and reaches the same
+interior point. They are substitutes, and the case for the request axis has to
+be made on the terms the fluid model omits.
+
+Three of those favour it. A host-tier request holds \emph{zero} device blocks, so
+admitting one requires no allocation at all and the device pool is untouched;
+under a layer split every request retains $(n-m)/n$ of its cache on the device,
+so capacity is freed only in proportion and never for a whole request. Movement
+happens once per request, at a moment the scheduler chooses, rather than once per
+layer per token --- which is what removes Pie's return leg. And only selected
+requests pay link traffic, so a load spike can be absorbed by moving a few
+requests rather than by degrading all of them.
+
+One favours the layer axis, and we concede it: a layer split has no integer
+quantization. It can relocate $1/n$ of a cache where we must relocate a whole
+request, so at long context, where $B_{\mathrm{cap}}$ and $B_{\mathrm{off}}$ are
+small integers (\S\ref{sec:model:omits}), the layer axis reaches operating points
+the request axis cannot express. A system wanting both would use a request split
+for capacity and a layer split for the remainder; we have not built that, and it
+is the more interesting composition than the one usually asserted.
+
+We adopt one of Pie's measurements --- Pie reports GH200 NVLink-C2C at
 419\,GB/s CPU$\to$GPU and 371\,GB/s GPU$\to$CPU, an independent confirmation
 that the widely quoted 900\,GB/s is a bidirectional figure and that a
 host-to-device KV stream should be budgeted well below it.
@@ -175,13 +197,16 @@ stores the initial $K,V$ entries from each layer in CPU memory. During decode,
 the GPU reuses these cached entries directly, while only appending new $K,V$
 for the latest token'' --- and its Alg.~3 appends that new $K,V$ to CPU memory
 as well. \textbf{It places 100\% of KV on the host, for every request, always.}
-That is why it needs no scheduler: placement is static and total. Stock vLLM and SGLang are the opposite endpoint, at 0\%.
-Nobody runs the mixture, and the optimum is interior
-(Table~\ref{tab:endpoints}). Note in particular that the all-host endpoint
-leaves the device memory not holding weights entirely idle, which is why it
-loses to an HBM-resident baseline whenever that baseline fits --- a result
-DirectKV reports on Llama-3.1-8B and does not explain, and which our gain law
-predicts (\S\ref{sec:model:directkv}).
+That is why it needs no scheduler: placement is static and total. Stock vLLM
+and SGLang are the opposite endpoint, at 0\%. Pie is the one system that is
+genuinely interior, and it reaches the interior by splitting \emph{layers}
+uniformly across all requests rather than by choosing requests --- so the
+per-request axis is unoccupied, and the optimum along it is interior
+(Table~\ref{tab:endpoints}). Note that the all-host endpoint leaves the device
+memory not holding weights entirely idle, which is why it loses to an
+HBM-resident baseline whenever that baseline fits --- the ordering DirectKV
+reports on Llama-3.1-8B, and one our gain law is consistent with
+(\S\ref{sec:model:directkv}).
 
 A natural objection to reading DirectKV \S8.1 as leaving the policy dimension
 open is that the vLLM and SGLang mechanisms it names --- continuous batching,
@@ -189,8 +214,10 @@ prefix reuse, eviction, hierarchical KV caching --- already constitute KV
 policy. They do not, for our purposes: each decides \emph{reuse} and
 \emph{preemption}, that is, the residency of blocks belonging to a request that
 is \emph{not currently decoding}. None of them decides the tier of an
-\emph{actively decoding} request. That state did not exist before host-resident
-KV became fast enough to decode from.
+\emph{actively decoding} request. Several systems do \emph{decode} from
+host-resident KV --- FlexGen, Pie, NEO and OmniServe among them --- so the state
+is not new; what is unoccupied is choosing, per request, which side of the
+memory such a request lives on.
 
 \paragraph{Policy, at other granularities.} OmniServe~\cite{omniserve} is the
 closest prior work on policy: it forms mixed GPU/host batches and admits

@@ -371,6 +371,36 @@ ahead of it would otherwise block an admission that requires no resources.
 \subsection{Placement}
 \label{sec:design:placement}
 
+\textbf{What is left for a policy to decide.} \S\ref{sec:model} fixes \emph{how
+many} bytes each tier can carry, and it does so without reference to which
+requests supply them: in the fluid limit the freed device memory and the spent
+interconnect both scale with $S\btok$, so any assignment that fills both budgets
+realises the whole gain. A reader who stops there should conclude that placement
+cannot matter, and for the first-order term they are right. It can matter only
+through quantities the fluid model does not carry, and there are five:
+
+\begin{itemize}\itemsep2pt
+\item \textbf{Integer effects.} Both cohorts are counts of whole requests. At
+      long context they are small integers, so which request is chosen changes
+      the rounding, and the loss is a whole request rather than a fraction.
+\item \textbf{Lifetime and turnover.} A request that finishes soon repays the
+      one-time cost of seeding its KV to the host over fewer steps than one that
+      has just arrived.
+\item \textbf{Growth during decode.} A host-tier request's KV grows every step,
+      so a placement that fits the budget now may not in a hundred steps.
+\item \textbf{Migration cost.} Moving a request between tiers is not free, which
+      makes the \emph{timing} of a decision distinct from the decision.
+\item \textbf{Avoiding recompute-preemption.} Demoting a request is an
+      alternative to evicting and recomputing it, and the two have very
+      different costs.
+\end{itemize}
+
+Every claim in this subsection and the two that follow ties to one of these.
+Where we cannot name the effect a component exploits, we present it as a design
+choice rather than a contribution --- which is the honest status of the scoring
+rule below, since on our substrate the admission budget never offers it enough
+candidates to choose between (\S\ref{sec:eval:ablation}).
+
 Which requests should be host-tier? The intuitive answer is the long ones, since
 KV grows with context. \textbf{Context length does not discriminate to first
 order}, by the cancellation of \S\ref{sec:model:cancel}: moving a request of
@@ -385,13 +415,21 @@ first-order claim on our substrate, where the admission budget admits at most
 three host-tier requests --- a choice set too small for any ranking to separate
 from arrival order.
 
-The discriminating signal is \textbf{temporal}. A request that is not currently
-generating holds device memory while consuming no bandwidth at all, so the two
-costs come apart exactly when a request is idle or near the end of its
-generation. Placement scores requests on estimated remaining generation and time
-since last activity, using only state the serving system already holds --- so it
-needs no externally supplied service class. We keep the rule a transparent
-threshold so that its behaviour can be explained.
+The discriminating signal is \textbf{temporal}, and it is the lifetime effect
+above. On a decode node under continuous batching every admitted request
+generates on every step, so there is no idle cohort to exploit; a request that
+has genuinely paused --- between turns of a conversation, or while a tool call
+resolves --- has left the running set and is the swap case that existing
+hierarchical caches already handle (\S\ref{sec:background}). We therefore do not
+claim it. What remains inside the running set is \emph{remaining} generation: a
+request near the end of its output repays the one-time cost of seeding its KV to
+the host over fewer steps, so at equal $S\btok$ it is the worse host-tier
+candidate, not the better one. Placement scores requests on estimated remaining
+generation, using only state the serving system already holds. Concretely, the
+rule is a threshold on that estimate: requests whose estimated remaining
+generation exceeds $\theta$ steps are eligible for the host tier, ranked by that
+estimate, and $\theta$ is set to the number of steps over which a seed amortises
+at the measured host bandwidth.
 
 \subsection{Admission}
 \label{sec:design:admission}

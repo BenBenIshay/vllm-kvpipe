@@ -307,10 +307,12 @@ because admitting them would break latency --- the system is latency-limited,
 not capacity-limited, and offloading is then strictly harmful. Following (b),
 this gate is model-dependent rather than a property of the device alone.
 
-The gate is a scoping statement, and we state it as a finding rather than
-apologise for it: this is a feature for \emph{throughput-oriented} serving ---
-agentic pipelines, batch inference, long-form and reasoning workloads --- and
-not for interactive chat.
+The gate scopes the technique to \emph{throughput-oriented} serving: batch
+inference, long-form generation and reasoning workloads, where the latency
+target is loose relative to a full-pool step. It excludes interactive chat. It
+also excludes latency-sensitive agentic pipelines, which are often mis-filed as
+throughput work: a tool-calling loop whose user is waiting has a tight target
+even though its individual requests are long.
 
 \subsection{Measured parameters}
 \label{sec:model:params}

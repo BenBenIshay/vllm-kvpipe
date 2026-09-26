@@ -19,22 +19,33 @@
 A decode step is memory-bound by a wide margin. It reads every model weight
 once and every resident KV byte once, and performs arithmetic whose intensity
 equals the GQA group size --- 4 to 8 on current models, against a balance point
-near 116 FLOP/byte on an H100. The consequence is that a decode engine runs at
+of order $100$ FLOP/byte on the accelerators in question (116 on an H100, 98 on
+the A100-80 we measure). The consequence is that a decode engine runs at
 single-digit arithmetic utilization, and what stops it running a larger batch
 is not the arithmetic but the bytes: KV cache exhausts the device long before
 the SMs saturate. A recent trace-driven study of production serving reaches the
 same conclusion from the workload side, finding that ``VRAM capacity, not token
 budget'' is what binds~\cite{bottlenecks}.
 
-It is worth being precise about which regime this is, because the opposite
-claim is also true somewhere. At small batch the step is dominated by the
-weight read and adding requests is nearly free --- decode is
-\emph{weight-bandwidth-bound}. That regime is real, but it is precisely the
-regime in which capacity is not a problem, so it is not the one a capacity
-feature should be designed for. At the operating point that matters, where the
-pool is full and the scheduler is turning requests away, the step is roughly
-79\% KV read and 21\% weight read. Everything in this paper concerns that
-second regime, and \S\ref{sec:model} makes the boundary between them explicit.
+Which of the two reads dominates that step is a property of the model, not of
+the operating point, and the spread is large. At a full pool on an A100-80,
+Llama-3.1-8B spends $10.5$ of $79.3$\,ms reading weights --- 13\% weights,
+87\% KV --- while Qwen2.5-32B spends $42.9$ of $55.7$\,ms, which is 77\%
+weights and 23\% KV.
+% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
+Both are capacity-bound, and they sit at opposite ends of the same axis on
+identical hardware.
+
+That spread is what makes a second tier worth having, and the direction is the
+opposite of the intuitive one. The weight read is a \emph{fixed} per-step window
+during which the link carries nothing: the GPU is streaming parameters and wants
+no KV. The larger the weights are relative to the device, the longer that window
+is, and the less HBM is left for resident KV --- so the very configurations where
+weights dominate the step are the ones with both the most idle link time to
+exploit and the least device memory to exploit it with. Qwen2.5-32B is the
+favourable case here \emph{because} it is 77\% weights, and Llama-3.1-8B is
+unfavourable because it is 13\%. \S\ref{sec:model} makes that statement
+quantitative, and \S\ref{sec:model:omits} gives the cost that can cancel it.
 
 \subsection{Host memory as a tier for actively decoding requests}
 

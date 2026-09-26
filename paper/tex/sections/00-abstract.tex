@@ -3,7 +3,8 @@ A decode server's batch size is capped by device memory, not by arithmetic: KV
 cache exhausts HBM long before the arithmetic units are busy, so the GPU runs
 at single-digit utilization while turning requests away. Coherent CPU--GPU
 interconnects make host DRAM fast enough to hold the KV of an \emph{actively
-decoding} request, but existing systems use one memory or the other. Stock
+decoding} request, but existing systems vary how much KV sits on the host and
+never whose. Stock
 engines keep all KV in HBM and stall when it does not fit; offloading systems
 relocate a fixed fraction of every request's KV, uniformly, with no notion of
 which request is which.
