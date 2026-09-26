@@ -23,7 +23,7 @@ of order $100$ FLOP/byte on the accelerators in question (116 on an H100, 98 on
 the A100-80 we measure). The consequence is that a decode engine runs at
 single-digit arithmetic utilization, and what stops it running a larger batch
 is not the arithmetic but the bytes: KV cache exhausts the device long before
-the SMs saturate. A recent trace-driven study of production serving reaches the
+the streaming multiprocessors (SMs) saturate. A recent trace-driven study of production serving reaches the
 same conclusion from the workload side, finding that ``VRAM capacity, not token
 budget'' is what binds~\cite{bottlenecks}.
 

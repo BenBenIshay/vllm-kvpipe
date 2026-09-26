@@ -39,12 +39,12 @@ symbol & meaning \\
 $L$ & layers in the model \\
 $b$ & tokens per KV block (vLLM block size) \\
 $k$ & rolling slots, $k \ll L$ (we use 4) \\
-$W$ & blocks the \emph{active} host-tier cohort occupies this step \\
+$R$ & blocks the \emph{active} host-tier cohort occupies this step \\
 $S$ & context length \\
-$\kappa$ & KV bytes per token, $= 2 L\,n_{kv}\,d_h \cdot \mathrm{sizeof(dtype)}$ \\
+$\btok$ & KV bytes per token, $= 2 L\,n_{kv}\,d_h \cdot \mathrm{sizeof(dtype)}$ \\
 \bottomrule
 \end{tabular}
-\caption{Notation used in the design and in \S\ref{sec:model}.}
+\caption{Notation local to the design section. Symbols shared with \S\ref{sec:model} ($S$, $\btok$, $L$) carry the same meaning there; $b$, $k$ and $R$ appear only here.}
 \label{tab:notation}
 \end{table}
 
@@ -213,7 +213,7 @@ while the rolling region is a small dense array. Bridging them is the
 \node[lbl, anchor=west] at (0,0.62)
   {A:\,$\{7,8\}$\quad B:\,$\{23\}$\quad C:\,$\{40,41,42\}$};
 
-\node[font=\bfseries\scriptsize, anchor=west] at (0,-0.55) {rolling slot $\ell \bmod k$ \ ($W{=}6$, 3 runs)};
+\node[font=\bfseries\scriptsize, anchor=west] at (0,-0.55) {rolling slot $\ell \bmod k$ \ ($R{=}6$, 3 runs)};
 \foreach \i in {0,...,5} \node[dst] (d\i) at (\i*0.63,-1.2) {\tiny \i};
 
 \draw[arr] (h2.south) -- (d0.north);
@@ -232,7 +232,7 @@ while the rolling region is a small dense array. Bridging them is the
    \end{tabular}};
 \end{tikzpicture}
 \caption{\textbf{Compaction, once per step.} Three host-tier requests hold
-scattered host blocks. Their union is sorted and mapped onto $[0,W)$, giving
+scattered host blocks. Their union is sorted and mapped onto $[0,R)$, giving
 both the rolling region's size for this step and a block table expressed in
 rolling indices. The sorted set decomposes into three maximal \emph{runs}, so
 the per-layer transfer is three contiguous slice copies rather than six
@@ -251,7 +251,7 @@ small: \textbf{addresses} are fixed for the whole step, while slot
 
 \begin{enumerate}
 \item \textbf{Once per step --- compact} (Fig.~\ref{fig:compact}). Union the
-      active cohort's host blocks, sort, map onto $[0,W)$, emit the compacted
+      active cohort's host blocks, sort, map onto $[0,R)$, emit the compacted
       block table and the run list. Every layer reuses that block table.
 \item \textbf{Per layer --- refresh.} Issue the runs into rolling slot
       $\ell \bmod k$. With $k>1$ this is issued ahead, so the transfer for layer
@@ -434,7 +434,7 @@ at the measured host bandwidth.
 \subsection{Admission}
 \label{sec:design:admission}
 
-Each host-tier request costs $S\kappa$ bytes of interconnect per step. Admission
+Each host-tier request costs $S\btok$ bytes of interconnect per step. Admission
 bounds their sum by a budget: the step time times the achieved interconnect
 bandwidth, less a margin.
 

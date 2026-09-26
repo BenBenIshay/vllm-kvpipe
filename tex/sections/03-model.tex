@@ -35,9 +35,8 @@ step time at batch $B$ is
 \end{equation}
 %
 The capacity-limited batch is $B_{\mathrm{cap}} = \Ckv / (S \btok{})$: the point at
-which KV, not arithmetic, exhausts the device. A \emph{rider} is a request
-whose KV lives in host memory and streams over the interconnect during the
-step. That transfer is issued one layer ahead of the attention that consumes
+which KV, not arithmetic, exhausts the device. A rider's KV lives in host memory
+and streams over the interconnect during the step. That transfer is issued one layer ahead of the attention that consumes
 it, so it costs step time only to the extent that it fails to overlap compute.
 Writing $\effo \in (0,1]$ for the fraction that does overlap --- the
 \emph{overlap efficiency} --- the number of riders a step absorbs without
@@ -239,7 +238,8 @@ $\HBM/\Ckv$.
 Note the direction of the $\effkv$ term, because it is our main downside risk:
 a \emph{more} efficient paged-KV read shortens the step, shrinks the transfer
 budget, and \emph{lowers} the gain. The curve above is measured on FA-2-era
-kernels. Re-measuring it on Hopper is a prerequisite for any Hopper
+kernels, and a Hopper-generation kernel~\cite{flashattention3} reads paged KV
+differently. Re-measuring it there is a prerequisite for any Hopper
 projection, and a downside risk rather than a formality: a kernel generation
 that reads paged KV \emph{more} efficiently shortens the step, shrinks the
 transfer budget, and lowers the predicted gain.
@@ -356,7 +356,8 @@ matter holds at three of four same-byte test points but breaks at 17.2\,GB
 ($B{=}32,S{=}4096$ gives 0.561 against $B{=}16,S{=}8192$ at 0.747). The cause
 is a reproducible anomaly at $B{=}32,S{=}4096$ that also appeared in an
 independent earlier run --- an attention-kernel scheduling artifact, most
-likely FlashDecoding's split-KV heuristics, not measurement noise ($\pm0.61$\,ms
+likely a split-KV heuristic in the attention kernel choosing a different
+partitioning at the larger batch, not measurement noise ($\pm0.61$\,ms
 against a $\sim$3\,ms deviation). The aggregate law holds; the
 per-configuration surface has kernel-regime steps.
 

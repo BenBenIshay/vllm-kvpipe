@@ -1,7 +1,7 @@
 % ============================================================================
 % Section 1 -- introduction.
 %
-% REFRAMED 2026-09-06 (Ben): the paper is a HETEROGENEOUS MEMORY SYSTEM for
+% REFRAMED 2026-09-06: the paper is a HETEROGENEOUS MEMORY SYSTEM for
 % decode, not "a policy layer on top of somebody's kernel". The old framing was
 % structurally subordinate -- it invited "so you wrote the scheduler DirectKV
 % skipped" -- and it scattered our pieces as a bag of policies. Under this frame
@@ -27,7 +27,7 @@ recent trace-driven study of production deployments reaches the same conclusion
 from the workload side: what binds is ``VRAM capacity, not token
 budget''~\cite{bottlenecks}.
 
-The machine, however, has more memory than the GPU's. A Grace-Hopper node pairs
+The machine, however, has more memory than the GPU's. A Grace-Hopper node~\cite{gracehopper} pairs
 96\,GB of HBM with hundreds of gigabytes of host DRAM, and NVLink-C2C connects
 them at 450\,GB/s per direction.\footnote{The commonly quoted 900\,GB/s is
 bidirectional; a KV stream is unidirectional host-to-device, so 450\,GB/s is
@@ -46,7 +46,9 @@ once per decoded token, so the number that can be sustained is set by what the
 link delivers inside a decode step --- a quantity this system measures rather
 than declares. Around that decision sit the mechanisms it requires: an
 allocator in which a host-tier request holds no device blocks, per-request
-placement, and migration between tiers under load. Throughout, the target is a
+placement, and migration between tiers under load. We call a host-tier request a
+\emph{rider}, since it travels on bandwidth the resident cohort is not using.
+Throughout, the target is a
 decode node in a prefill/decode-disaggregated deployment, where a request
 arrives with its KV already computed --- the assumption that makes a host-tier
 request \emph{additive} rather than merely relocated, and which
@@ -54,7 +56,7 @@ request \emph{additive} rather than merely relocated, and which
 
 That framing is not how the field currently treats the second memory. What
 varies between existing systems is \emph{how much} KV sits on the host; what
-none of them varies is \emph{whose}. Stock vLLM and SGLang keep 100\% in HBM;
+none of them varies is \emph{whose}. Stock vLLM~\cite{vllm} and SGLang keep 100\% in HBM;
 when it does not fit, requests wait. DirectKV, which contributes the zero-copy
 attention kernel that makes host-resident KV efficient at all, keeps 100\% on
 the host for every request always --- its \S6 stores each layer's initial $K,V$
