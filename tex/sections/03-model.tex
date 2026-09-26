@@ -82,7 +82,8 @@ unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$, $-0.09$, $+0.00$
 ms). $B{=}16,S{=}4096$ and $B{=}8,S{=}8192$ both measure $17.17$ ms.
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
 We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
-with identical prompts in both runs --- so prefill and warmup cancel exactly.
+with identical prompts in both runs, so prefill and warmup cancel; context
+grows across the $N_2-N_1$ tokens, which the differencing does not remove.
 
 \subsection{(b) The step time is model-dependent}
 
@@ -101,7 +102,9 @@ than a property of the device.
 The transfer budget is still $\mathrm{ITL}\cdot\Xlink\cdot\effo$, and most of it is still
 bought with \emph{weight-read time}. On GH200, Qwen-32B spends roughly
 21\,ms of a 34\,ms step reading weights, during which nothing else contends for
-the interconnect. The opportunity is time, not spare bandwidth.
+the interconnect. The opportunity is time, not spare bandwidth. It is not free,
+though: the arriving bytes are written into HBM, and those writes consume device
+bandwidth during a step that is already HBM-bound.
 
 \subsection{(c) The gain law}
 \label{sec:model:gain}
