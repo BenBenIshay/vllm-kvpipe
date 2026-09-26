@@ -137,9 +137,8 @@ weight precisions} lands at two different points on the curve.
 A capacity multiplier is not yet a reason to build anything, because a serving
 system is paid in requests per second rather than requests. Charging the fixed
 per-step cost of using a host path at all gives a \textbf{second gate}, and it
-is the binding one: at the cost we measure, most of the configurations the
-capacity model likes still lose
-(\S\ref{sec:model:omits}). Which configurations clear both gates, and on what
+is the binding one: at the cost we measure, every configuration the capacity
+model likes still loses (\S\ref{sec:model:omits}). Which configurations clear both gates, and on what
 hardware, is the question the model exists to answer.
 
 \paragraph{Contributions.}
@@ -161,7 +160,7 @@ hardware, is the question the model exists to answer.
       bandwidth --- rather than declared as a constant. Whether the derived
       count beats a fixed offload fraction is the ablation
       \S\ref{sec:eval:ablation} specifies and cannot yet run: on PCIe the
-      budget admits at most two or three host-tier requests, and no policy
+      budget admits at most two host-tier requests, and no policy
       distinguishes itself on a choice set that small.
 \item \textbf{An implementation in vLLM v1, and a measured account of what a
       host-tier request costs} (\S\ref{sec:eval}): the overlap efficiency
@@ -188,7 +187,10 @@ is what makes host-tier requests additive.
 \paragraph{Results.} On A100/PCIe --- the regime our own model says cannot pay
 --- the memory system works and the economics do not. Against a fixed KV pool,
 host-tier requests raise peak concurrency from 8 to 48, itself a lower bound
-since 48 was the entire offered load.
+since 48 was the entire offered load --- though the mixture took $89.7$\,s
+against the all-HBM arm's $47.8$ for the same completed work, so this
+establishes that admission is decoupled from the device pool and nothing about
+speed.
 % src: paper/data/preload_capacity.json @ f3df05bdb
 In a separate experiment that isolates a rider's cost --- riders added on top of
 a fixed resident batch, with prefill cancelled by construction --- only

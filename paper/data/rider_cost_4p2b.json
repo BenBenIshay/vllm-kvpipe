@@ -25,7 +25,8 @@
     "eta_o_at_r2": 0.62,
     "marginal_test": {"dT_over_T": 0.236, "threshold_1_over_N_plus_r": 0.056, "verdict": "refuse"},
     "decode_tok_s": {"r0": 296, "r2": 254, "ratio": 0.86},
-    "crossover_gbps": {"formula": "X* = C(1-eta_o)/T_step", "value": 66, "measured_link_gbps": 25.1}
+    "crossover_gbps": {"formula": "X* = C(1-eta_o)/T_step", "value": 60.3,
+    "note": "recomputed 2026-09-26 from C=8.59 GB (16 residents x 2048 ctx), eta_o=0.62, T=54.10 ms. The 66 in the original commit message is not reproducible from any stated quantity.", "measured_link_gbps": 25.1}
   },
   "notes": [
     "riders_created saturates at 2 regardless of riders_offered: a new rider must prefill before its KV can be seeded to the host, prefill needs resident blocks, and HBM is full of the 16 residents. See paper/BLOCKER_PREFILL_RESIDENCY.md. The r=4 and r=8 rows therefore measure degradation, not a 4- or 8-rider cost.",

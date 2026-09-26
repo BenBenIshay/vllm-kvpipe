@@ -47,8 +47,8 @@ idle one, a $9.4\times$ error from contention, which is why
 
 \paragraph{What the residual is made of.} An operator trace shows
 \texttt{cudaStreamSynchronize} gone and no dominant remaining term: roughly 640
-extra kernel launches per step, about ten across 64 layers at 0.19\,ms each,
-which is 12.2\,ms --- the per-layer structure itself. Removing it needs batching
+extra kernel launches per step, about ten per layer across 64 layers, costing
+$0.19$\,ms \emph{per layer}, so $64 \times 0.19 = 12.2$\,ms --- the per-layer structure itself. Removing it needs batching
 across layers rather than issuing per layer, which we have not built. It is
 launch-bound rather than bandwidth-bound, so a faster interconnect does not
 shrink it; but it is \emph{not} machine-independent, since launch cost depends on

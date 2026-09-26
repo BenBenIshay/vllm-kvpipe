@@ -48,8 +48,8 @@ link whatever else is true, so the rider cohort is bounded by
 B_{\mathrm{off}} \;=\; \frac{\mathrm{ITL} \cdot \Xlink}{S \btok{}}.
 \end{equation}
 %
-This is a \emph{capacity} bound and nothing more: it says how many riders' bytes
-fit, not what they cost. The transfer is issued one layer ahead of the attention
+Equation~\ref{eq:boff} is a \emph{capacity} bound and nothing more: it says how
+many riders' bytes fit, not what they cost. The transfer is issued one layer ahead of the attention
 that consumes it, and the fraction of its time that does \emph{not} reappear as
 added step time is the \textbf{overlap efficiency} $\effo \in (0,1]$. Perfect
 overlap is the exception --- on A100/PCIe we measure $\effo = 0.62$
@@ -154,7 +154,8 @@ served batch by
       \;=\; 1 + \frac{\mathrm{ITL}_0 \cdot \Xlink}{\Ckv}.
 \end{equation}
 %
-That is exact in the fluid limit, and it is the form to compute with. To read the
+Equation~\ref{eq:gain-exact} is exact in the fluid limit, and it is the form to
+compute with. To read the
 \emph{structure} off it, substitute the full-pool step time
 $\mathrm{ITL}_0 \approx \HBM/(\BW\,\bar\eta)$, where $\BW$ is now the device's
 \textbf{peak} bandwidth and $\bar\eta$ the pool-weighted read efficiency it
@@ -300,9 +301,11 @@ riders use it. It is not small: $F = 12.3$\,ms against a $54$\,ms step on A100.
 Two independent routes give that number, which matters because one of them comes
 from a fit \S\ref{sec:eval:cost} later rejects. The intercept of the rider sweep
 puts it at $9.6$--$12.3$\,ms depending on the run; counting operations puts it
-at $640$ extra kernel launches per step, about ten across 64 layers at
-$0.19$\,ms each, which is $12.2$\,ms (\S\ref{sec:impl:cost}). We use the
-launch-count figure, since it survives the affine fit's collapse. Being
+at $640$ extra kernel launches per step --- about ten per layer across 64
+layers at $0.19$\,ms per layer, so $12.2$\,ms (\S\ref{sec:impl:cost}). The two
+agree to within $0.1$\,ms, and we carry $F = 12.3$\,ms throughout; the
+launch-count derivation is what makes it defensible, since it does not depend on
+a fit \S\ref{sec:eval:cost} rejects. Being
 launch-bound rather than bandwidth-bound, a faster link does not shrink it. Charging it gives the throughput form
 %
 \begin{equation}
@@ -331,10 +334,10 @@ cost each configuration could afford,
 F^{*} \;=\; \Big(\tfrac{B_{\mathrm{tot}}}{B_0} - 1\Big)\mathrm{ITL}_0 - \Delta,
 \end{equation}
 %
-which is $-0.9$ and $-1.3$\,ms for the two small-amplifier rows --- negative,
-meaning $\Delta$ alone already exceeds what their capacity buys, so no
-implementation effort rescues them --- and $+3.8$\,ms for Qwen2.5-32B fp16 and
-$+10.6$\,ms for Llama-70B fp8.
+Equation~\ref{eq:fstar} gives $-0.9$ and $-1.3$\,ms for the two small-amplifier
+rows --- negative, meaning $\Delta$ alone already exceeds what their capacity
+buys, so no implementation effort rescues them --- and $+3.8$\,ms for
+Qwen2.5-32B fp16 and $+10.6$\,ms for Llama-70B fp8.
 
 So the paper's positive claim reduces to one falsifiable number. Against a
 measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 14\% and the

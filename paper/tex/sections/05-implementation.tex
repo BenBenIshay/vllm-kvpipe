@@ -78,7 +78,8 @@ is contingent on the worker acknowledging that the KV is present, since the
 scheduler cannot observe a host-side write and admitting on the assumption would
 leave a request with no KV anywhere. The handover costs \textbf{0.22\,ms per
 decode step} at 2048 context (14.2\,ms amortised over 64 steps, 38\,GB/s), about
-5\% of a host-tier request's per-step cost.
+3\% of a host-tier request's per-step cost, measured against the
+8.3\,ms/rider of \S\ref{sec:eval:cost}.
 
 \subsection{What the host path costs per step}
 \label{sec:impl:cost}
@@ -87,8 +88,8 @@ Beyond the transfer itself, using the host path costs a fixed \textbf{12.3\,ms}
 per step, reduced from 37.0 over four optimisations. That residual is the $F$ of
 \S\ref{sec:model:omits}, on which the paper's result turns, so its composition
 matters: an operator trace shows no dominant term, just roughly 640 extra kernel
-launches per step --- about ten across 64 layers at 0.19\,ms each, which is
-12.2\,ms. It is the per-layer issue structure itself. Removing it needs batching
+launches per step --- about ten per layer across 64 layers, costing
+$0.19$\,ms \emph{per layer}, so $64 \times 0.19 = 12.2$\,ms. It is the per-layer issue structure itself. Removing it needs batching
 across layers rather than issuing per layer, which we have not built.
 
 Two properties follow, and they pull in opposite directions. $F$ is
