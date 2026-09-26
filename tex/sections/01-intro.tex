@@ -92,17 +92,14 @@ all-host (uniform offload)  & \textbf{0 HBM}, 14.2\,GB link & 6 \\
 \textbf{both (this paper)}  & 26.5\,GB HBM \textbf{+} 14.2\,GB link & \textbf{18} \\
 \bottomrule
 \end{tabular}
-\caption{Each single-memory design leaves one of the two KV paths unused.
-Weight traffic is identical in all three rows and excluded, so the column
-compares like with like. \textbf{These are projections}, computed by
-\texttt{model/killer\_v2.py} from: measured checkpoint $W = 65.5$\,GB, a 4\,GB
-device reserve for activations and fragmentation, hence $\Ckv = 26.5$\,GB;
-$\btok = 256$\,KiB so a request at 8K holds 2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms
-from Eq.~\ref{eq:step}; and $\Xlink = 419$\,GB/s, the measured host-to-device
-rate on this part~\cite{pie} rather than the 450\,GB/s spec figure. These are
-\emph{capacity} counts: they say how many requests fit, not how fast they are
-served, and \S\ref{sec:model:omits} shows the difference is what decides whether
-the technique pays.}
+\caption{Each single-memory design leaves one KV path unused. Weight traffic is
+identical across rows and excluded. \textbf{Projections}, from
+\texttt{model/killer\_v2.py}: $W = 65.5$\,GB measured, less a 4\,GB device
+reserve, gives $\Ckv = 26.5$\,GB; $\btok = 256$\,KiB, so a request at 8K holds
+2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}; $\Xlink =
+419$\,GB/s measured on this part~\cite{pie}, not the 450 spec. These count
+\emph{capacity} --- how many requests fit, not how fast they are served, a
+difference \S\ref{sec:model:omits} shows is decisive.}
 \label{tab:endpoints}
 \end{table}
 
