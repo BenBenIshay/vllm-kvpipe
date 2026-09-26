@@ -10,9 +10,16 @@ A100-80 PCIe; two models; 41 single-shot configurations plus a
 disabled.
 % src: paper/model/p4_llama8b_a100_rep3.json @ 2bfc6ca5e
 
-\paragraph{Weight read is efficient and stable.} $\effw = 0.75$ of peak
-($\approx$1450\,GB/s), consistent across both models, all contexts, and robust
-to the $\effkv$ assumed at $B{=}1$ (0.739--0.773 over that whole range).
+\paragraph{Weight read is efficient, and nearly stable.} $\effw \approx 0.75$ of
+the measured $1935$\,GB/s peak ($\approx$1450\,GB/s achieved), stable across
+contexts within a model: 0.729--0.694 for Llama-3.1-8B over 2K--8K and
+0.775--0.770 for Qwen2.5-32B. \textbf{It is not stable across models.} The two
+differ by 8.6\% (0.712 against 0.773), which is larger than the within-model
+variation and is the dominant residual in the intercept test of
+\S\ref{sec:model:cancel}. We use the single value 0.75 throughout, and
+\S\ref{sec:model:cancel} shows it predicts both intercepts better than the
+per-model values do --- but it is an approximation across models, not a
+constant, and a third model could move it again.
 
 \paragraph{Paged KV read is neither.} $\effkv$ degrades by $1.6\times$ with the
 KV working set (Table~\ref{tab:effkv}):

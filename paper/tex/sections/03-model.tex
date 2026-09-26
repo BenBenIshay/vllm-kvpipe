@@ -91,12 +91,23 @@ meaningless and we do not report it} --- the fit across both is $R^2 = 0.19$,
 because Eq.~\ref{eq:step}'s intercept is model-dependent, which is the whole
 content of \S\ref{sec:model:modeldep}.
 
-That intercept is the sharper test, because it is a quantity we can predict
-rather than fit. The fitted intercepts are $9.4$\,ms for Llama-3.1-8B and
-$43.6$\,ms for Qwen2.5-32B; $W/(\BW\effw)$ predicts $10.5$ and $42.9$\,ms.
-Agreement within $1.1$\,ms across a $4\times$ range of weight footprint, with
-$\effw$ calibrated on $B{=}1$ points where the KV term is negligible, is what
-gives us confidence in the decomposition Eq.~\ref{eq:step} asserts.
+That intercept is the sharper test, because Eq.~\ref{eq:step} predicts it rather
+than fitting it. The fitted intercepts are $9.4$\,ms for Llama-3.1-8B and
+$43.6$\,ms for Qwen2.5-32B; $W/(\BW\effw)$ at the measured peak of
+$1935$\,GB/s and $\effw = 0.75$ predicts $11.1$ and $45.2$\,ms. Agreement is
+within $1.7$\,ms across a $4\times$ range of weight footprint, and the two
+errors have \emph{opposite} signs, which is what a shared miscalibration would
+not produce.
+
+The residual is mostly one thing, and it is worth reporting because it
+contradicts a simplification we make elsewhere. \textbf{$\effw$ is not a single
+constant}: the $B{=}1$ points give $0.712$ for Llama-3.1-8B and $0.773$ for
+Qwen2.5-32B, an 8.6\% spread. Using each model's own value the predictions move
+to $11.7$ and $43.8$\,ms, which improves Qwen to $0.2$\,ms and worsens Llama to
+$2.3$. So the single-$\effw$ approximation is the better predictor of the two,
+and we keep it while recording that it is an approximation across models rather
+than a measured constant --- Appendix~\ref{app:params} gives the per-model
+figures.
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
 We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
 with identical prompts in both runs, so prefill and warmup cancel; context
@@ -155,9 +166,10 @@ actually achieves (\S\ref{sec:model:params}):
                           \cdot\frac{\HBM}{\Ckv}.
 \end{equation}
 %
-Both efficiencies must be carried. Dropping $\bar\eta$ --- which is easy to do,
-since it cancels visually against $\BW$ --- understates the gain by 7--8\% across
-Table~\ref{tab:gain}, because $\bar\eta$ runs 0.52--0.73 rather than 1. The
+$\bar\eta$ must be carried. Dropping it --- which is easy to do, since it
+cancels visually against $\BW$ --- understates the gain by about 10\% across
+Table~\ref{tab:gain} (9.9\% to 11.4\%), because $\bar\eta$ runs 0.52--0.73
+rather than 1. The
 bandwidth ratio $\Xlink/\BW$ is a handicap --- $419/4000 = 0.105$ against peak
 even on NVLink-C2C --- and it cannot be improved by anything a serving system
 does. The amplifier is
@@ -184,10 +196,10 @@ negligible, and the second is what decides the paper.
 \toprule
 Model (GH200-96) & weights & $\Ckv$ & $\HBM/\Ckv$ & ITL$_0$ & capacity & tput \\
 \midrule
-Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & $\times$1.22 & $\times$0.75 \\
-Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & $\times$1.28 & $\times$0.77 \\
-Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & $\times$1.48 & $\times$0.86 \\
-Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.67 & $\times$0.96 \\
+Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & $\times$1.03 & $\times$0.78 \\
+Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & $\times$1.09 & $\times$0.78 \\
+Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & $\times$1.45 & $\times$0.85 \\
+Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.73 & $\times$0.97 \\
 \bottomrule
 \end{tabular}
 \caption{\emph{All rows are projections}, not measurements. A second memory
@@ -195,12 +207,17 @@ tier is an amplifier on $\HBM/\Ckv$ and the table is monotone in it.
 $\Ckv = \HBM - W - 4$\,GB, the last term a device reserve for activations,
 workspace and allocator fragmentation --- so weights and $\Ckv$ do not sum to
 $\HBM$, and Eq.~\ref{eq:gate} uses the same definition. \emph{capacity} is
-$B_{\mathrm{tot}}/B_0$, charging the $k/L$ of a resident's blocks each rider
-displaces at $k{=}4$. \emph{tput} is Eq.~\ref{eq:gain-tput}, which additionally
-charges the fixed per-step cost $F = 12.3$\,ms and the unhidden residual
-$\Delta$ (12--17\,ms across these rows). \textbf{Every row loses on tput while
-every row gains on capacity}: that gap, not the multiplier, is the paper's
-result, and \S\ref{sec:model:omits} says what would close it. Weight figures are
+$B_{\mathrm{tot}}/B_0$, charging both the $k/L$ of a resident's blocks each
+rider displaces at $k{=}4$ \emph{and} the two HBM passes its KV makes per step
+(the link writes it into the slot, attention reads it out). \emph{tput} is
+Eq.~\ref{eq:gain-tput}, which additionally charges $F = 12.3$\,ms and the
+unhidden residual $\Delta$ (2--13\,ms across these rows). \textbf{Every row
+loses on tput while every row gains on capacity}: that gap, not the multiplier,
+is the paper's result, and \S\ref{sec:model:omits} says what would close it.
+Charging the HBM passes is what separates the two small-amplifier rows from the
+two large ones --- uncharged they read $\times$1.22 and $\times$1.28 --- so the
+amplifier matters \emph{more} once a rider is billed for the device bandwidth
+it actually consumes, not less. Weight figures are
 measured checkpoints except Qwen-32B fp8, for which we hold no checkpoint and
 quote the nominal size; the fp16 row measures 65.5\,GB against a nominal 64.0,
 so the fp8 row is likely optimistic by a similar margin. \textbf{The two
@@ -246,14 +263,17 @@ would be the stronger test, and we have not run it.
 
 Several of these parameters are measured with error, so it is worth asking
 which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
-8K, perturbing the bandwidth efficiencies barely moves it: a $\pm20\%$ error in
-$\effkv$ spans $\times1.26$--$\times1.30$, and $\effw$ over 0.70--0.80 spans
-$\times1.27$--$\times1.29$. The reason is structural --- the gain depends on a
+8K --- where Table~\ref{tab:gain} reads $\times1.45$ --- $\effw$ over 0.70--0.80
+barely moves it, spanning $\times1.41$--$\times1.50$. \textbf{$\effkv$ is a
+different matter}: $\pm20\%$ spans $\times1.31$--$\times1.64$. Charging the
+rider's HBM passes is what made it so, because $\effkv$ now prices the rider
+traffic as well as the resident cohort's, and it is the one parameter a new
+kernel generation moves. The reason is structural --- the gain depends on a
 \emph{ratio}, so a bandwidth error largely cancels between the step-time
 numerator and the capacity denominator.
 
-The parameter that does matter is the \textbf{weight footprint}. Moving it from
-60 to 68\,GB spans $\times1.23$--$\times1.30$, because weights sit in
+The other parameter that matters is the \textbf{weight footprint}. Moving it
+from 60 to 68\,GB spans $\times1.34$--$\times1.53$, because weights sit in
 $\Ckv = \HBM - W$ and are cancelled by nothing. This is why we use measured
 checkpoint sizes rather than nominal parameter counts --- for a quantized model
 the two differ by gigabytes and the error propagates undamped into the headline
@@ -299,8 +319,8 @@ exceeds the fixed-cost penalty, that is when
 $B_{\mathrm{off}}/B_{\mathrm{cap}} > (F + \Delta)/\mathrm{ITL}_0$.
 
 \textbf{Applied to Table~\ref{tab:gain}, this gate closes every row.} At the
-measured $F$, the capacity gains of $\times$1.22 to $\times$1.67 become
-throughput ratios of $\times$0.75, $\times$0.77, $\times$0.86 and $\times$0.96.
+measured $F$, the capacity gains of $\times$1.03 to $\times$1.73 become
+throughput ratios of $\times$0.78, $\times$0.78, $\times$0.85 and $\times$0.97.
 Not one configuration pays, including the 70B that the capacity model likes
 most. We report that rather than tune around it, because the shape of the result
 is more useful than its sign: inverting Eq.~\ref{eq:gain-tput} gives the fixed
@@ -311,25 +331,27 @@ cost each configuration could afford,
 F^{*} \;=\; \Big(\tfrac{B_{\mathrm{tot}}}{B_0} - 1\Big)\mathrm{ITL}_0 - \Delta,
 \end{equation}
 %
-which is $-7.0$ and $-4.1$\,ms for the two small-amplifier rows --- negative,
+which is $-0.9$ and $-1.3$\,ms for the two small-amplifier rows --- negative,
 meaning $\Delta$ alone already exceeds what their capacity buys, so no
-implementation effort rescues them --- and $+4.0$\,ms for Qwen2.5-32B fp16 and
-$+9.7$\,ms for Llama-70B fp8.
+implementation effort rescues them --- and $+3.8$\,ms for Qwen2.5-32B fp16 and
+$+10.6$\,ms for Llama-70B fp8.
 
 So the paper's positive claim reduces to one falsifiable number. Against a
-measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 21\% and the
+measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 14\% and the
 32B by a factor of three. \textbf{Measuring $F$ on a coherent link is therefore
 the first experiment we ask of one, ahead of measuring its bandwidth} --- $F$ is
 launch-bound rather than bandwidth-bound, so a faster interconnect does not touch
 it, but it scales with the host CPU and the layer count, and a Grace host is not
-the A100 node's host. If $F \ge 9.7$\,ms there, the technique does not pay
+the A100 node's host. If $F \ge 10.6$\,ms there, the technique does not pay
 anywhere in this table and we will say so.
 
 Equation~\ref{eq:gain} also omits four smaller terms, listed so that a reader
-can judge which might matter in a regime we did not measure. A rider's KV
-crosses the link and is then \emph{read again} from its slot in HBM, so it pays
-device bandwidth too, at $k/L$ of a resident's footprint. Host-to-device writes
-consume HBM bandwidth during a step that is already HBM-bound. Host DRAM
+can judge which might matter in a regime we did not measure. (One term
+previously listed here is now charged in Table~\ref{tab:gain} instead: a rider's
+KV crosses the link into its slot and is then read out of it, so it makes
+\emph{two HBM passes per byte per step} --- its full $S\btok$, not the $k/L$ of
+it resident at any instant, which is a factor of $L/k \approx 16$ larger than we
+first wrote.) Host DRAM
 bandwidth bounds $\Xlink$ from behind, and on the 480\,GB Grace configuration it
 is of the same order as the link. And $B_{\mathrm{cap}}$ and $B_{\mathrm{off}}$
 are counts of whole requests, so at long context both are small integers and the

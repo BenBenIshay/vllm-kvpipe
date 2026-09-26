@@ -267,7 +267,8 @@ of the goodput sweep test that directly.
 
 \emph{When the weights are small.} Llama-3.1-8B leaves 75.9\,GB of a 96\,GB
 part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
-$\times$1.22 in capacity. It is the second gate of \S\ref{sec:model:omits} that
+$\times$1.03 in capacity --- barely anything once its riders are billed for the
+HBM bandwidth they consume. The second gate of \S\ref{sec:model:omits} then
 makes it a predicted \emph{negative}: charging $F$ and the unhidden residual
 gives $\times$0.75, and its $F^{*}$ is $-7.0$\,ms, meaning the residual alone
 exceeds what its capacity buys. The prediction is therefore unusually strong ---
@@ -290,7 +291,7 @@ end of the bandwidth axis rather than as a disappointment.
 That at a matched latency target the mixture serves more requests per second
 than either endpoint. \emph{Prediction.} On this substrate, \textbf{no}:
 charging the fixed cost and the unhidden residual of \S\ref{sec:model:omits}
-makes the throughput form $\times0.86$ for our primary model even on a projected
+makes the throughput form $\times0.85$ for our primary model even on a projected
 coherent link, and worse on this one. The capacity term alone does not rescue
 it: what would is $F$ falling below the $F^{*} = 4.0$\,ms that configuration can
 afford.
