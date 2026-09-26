@@ -1,43 +1,29 @@
 \begin{abstract}
-A decode server's batch size is capped by device memory, not by arithmetic: KV
-cache exhausts HBM long before the arithmetic units are busy, so the GPU runs
-at single-digit utilization while turning requests away. Coherent CPU--GPU
+A decode server's batch is capped by device memory, not arithmetic: KV cache
+exhausts HBM long before the arithmetic units are busy, so the GPU runs at
+single-digit utilization while turning requests away. Coherent CPU--GPU
 interconnects make host DRAM fast enough to hold the KV of an \emph{actively
 decoding} request, but existing systems vary how much KV sits on the host and
-never whose. Stock
-engines keep all KV in HBM and stall when it does not fit; offloading systems
-relocate a fixed fraction of every request's KV, uniformly, with no notion of
-which request is which.
+never \emph{whose} --- they place none, or a uniform fraction of every request.
 
-We present a heterogeneous KV memory for LLM decode that manages HBM and host
-DRAM as a single store and assigns each request to a tier. A host-tier request
-holds \emph{no} device blocks: its KV lives in host memory and each layer is
-streamed in just before that layer's attention, into a rolling buffer shared
-across all layers, so its device footprint is $k/L$ of a resident request's.
-Both tiers are served in one forward pass, so weights are read once however the
-batch is split.
+We present a heterogeneous KV memory that manages HBM and host DRAM as one
+store and assigns each request a tier. A host-tier request holds \emph{no}
+device blocks: its KV is streamed layer by layer into a rolling buffer whose
+footprint is $k/L$ of a resident request's, and both tiers are served in one
+forward pass, so weights are read once however the batch is split.
 
-We first derive when a second tier pays at all. The capacity multiplier is
-$1 + \Xlink/(\BW\,\bar\eta)\cdot(\HBM/\Ckv)$, where $\bar\eta$ is the device's
-achieved read efficiency; it applies only above a latency gate we make
-explicit, and --- counter to intuition --- context length cancels, so the value
-tracks how much of memory the weights consumed rather than how long the
-requests are. A second gate follows from charging the fixed per-step cost of
-using a host path at all, and it is the binding one: at the cost we measure,
-\emph{every} configuration the capacity multiplier likes still loses on
-throughput, so we report what that cost would have to be instead.
+We derive when a second tier pays. The capacity multiplier is
+$1 + \Xlink/(\BW\,\bar\eta)\cdot(\HBM/\Ckv)$, so --- counter to intuition ---
+context length cancels and the value tracks how much memory the weights
+consumed. But capacity is not throughput. Charging the fixed per-step cost of
+using a host path at all gives a \textbf{second gate}, and it is the binding
+one: at the cost we measure, \emph{every} configuration the multiplier likes
+still loses. We therefore report what that cost would have to be, which turns
+the question into one falsifiable number per configuration.
 
-We implement the design in vLLM and evaluate it on PCIe, the regime the model
-identifies as unfavourable; the coherent-interconnect measurements the model
-says are the favourable ones are in progress and we state them as predictions. Host-tier requests are \emph{additive} --- peak concurrency rises
-from 8 to 48 against a fixed KV pool --- while a direct measurement puts the overlap efficiency
-$\effo$ at $0.62$ and the fixed per-step cost at $12.3$\,ms --- the two
-quantities the second gate turns on. On PCIe the economics still do not close, which our
-own model predicts and we report as a validated negative that bounds the
-technique. The decision the system actually makes is \emph{how many} requests
-to offload, taken from a measured per-step transfer budget rather than a
-configured fraction. Isolating that decision against a uniform offload fraction
-requires more host-tier requests than a PCIe link admits, so we describe the
-ablation and the substrate it needs rather than claim its result, and we report
-where the technique stops paying as carefully as where it starts.
+We implement this in vLLM and measure it on PCIe --- the regime the model calls
+unfavourable, and where it is duly negative. Host-tier requests are
+\emph{additive}, raising peak concurrency from 8 to 48 against a fixed pool;
+overlap efficiency is $0.62$ and the fixed cost $12.3$\,ms. Coherent-interconnect
+results are pending and stated throughout as predictions.
 \end{abstract}
