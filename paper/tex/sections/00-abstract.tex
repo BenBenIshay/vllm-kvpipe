@@ -18,8 +18,9 @@ Both tiers are served in one forward pass, so weights are read once however the
 batch is split.
 
 We first derive when a second tier pays at all. The capacity multiplier is
-$1 + (\Xlink/\BW)\,\effo\,(\HBM/\Ckv)$, where $\effo$ is the measured fraction
-of a rider's transfer that overlaps compute; it applies only above a latency gate we make
+$1 + (\Xlink/\BW)(\effo/\bar\eta)(\HBM/\Ckv)$, where $\effo$ is the measured
+fraction of a rider's transfer that overlaps compute and $\bar\eta$ the device's
+achieved read efficiency; it applies only above a latency gate we make
 explicit, and --- counter to intuition --- context length cancels, so the value
 tracks how much of memory the weights consumed rather than how long the
 requests are. A second gate follows from charging the fixed per-step cost of

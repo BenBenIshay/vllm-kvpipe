@@ -445,30 +445,50 @@ should fit; the guard responds to what did.
 \subsection{Migration}
 \label{sec:design:migration}
 
-Placement must be revisable, so requests move between tiers with hysteresis on
-both edges and a cooldown bounding thrash.
+\paragraph{What it is for.} Two situations in steady state, both of which a
+fixed placement handles badly. Device blocks free when a resident request
+finishes, and a host-tier request can then be \emph{promoted} into them, which
+removes its per-step link traffic for free. And when the resident cohort's KV
+grows past the pool, the engine's alternative to demoting a request is to
+preempt and later recompute it --- so a demotion is worth making whenever it
+costs less than the recompute it avoids. Placement must therefore be revisable,
+with hysteresis on both edges and a cooldown bounding thrash.
 
-The gate on those moves is measured rather than predicted. A cost model asking
-whether a request's transfer fits the remaining budget is \emph{necessary but
-not sufficient}: the budget accounts for transfer bytes, while the host path
-also carries a per-step cost independent of how many bytes move
-(\S\ref{sec:impl}). A gate that sees only bytes cannot see that cost, and
-widening the margin does not repair the omission.
+\paragraph{What the gate cannot be.} A cost model asking whether a request's
+transfer fits the remaining budget is \emph{necessary but not sufficient}: the
+budget accounts for transfer bytes, while the host path also carries a per-step
+cost independent of how many bytes move (\S\ref{sec:model:omits}). A gate that
+sees only bytes cannot see that cost, and widening the margin does not repair
+the omission.
 
-A demotion is therefore a \textbf{probe}. The controller records the best recent
-steady-state latency, performs the move, waits a settling period, and compares;
-if latency regressed beyond a margin the request is promoted back and the
-cooldown grows exponentially. Two details are forced by the noise floor: the
-baseline must be a recent \emph{minimum} rather than the instantaneous average,
-which would otherwise absorb startup transients, and the loop needs a warmup so
-the first probe has a steady state to compare against.
+\paragraph{What the probe scores on.} A demotion is therefore a \textbf{probe} ---
+make the move, wait a settling period, compare. The metric has to be chosen
+carefully, because the obvious one is degenerate: a demotion \emph{always}
+lengthens the step, since it adds link traffic and a fixed cost and removes
+nothing from the step's critical path, so a probe scoring on inter-token latency
+would revert every time and the loop would be an expensive way to do nothing.
+The benefit of a demotion is \emph{capacity}, and capacity shows up as requests
+served, not as latency. The probe therefore scores on \textbf{SLO-attaining
+goodput}: a demotion is kept when the freed device blocks admit enough
+additional work to raise the number of requests meeting the target, and reverted
+when the longer step pushes the resident cohort past that target. Latency enters
+as the constraint, not as the objective. On a link too slow to hide the
+transfer, no amount of freed capacity repays the step it costs, and the probe
+reverts --- which is what \S\ref{sec:eval:ablation} observes on PCIe.
+
+\paragraph{The baseline, and its bias.} The comparison is against a recent
+steady state rather than the instantaneous average, which would otherwise
+absorb startup transients, and the loop needs a warmup so the first probe has a
+steady state to compare against. We use a recent minimum, and note the bias it
+introduces: any noisy series sits above its own recent minimum most of the time,
+so the test regresses toward reverting. That is the conservative direction for a
+mechanism whose failure mode is thrash, but it means the loop under-reports
+beneficial demotions, and a median would be the better choice if the settling
+window could be made long enough to afford one.
 
 The probe is single-variable attribution in a system where requests arrive and
 depart during the settling window, so its verdict is noisy, and the margin and
-backoff bound the cost of a wrong one. Its value is that it is \emph{correct in
-direction} where a byte-counting model is not: on PCIe it measures demotion as
-harmful and reverts it (\S\ref{sec:eval:ablation}), which is the right action on
-a link that cannot hide the transfer. Whether it flips on a coherent link is a
-prediction, and a falsifiable one --- if it does not, the host path carries a
-fixed cost that survives a fast interconnect, which is exactly the risk
-\S\ref{sec:model:omits} names.
+backoff bound the cost of a wrong one. Whether it flips to keeping demotions on
+a coherent link is a prediction, and a falsifiable one --- if it does not, the
+host path carries a fixed cost that survives a fast interconnect, which is
+exactly the risk \S\ref{sec:model:omits} names.

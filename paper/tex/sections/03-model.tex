@@ -113,16 +113,29 @@ Adding $B_{\mathrm{off}}$ riders to $B_{\mathrm{cap}}$ residents multiplies the
 served batch by
 %
 \begin{equation}
-\label{eq:gain}
+\label{eq:gain-exact}
 \text{gain} \;=\; 1 + \frac{B_{\mathrm{off}}}{B_{\mathrm{cap}}}
-      \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\effo\cdot\frac{\HBM}{\Ckv},
+      \;=\; 1 + \frac{\mathrm{ITL}_0 \cdot \Xlink \cdot \effo}{\Ckv}.
 \end{equation}
 %
-substituting $\mathrm{ITL}_0 \approx \HBM/(\BW\,\bar\eta)$ into
-Eq.~\ref{eq:cancel}, where $\bar\eta$ is the pool-weighted read efficiency of
-\S\ref{sec:model:params}. The bandwidth ratio $\Xlink/\BW$ is a handicap ---
-$419/4000 = 0.105$ against peak HBM bandwidth even on NVLink-C2C --- and it
-cannot be improved by anything a serving system does. The amplifier is
+That is exact in the fluid limit, and it is the form to compute with. To read the
+\emph{structure} off it, substitute the full-pool step time
+$\mathrm{ITL}_0 \approx \HBM/(\BW\,\bar\eta)$, where $\BW$ is now the device's
+\textbf{peak} bandwidth and $\bar\eta$ the pool-weighted read efficiency it
+actually achieves (\S\ref{sec:model:params}):
+%
+\begin{equation}
+\label{eq:gain}
+\text{gain} \;\approx\; 1 + \frac{\Xlink}{\BW}\cdot\frac{\effo}{\bar\eta}
+                          \cdot\frac{\HBM}{\Ckv}.
+\end{equation}
+%
+Both efficiencies must be carried. Dropping $\bar\eta$ --- which is easy to do,
+since it cancels visually against $\BW$ --- understates the gain by 7--8\% across
+Table~\ref{tab:gain}, because $\bar\eta$ runs 0.52--0.73 rather than 1. The
+bandwidth ratio $\Xlink/\BW$ is a handicap --- $419/4000 = 0.105$ against peak
+even on NVLink-C2C --- and it cannot be improved by anything a serving system
+does. The amplifier is
 $\HBM/\Ckv$: \textbf{the value of offloading tracks how much of HBM the weights
 ate}, not model size and not context length.
 
@@ -150,9 +163,11 @@ ignores two second-order effects: the residual $(1-\effo)$ of a rider's
 transfer lengthens the step, and each rider costs a small, fixed share of device
 memory for the rolling window it is streamed into. Table~\ref{tab:gain}
 therefore reports \emph{both} the capacity ratio the closed form approximates
-and the throughput gain once those two effects are charged, since a reader who
-recomputes Eq.~\ref{eq:gain} by hand should land on the first column and not be
-surprised.
+and the throughput gain once those two effects are charged. A reader
+recomputing Eq.~\ref{eq:gain} by hand for the Qwen-32B fp16 row gets
+$\times$1.33 against the $\times$1.27 tabulated; the difference is the
+displacement term, since each host-tier request costs $k/L$ of a resident's
+blocks for the rolling region, which the closed form does not carry.
 
 \begin{table}[t]
 \centering

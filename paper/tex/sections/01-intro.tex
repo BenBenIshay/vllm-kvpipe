@@ -126,9 +126,10 @@ or to everything, neither of which consults the interconnect at all.
 
 \paragraph{When is a second memory tier worth having?} Before building one we
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
-capacity multiplier $1 + (\Xlink/\BW)\,\effo\,(\HBM/\Ckv)$, where $\Ckv$ is the
-device memory left after weights and $\effo$ is the fraction of a rider's
-transfer that overlaps compute. The step-time model underneath it is validated
+capacity multiplier $1 + (\Xlink/\BW)(\effo/\bar\eta)(\HBM/\Ckv)$, where $\Ckv$
+is the device memory left after weights, $\effo$ the fraction of a rider's
+transfer that overlaps compute, and $\bar\eta$ the fraction of peak bandwidth the
+device achieves reading a full pool. The step-time model underneath it is validated
 on 54 measured configurations; the multiplier itself is tested in
 \S\ref{sec:eval}. Two consequences contradict the obvious intuition. Long
 context does \emph{not} help: to first order it shrinks the HBM-resident cohort
