@@ -33,8 +33,10 @@ needs it, so the transfer is inside the operation rather than alongside it;
 ours prefetches layer $\ell{+}1$ into a rolling device buffer while layer
 $\ell$ computes. The two designs therefore trade in opposite directions. They
 pay no device memory and get no overlap; we pay one $k$-window of device memory
-and overlap almost all of the transfer. Neither dominates on paper, which is
-why \S\ref{sec:eval} measures both on one machine. It also means a host-tier
+and overlap $\effo$ of the transfer, which on PCIe we measure at $0.62$ --- a
+real window, but well short of all of it. Neither dominates on paper, and
+settling it needs both mechanisms on one machine, which requires their
+SM90a-only kernel and is therefore future work rather than a result we report. It also means a host-tier
 request cannot simply be moved onto their kernel and remain what we call a
 rider: without a prefetch window there is nothing left to hide, and such a
 request pays the full transfer inside its own step.\footnote{Their architecture
@@ -60,8 +62,10 @@ reducing attention latency by up to $4.2\times$ relative to PCIe. Our
 evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96, so it does not
 overlap the models we evaluate, and it does not include a 70B-class
 configuration --- which our capacity model identifies as the most favourable
-point of all, and which we therefore report as a confirmatory measurement
-(\S\ref{sec:eval}).
+point of all. We do not evaluate one either (\S\ref{sec:eval:setup} says why: at
+a capacity-limited batch of about seven, one request is 14\% and no result could
+separate an effect from a rounding artifact), so the most favourable point of
+the model's own curve is measured by nobody yet.
 
 \paragraph{The closest prior mechanism: partitioning by layer.}
 Pie~\cite{pie} is the nearest neighbour of our transfer path and deserves a
@@ -216,8 +220,9 @@ quantization, Quest and H2O likewise shrink what must be stored. These change
 the model's output, and they compose with a memory system rather than competing
 with it: a smaller KV scales both the device-resident cohort and the affordable
 host cohort, leaving the ratio between them --- and hence the value of a second
-tier --- unchanged. \S\ref{sec:eval} measures that composition on KV
-quantization rather than assuming it.
+tier --- unchanged. That argument is analytical and we have not measured the
+composition; it is a prediction of Eq.~\ref{eq:cancel}, and a cheap one to
+falsify.
 
 \paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
 \emph{compute} to the CPU to grow the batch --- the same problem statement as

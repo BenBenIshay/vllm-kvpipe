@@ -9,7 +9,8 @@ KV tier pays when the latency target exceeds the full-pool step time, and it
 pays in proportion to $\HBM/\Ckv$ --- how much of device memory the weights
 consumed. Both exclude configurations the field routinely evaluates on. An 8B
 model on a 96\,GB device leaves so much memory after weights that there is
-nothing to buy, and a latency target below the device's own step time makes the
+little to buy once the fixed cost is charged, and a latency target below the
+device's own step time makes the
 scheduler latency-bound rather than capacity-bound, where offloading is
 strictly harmful.
 

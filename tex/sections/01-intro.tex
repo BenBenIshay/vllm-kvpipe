@@ -112,29 +112,31 @@ or to everything, neither of which consults the interconnect at all.
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
 capacity multiplier $1 + (\Xlink/\BW)\,\effo\,(\HBM/\Ckv)$, where $\Ckv$ is the
 device memory left after weights and $\effo$ is the fraction of a rider's
-transfer that overlaps compute, and validate its structure against 54 measured
-configurations. Two consequences contradict the obvious intuition. Long context
-does \emph{not} help: it shrinks the HBM-resident cohort and the affordable
-host cohort in the same proportion, leaving their ratio unchanged. And the
-value of a second tier tracks \textbf{how much of memory the weights ate},
-not model size. An 8B model leaves so much HBM free that there is nothing to
-buy; a 32B model at fp16 leaves 28\,GB and gains materially. The sharpest
-demonstration is that \emph{the same model at two weight precisions} lands at
-two different points on the curve.
+transfer that overlaps compute. The step-time model underneath it is validated
+on 54 measured configurations; the multiplier itself is tested in
+\S\ref{sec:eval}. Two consequences contradict the obvious intuition. Long
+context does \emph{not} help: to first order it shrinks the HBM-resident cohort
+and the affordable host cohort in the same proportion, leaving their ratio
+unchanged. And the value of a second tier tracks \textbf{how much of memory the
+weights ate}, not model size --- sharpest in that \emph{the same model at two
+weight precisions} lands at two different points on the curve.
 
-The model earns its place by explaining a published result its own authors do
-not. DirectKV reports being ``slightly slower than SGLang'' on Llama-3.1-8B and
-winning on OPT-13B/30B ``where SGLang OOMs''. Our capacity multiplier predicts
-that inversion from the two models' weight footprints alone. A design rule that
-accounts for when the technique \emph{fails} is worth more than one tuned to
-its successes.
+A capacity multiplier is not yet a reason to build anything, because a serving
+system is paid in requests per second rather than requests. Charging the fixed
+per-step cost of using a host path at all gives a \textbf{second gate}, and it
+is the binding one: at the cost we measure, most of the configurations the
+capacity model likes still lose
+(\S\ref{sec:model:omits}). Which configurations clear both gates, and on what
+hardware, is the question the model exists to answer.
 
 \paragraph{Contributions.}
 \begin{enumerate}
 \item \textbf{A capacity model for heterogeneous KV memory}
-      (\S\ref{sec:model}): a closed-form multiplier and an applicability gate,
-      validated on hardware and against a published system's own results. Both
-      exclude configurations the field currently evaluates on.
+      (\S\ref{sec:model}): a closed-form multiplier, a latency gate, and a
+      fixed-cost gate. The step-time model beneath them is validated on A100;
+      the multiplier is tested in \S\ref{sec:eval}. Together the gates exclude
+      most configurations the field currently evaluates on, including some we
+      would have liked to claim.
 \item \textbf{A two-tier KV memory manager} (\S\ref{sec:design}) in which a
       host-tier request holds no device blocks at all, so tiered requests are
       additive rather than substitutional --- the property that makes the
@@ -185,7 +187,9 @@ That is what the model predicts for a 25\,GB/s link, and DirectKV reaches the
 same boundary from the kernel side, concluding that on PCIe theirs ``should be
 viewed primarily as a capacity-extension mechanism''. It fixes one end of the
 bandwidth axis.
-On a coherent interconnect we report the same comparison at matched latency
-targets, together with the second point on the bandwidth axis that turns the
-cost decomposition of \S\ref{sec:eval:cost} into a law with a measured
-crossing rather than an extrapolated one.
+A coherent interconnect is the other end of that axis, and the model makes two
+predictions there that we have not yet tested: that the same comparison at
+matched latency targets turns positive, and that the fixed per-step cost of
+\S\ref{sec:model:omits} --- not the bandwidth --- is what decides whether it
+does. \S\ref{sec:eval} states each prediction before the experiment that will
+settle it.

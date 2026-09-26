@@ -12,9 +12,12 @@ technique stop paying?
 \subsection{Setup}
 \label{sec:eval:setup}
 
-\paragraph{Hardware.} A100-80 over PCIe~4 for the cost decomposition and the
-capacity mechanism; GH200-96 over NVLink-C2C for everything that depends on a
-coherent interconnect. Link bandwidth is \emph{measured} on both rather than
+\paragraph{Hardware.} A100-80 over PCIe~4, on which every measurement in this
+section is taken. The model identifies PCIe as the regime in which the
+technique cannot pay (\S\ref{sec:model:gate}), so this section is a test of the
+mechanism and of the model's negative prediction, not of the positive one; a
+GH200-96 over NVLink-C2C is the substrate the positive claims require and those
+experiments are in progress. Link bandwidth is \emph{measured} on both rather than
 quoted: the widely cited 900\,GB/s for C2C is bidirectional, a KV stream is
 unidirectional, and an independent measurement of the same hardware reports
 419\,GB/s host-to-device~\cite{pie}.
@@ -175,8 +178,10 @@ queue. We report the measured crossing and keep the model only as a bound.
 The fixed-versus-slope split is also unstable at three points: two runs of the
 same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
 precisely the part that a faster interconnect does \emph{not} shrink, that
-split determines break-even on a coherent link, so the interconnect comparison
-uses ten host-tier counts rather than three.
+split determines break-even on a coherent link, and three points cannot fix it.
+Any interconnect comparison therefore needs the sweep run at ten host-tier
+counts or more; the curve below is the first step of that and still stops at
+six.
 
 \paragraph{A third reading, and the one we keep.} The two above share a defect
 with the fit itself: all of them difference \emph{goodput} runs that still
@@ -244,15 +249,17 @@ run it early for that reason --- $\effkv$ sits in the capacity denominator, so a
 kernel generation that reads paged KV more efficiently shortens the step,
 shrinks the transfer budget, and \emph{lowers} the predicted gain.
 
-\textbf{One term of the law is asserted rather than measured, and we say
-which.} The multiplier has two factors: a bandwidth ratio $\Xlink/\BW$ and an
-amplifier $\HBM/\Ckv$. We validate it across \emph{bandwidth}, by running the
-same system on two interconnect generations. The $\HBM/\Ckv$ dependence rests
-on the parameter fit and on the model's agreement with a published system's own
-results (\S\ref{sec:model:directkv}); isolating it cleanly would require one
-model at two weight precisions, an experiment we chose not to run. A reader who
-wants that axis measured is asking for a specific experiment, and this is the
-honest account of the trade.
+\textbf{Neither factor of the multiplier is yet measured, and we say so.} The
+multiplier has two: a bandwidth ratio $\Xlink/\BW$ and an amplifier
+$\HBM/\Ckv$. Testing the first needs two interconnect generations and we have
+one; testing the second needs one model at two weight precisions, which we have
+not run. What this section does establish is narrower and worth separating from
+the multiplier: the step-time model of Eq.~\ref{eq:step} holds across 54
+configurations, the mechanism is additive, and the cost of a host-tier request
+is decomposed on the substrate we have. The multiplier itself rests on that
+parameter fit plus the model's agreement with a published system's results
+(\S\ref{sec:model:directkv}), and a reader who discounts both should read
+Table~\ref{tab:gain} as a prediction awaiting its experiment.
 
 \subsection{When does it not pay?}
 \label{sec:eval:negative}
@@ -261,10 +268,14 @@ honest account of the trade.
 the latency target is tighter than the full-pool step time; the tightest points
 of the goodput sweep test that directly.
 
-\emph{When the weights are small.} Llama-3.1-8B leaves so much device memory
-after weights that there is nothing to buy. Our model predicts $\times$1.26 and
-DirectKV independently reports that 8B does not benefit from offload. A model
-that predicts its own failure cases is worth more than one tuned to its wins.
+\emph{When the weights are small.} Llama-3.1-8B leaves 75.9\,GB of a 96\,GB
+part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
+$\times$1.11. That is a small gain, not a null --- and it is the second gate of
+\S\ref{sec:model:omits} that makes it a predicted \emph{negative}: at the
+measured fixed cost the throughput form gives $\times$0.88. The prediction under
+test is therefore specific and falsifiable in both directions: 8B should lose,
+and it should lose by roughly the fixed-cost penalty rather than by the capacity
+shortfall.
 
 \emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered
 through the prefill handover, throughput is 2.3\% \emph{below} not offloading

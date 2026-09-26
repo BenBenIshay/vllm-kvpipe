@@ -372,11 +372,18 @@ ahead of it would otherwise block an admission that requires no resources.
 \label{sec:design:placement}
 
 Which requests should be host-tier? The intuitive answer is the long ones, since
-KV grows with context. \textbf{Context length cannot discriminate}, by the
-cancellation of \S\ref{sec:model}: moving a request of context $S$ to the host
-frees $S\kappa$ bytes of device memory and costs $S\kappa$ bytes of interconnect
-every subsequent step. Both scale identically, so ranking by context is
-equivalent to ranking arbitrarily --- which \S\ref{sec:eval:ablation} confirms.
+KV grows with context. \textbf{Context length does not discriminate to first
+order}, by the cancellation of \S\ref{sec:model:cancel}: moving a request of
+context $S$ to the host frees $S\btok$ bytes of device memory and costs
+$S\btok$ bytes of interconnect every subsequent step. Both scale identically, so
+ranking by context is, to first order, ranking arbitrarily. The qualifier is not
+decoration: the cancellation is exact only in the fluid limit with uniform
+context, and at long context both cohorts are small integers, so which requests
+are chosen begins to matter again through rounding
+(\S\ref{sec:model:omits}). \S\ref{sec:eval:ablation} is consistent with the
+first-order claim on our substrate, where the admission budget admits at most
+three host-tier requests --- a choice set too small for any ranking to separate
+from arrival order.
 
 The discriminating signal is \textbf{temporal}. A request that is not currently
 generating holds device memory while consuming no bandwidth at all, so the two
@@ -430,6 +437,9 @@ the first probe has a steady state to compare against.
 The probe is single-variable attribution in a system where requests arrive and
 depart during the settling window, so its verdict is noisy, and the margin and
 backoff bound the cost of a wrong one. Its value is that it is \emph{correct in
-direction} where a byte-counting model is not: \S\ref{sec:eval:ablation} reports
-it reaching opposite verdicts on the two interconnects, which is what a
-placement policy should do when the hardware changes under it.
+direction} where a byte-counting model is not: on PCIe it measures demotion as
+harmful and reverts it (\S\ref{sec:eval:ablation}), which is the right action on
+a link that cannot hide the transfer. Whether it flips on a coherent link is a
+prediction, and a falsifiable one --- if it does not, the host path carries a
+fixed cost that survives a fast interconnect, which is exactly the risk
+\S\ref{sec:model:omits} names.

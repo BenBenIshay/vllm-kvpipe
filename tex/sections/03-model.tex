@@ -206,26 +206,29 @@ up: quantizing \emph{weights} is not neutral to a memory system, it actively
 removes its headroom, while quantizing \emph{KV} scales both cohorts together
 and composes.
 
-\paragraph{The model reproduces measurements it was not fitted to.} Because the
-weight and KV terms carry different efficiencies, Eq.~\ref{eq:step} predicts a
-full-pool step time that depends on the model, and can be checked against the
-A100 measurements of \S\ref{sec:model:params} --- which played no part in
-constructing it. It predicts 74.4\,ms for Llama-8B and 51.1\,ms for Qwen-32B,
-against 79.3 and 55.7 measured: each within 7\%, and the \emph{spread} between
-them --- the quantity a single-efficiency model gets structurally wrong,
-predicting equality --- reproduced at $1.46\times$ against $1.42\times$
-measured.
+\paragraph{The model predicts a held-out configuration, and is biased low.} The
+two efficiencies are calibrated on disjoint parts of the same A100 sweeps:
+$\effw$ from the $B{=}1$ points, where the KV term is negligible, and $\effkv$
+from sub-capacity working sets. The \emph{full-pool} step time is then a held-out
+configuration --- a different point on the sweep, not a different experiment, and
+we claim no more than that. Eq.~\ref{eq:step} predicts 74.4\,ms for Llama-8B and
+51.1\,ms for Qwen-32B against 79.3 and 55.7 measured. Both are low, by 6.2\% and
+8.3\%: a one-sided residual is a missing term rather than noise, and the likely
+candidate is that $\effkv$ continues to degrade past the largest working set we
+could fit on an 80\,GB part. What the comparison does establish is the
+\emph{spread}, which a single-efficiency model gets structurally wrong by
+predicting equality: $1.46\times$ predicted against $1.42\times$ measured.
 
 Several of these parameters are measured with error, so it is worth asking
 which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
 8K, perturbing the bandwidth efficiencies barely moves it: a $\pm20\%$ error in
-$\effkv$ spans $\times1.47$--$\times1.55$, and $\effw$ over 0.70--0.80 spans
-$\times1.47$--$\times1.52$. The reason is structural --- the gain depends on a
+$\effkv$ spans $\times1.26$--$\times1.30$, and $\effw$ over 0.70--0.80 spans
+$\times1.27$--$\times1.29$. The reason is structural --- the gain depends on a
 \emph{ratio}, so a bandwidth error largely cancels between the step-time
 numerator and the capacity denominator.
 
 The parameter that does matter is the \textbf{weight footprint}. Moving it from
-60 to 68\,GB spans $\times1.45$--$\times1.57$, because weights sit in
+60 to 68\,GB spans $\times1.23$--$\times1.30$, because weights sit in
 $\Ckv = \HBM - W$ and are cancelled by nothing. This is why we use measured
 checkpoint sizes rather than nominal parameter counts --- for a quantized model
 the two differ by gigabytes and the error propagates undamped into the headline
@@ -236,7 +239,10 @@ $\HBM/\Ckv$.
 Note the direction of the $\effkv$ term, because it is our main downside risk:
 a \emph{more} efficient paged-KV read shortens the step, shrinks the transfer
 budget, and \emph{lowers} the gain. The curve above is measured on FA-2-era
-kernels, and \S\ref{sec:eval} re-measures it on Hopper for exactly this reason.
+kernels. Re-measuring it on Hopper is a prerequisite for any Hopper
+projection, and a downside risk rather than a formality: a kernel generation
+that reads paged KV \emph{more} efficiently shortens the step, shrinks the
+transfer budget, and lowers the predicted gain.
 
 \subsection{What the model omits, and the second gate}
 \label{sec:model:omits}
@@ -336,10 +342,12 @@ repeats are $\pm0.02$--$0.04$; the degradation is far outside them.}
 \label{tab:effkv}
 \end{table}
 
-This is the real correction to the model, and it matters beyond this paper:
-\textbf{every fixed-bandwidth roofline in this literature mis-predicts the
-capacity-bound operating point}, because it is exactly at capacity that
-$\effkv$ is worst.
+This is the real correction to the model. It also bears on how such models are
+built elsewhere: \textbf{a roofline that charges KV at one fixed bandwidth will
+be optimistic at the capacity-bound operating point}, because that is where
+$\effkv$ is worst. We measured this on one GPU and one kernel generation
+(A100, FlashAttention-2 era), so we state it as a property of what we measured
+rather than of the literature.
 
 \paragraph{A caveat at kernel granularity.} The claim that only total KV bytes
 matter holds at three of four same-byte test points but breaks at 17.2\,GB
@@ -358,28 +366,28 @@ the compute roof. At batch 8, 70B spends 7\% of its step on arithmetic.
 Llama-8B at 4K does cross into compute-bound at batch 142, which is a further
 reason it is the wrong model to evaluate on.
 
-\subsection{The model explains a published result}
+\subsection{A published result the model is consistent with}
 \label{sec:model:directkv}
 
 DirectKV~\cite{directkv} reports that on Llama-3.1-8B its zero-copy host-KV
 attention is \emph{slightly slower} than the HBM-resident SGLang baseline, and
-that it wins only on OPT-13B and OPT-30B, where SGLang runs out of memory. The
-paper does not explain the inversion.
+that it wins on OPT-13B and OPT-30B, where SGLang runs out of memory.
 
-Equation~\ref{eq:gain} predicts it. Llama-8B leaves $\Ckv \approx 76$\,GB of an
-H100/GH200 --- $\HBM/\Ckv \approx 1.26$, so there is essentially nothing to
-buy, and any overhead the mechanism carries shows up as a net loss. OPT-30B's
-60\,GB of weights leave $\Ckv \approx 32$\,GB, more than doubling the
-amplifier. \textbf{The applicability gate and the gain law together account for
-which of a published system's configurations win and which lose}, which is the
-strongest available evidence that the model captures something real rather
-than fitting our own measurements.
+Our amplifier offers an account of the ordering. Llama-3.1-8B's 16\,GB of
+weights leave $\Ckv \approx 76$\,GB of a 96\,GB part, so
+$\HBM/\Ckv \approx 1.26$ and there is little to buy; any overhead the mechanism
+carries then shows up as a net loss. OPT-30B's 60\,GB leave
+$\Ckv \approx 32$\,GB, tripling the amplifier.
 
-\ifdraft
-Note the direction of this risk, since it runs against us. $\effkv$ sits in
-the capacity denominator, so a kernel generation that reads paged KV
-\emph{more} efficiently shortens the step, shrinks the transfer budget, and
-lowers the predicted gain. The curve above is measured on one kernel
-generation; \S\ref{sec:eval:model} re-measures it on the other, and reports
-the result whichever way it moves.
-\fi
+We put this no more strongly than that, for three reasons a reader will find
+anyway. First, Eq.~\ref{eq:gain} compares a \emph{mixture} against all-HBM,
+while DirectKV is all-host; our law does not predict that an all-host system
+beats an all-HBM one, and on its own terms it predicts the opposite. Second,
+their OPT wins are reported ``where SGLang OOMs'', and OPT uses multi-head
+attention with several times the KV bytes per token of a GQA model --- so the
+baseline may be failing because $S\btok$ is large rather than because weights
+are, and those are different axes. Third, OPT-13B has $\HBM/\Ckv$ close to the
+8B's and yet DirectKV wins on it, which our amplifier alone does not account
+for. The honest summary is that the model is \emph{consistent with} the
+direction of a two-point published ordering, which is weak evidence, and we do
+not rest the contribution on it.
