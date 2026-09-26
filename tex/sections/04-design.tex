@@ -21,7 +21,8 @@
 \label{sec:design:overview}
 
 The system presents device memory (HBM) and host memory (DRAM) as one KV store
-(Fig.~\ref{fig:arch}; Table~\ref{tab:notation} collects the notation).
+(Table~\ref{tab:notation} collects the notation; Appendix~\ref{app:figures}
+adds a component diagram and a request-lifecycle state machine).
 Each request has a \emph{tier}. A \textbf{device-tier} request behaves exactly
 as in stock vLLM: its KV blocks live in the paged device pool and attention
 reads them there. A \textbf{host-tier} request holds \textbf{no blocks in the
