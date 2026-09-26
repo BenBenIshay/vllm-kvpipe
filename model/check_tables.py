@@ -70,6 +70,16 @@ for name, want in [("Llama-8B  fp16", 0.88), ("Qwen-32B  fp16", 0.93),
     check(f"{name} gain_tput with F", (r["B_tot"] / r["B0"]) * r["T0"] / (r["T0"] + F),
           want, tol=0.012)
 
+print("\nClosed form (eq:gain) vs exact (eq:gain-exact) -- eta_bar must be carried")
+for name in ["Llama-8B  fp16", "Qwen-32B  fp16"]:
+    m = model(name)
+    C, u = HW.hbm - m.w - K.OVERHEAD, m.k * S
+    T0 = K.step_ms(m, HW, S, C / u) / 1e3
+    eta_bar = HW.hbm / (HW.bw * T0)
+    exact = 1 + T0 * HW.x * K.ETA_O / C
+    approx = 1 + (HW.x / HW.bw) * (K.ETA_O / eta_bar) * (HW.hbm / C)
+    check(f"{name} closed form == exact", approx, exact, tol=0.01)
+
 print("\nOne value per quantity across all sections")
 tex = "".join((TEX / f).read_text() for f in sorted(p.name for p in TEX.glob("*.tex")))
 for pat, allowed, label in [

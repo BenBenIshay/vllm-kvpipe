@@ -156,26 +156,35 @@ host-tier requests & ITL (ms) & tok/s \\
 3 & 74.98 & 57.0 \\
 \bottomrule
 \end{tabular}
-\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe. An
-affine fit gives $9.6$\,ms fixed $+$ $4.7$\,ms per request, implying $78\%$
-overlap. The direct measurement below supersedes both the functional form and
-the number. Throughput recovers toward the offload-free arm as requests are
-added but does not cross it within this sweep: three host-tier requests remain
-0.9\% below it.}
+\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe.
+\emph{ITL} is the median inter-token latency; \emph{tok/s} is end-to-end decode
+throughput over the whole 12-request run including the drain, \emph{not}
+$B/\mathrm{ITL}$. An affine fit over these four points gives $9.6$\,ms fixed
+$+$ $4.7$\,ms per request, implying $78\%$ overlap; the direct measurement below
+supersedes both that functional form and that number, and the fit is three
+parameters' worth of structure read from four points.}
 \label{tab:ridercost}
 \end{table}
 % src: paper/data/hide_efficiency.json @ f3df05bdb
 
-Two properties of Table~\ref{tab:ridercost} are easy to misread, and both matter for how such
-a curve should be measured. A single two-request point cannot distinguish a
-steep slope from a large intercept --- read that way it implies that 89\% of the
-transfer fails to overlap, which the sweep contradicts --- so a cost curve needs
-enough points to separate the two terms. And break-even depends on the regime:
-a concurrency-over-latency model puts it at seven requests, while the measured
-throughput column crosses between three and four, because the model ignores
-queueing and the offload-free arm leaves requests waiting. The measured crossing
-is the finite-workload answer and the model is the steady-state bound; they are
-different questions and \S\ref{sec:eval:cost} needs both.
+\textbf{The throughput column is end-to-end over a finite workload, and that
+matters.} It is total decode tokens divided by total decode wall time across all
+12 requests, including the drain at the end, so it is not $B/\mathrm{ITL}$ and
+does not reconcile with the ITL column: at $r{=}0$, $768/13.4\,\mathrm{s}$ gives
+57.3 tok/s while $B/\mathrm{ITL}$ at the peak concurrency of 4 would give 80.
+The two readings of these same four rows disagree about the sign. End to end,
+throughput is flat within noise (57.5, 54.7, 55.8, 57.0). Read as
+$B/\mathrm{ITL}$ at peak concurrency it \emph{rises} (80, 122, 152, 147),
+because riders add concurrency faster than they lengthen the step.
+
+Neither is decisive, and the reason is the experiment rather than the system: a
+12-request closed workload never reaches steady state, so the end-to-end column
+is dominated by the drain, while peak concurrency is an upper bound that no step
+sustains. A third reading of a single two-request point is worse still --- it
+cannot distinguish a steep slope from a large intercept, and read that way it
+implies 89\% of the transfer fails to overlap, which the sweep contradicts. What
+settles the cost is an experiment that holds the resident batch fixed and adds
+riders on top, which is what follows.
 
 The fixed-versus-slope split is also unstable at three points: two runs of the
 same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
