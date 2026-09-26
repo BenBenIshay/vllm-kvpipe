@@ -1,37 +1,39 @@
+% ============================================================================
+% Section 5 -- implementation.
+%
+% Restructured 2026-09-26 per review S5/G5: the section narrated the authors'
+% debugging history. It now reports what the system is, and states the three
+% engineering results as LESSONS with one quantified example each.
+%
+% PROVENANCE: the numbers in this section come from the implementation work
+% itself rather than from a frozen dataset -- they are engine timings taken
+% during development, reproducible from the harnesses named in
+% paper/GH200_RUNBOOK.md but not archived as JSON. The section says so once,
+% below, rather than carrying a "% src:" per number that would point at a
+% commit rather than at data.
+% ============================================================================
+
 \section{Implementation}
 \label{sec:impl}
 
 The system is implemented in vLLM~v1 in roughly 3{,}900 lines across 22 files.
 Every path is disabled by default and selected at runtime, so a build with the
 feature off exercises the stock code; \S\ref{sec:eval:setup} reports what that
-costs, because a baseline that is quietly slower than the engine it stands in
-for would flatter every ratio in this paper.
+costs, because a baseline quietly slower than the engine it stands in for would
+flatter every ratio in this paper. Timings in this section are engine
+measurements taken during development on the A100-80 of
+\S\ref{sec:eval:setup}, reproducible from the harnesses in our artifact but not
+part of the frozen dataset behind \S\ref{sec:eval}.
 
 \subsection{Host KV pool}
 \label{sec:impl:pool}
 
 The pool owns a private block-id space, a per-request map from logical block to
-host block, and two pinned host tensors per layer. Host block ids are freed
-only when a request finishes, which is what makes them safe: a request's device
+host block, and two pinned host tensors per layer. Host block ids are freed only
+when a request finishes, which is what makes them safe: a request's device
 blocks are released and reissued to other requests while it is still decoding,
 so any mirror keyed by device block id would both lose the mapping needed to
 find its own data and alias another request's (\S\ref{sec:design:spaces}).
-
-Two layout decisions carry measurable weight. The mirrors are \textbf{block-major}
-and $K$ and $V$ are \textbf{separate tensors}, so a run of consecutive host blocks is
-one contiguous byte range on both sides and the per-layer transfer is a handful
-of \texttt{cudaMemcpyAsync} calls issued straight from pinned memory. An earlier
-layout that interleaved $K$ and $V$ made a run two chunks strided by a whole
-plane; no pinned DMA was possible, every layer paid a host-side gather, and that
-gather measured 22\,ms per layer --- 98\% of the streaming path and 72\% of
-engine wall time. Restructuring the mirrors reduced it to 39\,ms in total.
-
-That defect is worth reporting rather than quietly fixing, because it is
-invisible to the metric one would naturally watch. It is a \emph{host} memcpy:
-a faster interconnect does not remove it. On a coherent link the same code would
-have spent hundreds of milliseconds per step gathering in order to hide a
-transfer of a few milliseconds, and the natural conclusion would have been that
-the interconnect does not help --- while measuring our own memory copies.
 
 \subsection{Tier-aware attention}
 \label{sec:impl:attn}
@@ -41,13 +43,10 @@ Attention is the only operation that distinguishes the tiers
 path. Device-tier rows are served by the standard call; host-tier rows are
 gathered with \texttt{index\_select}, attended against the rolling slot with the
 compacted block table, and scattered back into the shared output with
-\texttt{index\_copy\_}.
-
-The standard call still runs over every row, so host-tier rows would be attended
-twice --- once uselessly, over their full history --- if nothing prevented it.
-We set their \texttt{seqused\_k} to 1, so they read a single key in the first
-call and are overwritten by the second. On A100 that single change was worth
-22\% of wall time.
+\texttt{index\_copy\_}. The standard call still runs over every row, so
+host-tier rows would otherwise be attended twice, the first time over their full
+history; setting their \texttt{seqused\_k} to 1 makes that call read a single key
+and be overwritten by the second, which is worth 22\% of wall time.
 
 \subsection{Scheduler}
 \label{sec:impl:sched}
@@ -55,18 +54,19 @@ call and are overwritten by the second. On A100 that single change was worth
 Three changes make a host-tier request hold no device blocks
 (\S\ref{sec:design:admission}): admission with an empty block list, a prompt
 marked already computed so no prefill is scheduled, and deferral of a
-block-starved request at the head of the waiting queue so it does not block
-admissions that need no blocks at all. The third was found only by testing; the
-first two are insufficient without it.
+block-starved request at the head of the waiting queue. The third is the one a
+design sketch omits --- the first two are individually necessary and jointly
+insufficient, because a request needing no blocks can still be starved behind
+one that does.
 
 Reclaiming a resident request's blocks on demotion required repairing the
-promotion path, and the failure mode was not a crash. Block accounting is
-length-based, so a nulled entry still counts as present: \texttt{allocate\_slots}
-would never refill it, and the promotion gate --- ``do the blocks cover the whole
-sequence?'' --- would have \emph{passed on an all-null table} and served
+promotion path, and the failure mode was silent rather than fatal. Block
+accounting is length-based, so a nulled entry still counts as present:
+\texttt{allocate\_slots} never refills it, and a promotion gate asking ``do the
+blocks cover the whole sequence?'' passes on an all-null table and serves
 garbage. Refill is therefore all-or-nothing, the gate counts non-null entries,
-and refilled ids reach the worker through a rewrite channel, because they
-replace positions rather than appending.
+and refilled ids reach the worker through a rewrite channel because they replace
+positions rather than appending.
 
 \subsection{Prefill handover}
 \label{sec:impl:stash}
@@ -75,55 +75,60 @@ A host-tier request's KV must reach the host pool before it is admitted. We
 implement a prompt-keyed stash: the producer writes KV into the pool, the entry
 outlives the producing request, and a later request preloads from it. Admission
 is contingent on the worker acknowledging that the KV is present, since the
-scheduler cannot observe a host-side write and admitting on the assumption
-would leave a request with no KV anywhere.
+scheduler cannot observe a host-side write and admitting on the assumption would
+leave a request with no KV anywhere. The handover costs \textbf{0.22\,ms per
+decode step} at 2048 context (14.2\,ms amortised over 64 steps, 38\,GB/s), about
+5\% of a host-tier request's per-step cost.
 
-The handover costs \textbf{0.22\,ms per decode step} at 2048 context
-(14.2\,ms amortised over 64 steps, 38\,GB/s), about 5\% of a host-tier
-request's per-step cost. Two corrections produced that number and both are
-worth recording. The path was first written block by block, which at 2048
-context is 8{,}192 small copies per request; since the pool allocates
-per-request contiguous extents, a layer is one copy, and fixing it gained
-$2.2\times$. The first measurement was then taken on a \emph{contended} node
-and reported 4.06\,GB/s; exclusive on an idle node the same code reports
-38\,GB/s. \textbf{A $9.4\times$ error from contention alone}, in the measurement
-that answers the most obvious objection to our system model --- which is why
-\S\ref{sec:eval:setup} requires exclusive access for every absolute we report.
-
-\subsection{What the streaming path costs, and why}
+\subsection{Three lessons from the transfer path}
 \label{sec:impl:cost}
 
-Beyond the transfer itself, using the host path at all costs a fixed amount per
-step. We reduced it from 37.0 to 12.3\,ms, and the residual is not a defect.
+Beyond the transfer itself, using the host path at all costs a fixed
+\textbf{12.3\,ms} per step, reduced from 37.0. That residual is the quantity
+\S\ref{sec:model:omits} charges as $F$, and it is the paper's principal open
+risk, so how it was found and what it is made of both matter.
 
-Four sites accounted for the reduction and all were the same species:
-loop-invariant work executed inside the per-layer loop. A device reduction and
-a \texttt{.item()} evaluated once per layer inside a guard whose purpose was to
-\emph{skip} work --- an optimisation paying a full pipeline drain to decide
-whether to optimise. Scatter indices rebuilt per layer from data fixed once the
-step's schedule is known. A sequence maximum and an \texttt{arange} likewise.
-A clone and index-fill of the masked sequence lengths. Each is invariant once
-the step is scheduled; together they were worth 21\,ms per step, and the
-end-to-end throughput deficit moved $-11.3\% \to -5.8\% \to -2.8\% \to -2.3\%$
-as they were removed, with the control reproducing to within 0.1\,tokens/s
-across five runs.
+\paragraph{Layout decides whether the DMA engine can do the gather.} The mirrors
+are block-major with $K$ and $V$ in separate tensors, so a run of consecutive
+host blocks is one contiguous byte range on both sides and a layer's transfer is
+a handful of \texttt{cudaMemcpyAsync} calls from pinned memory. An earlier layout
+interleaved $K$ and $V$, which made a run two chunks strided by a whole plane:
+no pinned DMA was possible, every layer paid a host-side gather, and that gather
+cost 22\,ms per layer --- 98\% of the streaming path. The general point is that
+this cost is invisible to the metric one would naturally watch, because it is a
+\emph{host} memcpy that a faster interconnect does not touch. On a coherent link
+the same code would spend hundreds of milliseconds per step gathering in order to
+hide a transfer of a few, and the natural conclusion would have been that the
+interconnect does not help.
 
-\paragraph{Method, because it decided the outcome twice.} Aggregate per-phase
-timers attributed the cost wrongly, twice, and in both cases plausibly. A timer
-wrapped around asynchronous GPU work charges waiting-for-the-GPU to whichever
-phase holds it; a profiler that synchronises \emph{inside} its own timing
+\paragraph{Hoist schedule-invariant work out of the per-layer path.} Four sites
+executed work inside the per-layer loop that is fixed once the step's schedule is
+known: a device reduction and a \texttt{.item()} inside a guard whose purpose was
+to \emph{skip} work, scatter indices rebuilt per layer, a sequence maximum and an
+\texttt{arange}, and a clone and index-fill of the masked sequence lengths.
+Together they were worth 21\,ms per step, and the end-to-end throughput deficit
+moved $-11.3\%$ to $-2.3\%$ as they were removed.
+
+\paragraph{Time asynchronous GPU work with operator-level diffs, not phase
+timers.} Aggregate per-phase timers misattributed this cost twice, plausibly each
+time: a timer wrapped around asynchronous work charges waiting-for-the-GPU to
+whichever phase holds it, and a profiler that synchronises inside its own timing
 wrapper makes double-buffering impossible by construction and then reports that
-double-buffering does not help. What located all four sites was an
-operator-level trace differencing a step with one host-tier request against a
-step with none. We record this because the same instinct --- read the phase
-timings, form a hypothesis --- is what a reader would try first.
+double-buffering does not help. What located all four sites was an operator-level
+trace differencing a step with one host-tier request against a step with none.
+The same discipline applies to absolutes: the handover above first measured
+4.06\,GB/s on a contended node against 38\,GB/s exclusive on an idle one, a
+$9.4\times$ error from contention, which is why \S\ref{sec:eval:setup} requires
+exclusive access for every absolute we report.
 
-\paragraph{The residual is a floor, not a bug.} An operator trace against the
-current code shows \texttt{cudaStreamSynchronize} gone from the table entirely
-and no dominant remaining term: the cost is roughly 640 additional kernel
-launches per step, about ten operations across 64 layers, at 0.19\,ms per
-layer. That is the per-layer structure itself. Removing it requires batching
-across layers rather than issuing per layer --- the rolling slots already exist
-to support it --- which is a design change we have not made and do not claim.
-It is also machine-independent, so it does not distort the comparison between
-interconnects in \S\ref{sec:eval:cost}.
+\paragraph{What the residual is made of.} An operator trace against the current
+code shows \texttt{cudaStreamSynchronize} gone from the table and no dominant
+remaining term: the cost is roughly 640 additional kernel launches per step,
+about ten operations across 64 layers at 0.19\,ms per layer. That is the
+per-layer structure itself. Removing it requires batching across layers rather
+than issuing per layer --- the rolling slots already exist to support it --- which
+is a design change we have not made. It is launch-bound rather than
+bandwidth-bound, so a faster interconnect does not shrink it; but it is
+\emph{not} machine-independent, since launch cost depends on the host CPU and the
+count scales with layer depth. Whether it is smaller on a Grace host is one of
+the things \S\ref{sec:eval} must measure rather than assume.

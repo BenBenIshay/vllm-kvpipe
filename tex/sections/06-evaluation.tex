@@ -166,14 +166,16 @@ added but does not cross it within this sweep: three host-tier requests remain
 \end{table}
 % src: paper/data/hide_efficiency.json @ f3df05bdb
 
-Two readings of this data were ours and both were wrong, in ways worth
-recording. A single two-request point cannot distinguish a steep slope from a
-large intercept; read that way it suggested that 89\% of the transfer failed to
-overlap, and only the sweep corrected it. And a concurrency-over-latency model
-predicted break-even at seven requests where the measured throughput column
-crosses between three and four, because it ignores queueing --- the
-offload-free arm leaves requests waiting, and host-tier requests shorten that
-queue. We report the measured crossing and keep the model only as a bound.
+Two properties of this table are easy to misread, and both matter for how such
+a curve should be measured. A single two-request point cannot distinguish a
+steep slope from a large intercept --- read that way it implies that 89\% of the
+transfer fails to overlap, which the sweep contradicts --- so a cost curve needs
+enough points to separate the two terms. And break-even depends on the regime:
+a concurrency-over-latency model puts it at seven requests, while the measured
+throughput column crosses between three and four, because the model ignores
+queueing and the offload-free arm leaves requests waiting. The measured crossing
+is the finite-workload answer and the model is the steady-state bound; they are
+different questions and \S\ref{sec:eval:cost} needs both.
 
 The fixed-versus-slope split is also unstable at three points: two runs of the
 same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
