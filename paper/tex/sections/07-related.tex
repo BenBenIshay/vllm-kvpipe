@@ -188,7 +188,8 @@ across GPU, CPU and disk by a linear-programming search with compression; it is
 offline-profiled rather than adaptive. Both pay the staging cost that a
 zero-copy kernel removes, and neither decides a tier per request.
 
-DAK~\cite{dak} pushes host-resident tensors to shared memory via TMA and chooses
+DAK~\cite{dak} pushes host-resident tensors to shared memory via the Tensor
+Memory Accelerator (TMA) and chooses
 per-\emph{operation} offload ratios by greedy search --- but takes a
 \emph{global} offload ratio as an input, which is precisely the quantity a
 policy has to produce.
@@ -245,7 +246,7 @@ rather than pages chasing shifting token importance.
 
 \paragraph{Reducing the KV instead of relocating it.} ShadowKV~\cite{shadowkv}
 keeps a low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely,
-reporting a $6\times$ footprint reduction and $3.04\times$ throughput; KV
+reporting support for a $6\times$ larger batch and $3.04\times$ throughput; KV
 quantization, Quest and H2O likewise shrink what must be stored. These change
 the model's output, and they compose with a memory system rather than competing
 with it: a smaller KV scales both the device-resident cohort and the affordable
@@ -355,5 +356,8 @@ per request.}
 
 What is unsolved is which requests should live in which tier, how many host-tier
 requests a step can absorb without breaking the resident cohort's latency, and
-when a request should move. Three of the papers above name that layer as out of
-scope or future work.
+when a request should move. DirectKV~\cite{directkv} states it explicitly
+(\S8.1: the design ``does not change scheduling, batching, or KV-management
+policies''), Fang et al.~\cite{calkv} close by calling for runtime policies, and
+OmniServe~\cite{omniserve} takes its service classes as externally supplied
+rather than inferring them.

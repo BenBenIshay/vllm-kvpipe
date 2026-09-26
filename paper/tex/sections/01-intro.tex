@@ -30,7 +30,8 @@ what binds, with median cached contexts above 10K tokens for conversation and
 
 The machine, however, has more memory than the GPU's. A Grace-Hopper node~\cite{gracehopper} pairs
 96\,GB of HBM with hundreds of gigabytes of host DRAM, and NVLink-C2C connects
-them at 450\,GB/s per direction.\footnote{The commonly quoted 900\,GB/s is
+them at 450\,GB/s per direction --- of the same order as the host DRAM's own
+bandwidth, so the link is not automatically the narrower of the two.\footnote{The commonly quoted 900\,GB/s is
 bidirectional; a KV stream is unidirectional host-to-device, so 450\,GB/s is
 the figure that bounds it, and we measure rather than assume even that.} At
 that rate the KV a decoding request needs can cross the link inside the window

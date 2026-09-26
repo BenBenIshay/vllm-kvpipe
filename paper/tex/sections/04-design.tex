@@ -101,14 +101,11 @@ tiers in one forward pass, each tier reading its own block table.}
 \subsection{Where the two tiers run}
 \label{sec:design:exec}
 
-Before the memory layout, the execution model --- because the answer is simpler
-than the phrase ``two tiers'' suggests, and it is what makes the design pay.
-
 \textbf{There is no partition of the GPU.} The two tiers are not separate
-streams, not separate kernels over separate SMs, not separate forward passes.
-They are \emph{rows of the same batch}, and the model runs over all of them. The
-only operation that distinguishes them is attention, and only in \emph{where it
-reads keys and values from}. Figure~\ref{fig:exec} shows one layer.
+streams, kernels or forward passes. They are \emph{rows of the same batch}, and
+the model runs over all of them; the only operation that distinguishes them is
+attention, and only in \emph{where it reads keys and values from}
+(Fig.~\ref{fig:exec}).
 
 \begin{figure}[t]
 \centering
@@ -144,33 +141,24 @@ partition of the device.}
 \label{fig:exec}
 \end{figure}
 
-Three consequences follow, and the first is the economic argument for the whole
-design.
-
-\emph{Everything but attention is shared.} QKV projection, the output projection
-and the MLP execute once over the whole batch. A host-tier request costs nothing
-extra in any of them: it is one more row in a GEMM whose cost is dominated by
-reading the weights, which happens regardless.
-
-\emph{The two attention calls are sequential on the same hardware.} The second
-begins after the first retires; they do not compete for SMs. Its cost scales
-with the number of host-tier rows and their context, not with the batch.
-
-\emph{The first call does no wasted work for host-tier rows.} Their
-\texttt{seqused\_k} is masked to 1, so they attend a single key rather than
-their whole history, and their output is overwritten by the second call.
-Without that mask those rows are attended twice in full; adding it was worth
+Three consequences follow. Everything but attention is shared: QKV, the output
+projection and the MLP execute once over the whole batch, and a host-tier
+request adds one row to GEMMs whose cost is dominated by reading the weights ---
+negligible while those GEMMs remain memory-bound, which on an 8B model holds
+until batch 142 (\S\ref{sec:model:params}). The two attention calls are
+sequential on the same hardware, so they do not compete for SMs, and the
+second's cost scales with the host-tier rows rather than with the batch. And the
+first call does no wasted work for those rows: their \texttt{seqused\_k} is
+masked to 1 so they attend a single key and are overwritten by the second, worth
 22\% of wall time.
 
-\paragraph{What a host-tier request rides on.} A decode step has a cost paid
-once regardless of batch size --- reading every weight --- and a cost per
-request, reading its KV. A device-tier request pays the second out of HBM
-bandwidth. A host-tier request pays it out of \emph{interconnect} bandwidth,
-which is otherwise idle for the tens of milliseconds the step spends reading
-weights. It occupies a row in a step that was happening anyway, consumes
-bandwidth nothing else wants, and holds device memory only for its share of the
-rolling region. That is the sense in which such a request rides along, and
-\S\ref{sec:eval:cost} measures what the ride actually costs.
+\paragraph{What a host-tier request rides on.} A step pays once for reading
+every weight, and once per request for reading its KV. A device-tier request
+pays the second out of HBM bandwidth; a host-tier request pays it out of
+interconnect bandwidth, idle for the tens of milliseconds the step spends on
+weights. It occupies a row in a step that was happening anyway and holds device
+memory only for its share of the rolling region --- the sense in which it rides
+along. \S\ref{sec:eval:cost} measures what the ride costs.
 
 \subsection{Where KV lives, and why the host has its own addresses}
 \label{sec:design:spaces}
@@ -301,7 +289,9 @@ measures the fraction actually hidden.}
 occupies $L$ layers of blocks. A host-tier request occupies host blocks plus its
 share of a rolling region that is $k$ slots deep \emph{regardless of $L$}, so
 its device footprint is about $k/L$ of a resident request's --- roughly 6\% at
-$k{=}4$, $L{=}64$. That ratio, not the interconnect, is what converts host DRAM
+$k{=}4$, $L{=}64$. That ratio is what makes a host-tier request cheap in device
+memory; what bounds \emph{how many} of them a step can carry is the
+interconnect (\S\ref{sec:model}). The rolling region converts host DRAM
 into device capacity.
 
 \subsection{The life of a request}
