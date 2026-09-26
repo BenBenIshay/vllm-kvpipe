@@ -35,7 +35,20 @@ ETA_O = 0.62
 # extra kernel launches), so a faster link does not shrink it, and it is NOT
 # machine-independent: it scales with layer depth and the host CPU.
 # paper/sections/05-implementation.tex.
-F_FIXED_MS = 12.3
+#
+# MEASURED ON Qwen2.5-32B, which has 64 layers. Section 5 says the launch count
+# "scales with layer depth", so billing the same 12.3 ms to a 32-layer model and
+# an 80-layer one contradicts our own account of what F is. Charged per layer
+# from 2026-09-26.
+F_REF_MS, F_REF_LAYERS = 12.3, 64
+
+
+def f_fixed_ms(m):
+    """The fixed per-step host-path cost for a model of m.L layers."""
+    return F_REF_MS * m.L / F_REF_LAYERS
+
+
+F_FIXED_MS = F_REF_MS          # retained for callers that want the reference
 
 
 class HW:
@@ -179,7 +192,8 @@ def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
     return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound, eta_o=eta_o,
                 n=n, B_tot=B_tot, T=T, delta_ms=delta_ms, cap_gain=cap_gain,
                 gain=(B_tot/T)/(B0/T0) if B0 > 0 else 0.0,
-                gain_tput=cap_gain * T0/(T0 + F_FIXED_MS + delta_ms) if B0 > 0 else 0.0)
+                gain_tput=cap_gain * T0/(T0 + f_fixed_ms(m) + delta_ms) if B0 > 0 else 0.0,
+                f_ms=f_fixed_ms(m))
 
 
 def report(hw, slo, stage=1.0):

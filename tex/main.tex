@@ -18,8 +18,13 @@
 \documentclass[letterpaper]{article}
 
 \usepackage{iftex}
+% NOTE: do NOT add [accepted] before the camera-ready. In this style family it
+% un-anonymises the title block and prints the venue notice; the submission
+% build must be anonymous. The title block below is also hand-rolled rather
+% than using \mlsystitle/\mlsysauthor, which the real .sty expects -- rework it
+% when the author kit arrives, and check the page count then too.
 \IfFileExists{mlsys2027.sty}{%
-  \usepackage[accepted]{mlsys2027}%
+  \usepackage{mlsys2027}%
 }{%
   % Local fallback so the draft compiles before the author kit is dropped in.
   \usepackage[margin=1in]{geometry}

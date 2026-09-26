@@ -11,6 +11,9 @@
 % their own words, with their own quotes.
 % ============================================================================
 
+% PROVENANCE: every number in this section is attributed to the paper that
+% reported it, by section or table, which is stronger than a % src: pointer
+% into our own data would be. The two figures that are OURS are marked.
 \section{Related work}
 \label{sec:related}
 
@@ -118,8 +121,9 @@ host-tier request no longer buys throughput. Appendix~\ref{app:params} gives our
 measurement of the margin: at batch 142 for an 8B model at 4K --- far above the
 capacity limit on any device we consider --- decode-attention's arithmetic
 intensity has crossed the hardware balance point, yet the step is still
-memory-bound by roughly $4\times$ ($30.7$\,ms of memory time against $7.4$ of
-compute). So the two premises are not in conflict at the batch sizes a capacity
+memory-bound by more than $6\times$ ($46.6$\,ms of memory time against $7.4$ of
+compute, taking the memory term from Eq.~\ref{eq:step} rather than from the
+single-efficiency roofline \S\ref{sec:model:modeldep} refutes). So the two premises are not in conflict at the batch sizes a capacity
 limit permits. On a device where that margin closes, NanoFlow's premise holds
 and ours does not.
 

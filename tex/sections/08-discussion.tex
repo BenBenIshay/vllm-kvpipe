@@ -1,3 +1,6 @@
+% PROVENANCE: this section derives from \S\ref{sec:model} and
+% \S\ref{sec:eval} and introduces no new measurements; where it quotes a
+% number it points at the section that sourced it.
 \section{Discussion}
 \label{sec:discussion}
 
@@ -49,7 +52,7 @@ a system calibrated on their sum will mispredict itself on the next generation.
 \subsection{Anti-scaling}
 
 The gain shrinks as device memory grows, and for our primary model it does not
-merely shrink: Qwen2.5-32B on a 144\,GB device leaves $\Ckv \approx 73$\,GB, at
+merely shrink: Qwen2.5-32B on a 144\,GB device (141 usable) leaves $\Ckv \approx 71$\,GB, at
 which point the workload is no longer capacity-bound and the gate stops
 admitting entirely. Both factors of Eq.~\ref{eq:gain} trend the same way across
 a hardware generation, since HBM bandwidth and capacity have grown faster than

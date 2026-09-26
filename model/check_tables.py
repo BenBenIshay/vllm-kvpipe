@@ -71,10 +71,10 @@ for v in ("26.5", "14.2", "12", "6", "18", "33.9"):
     present(v, "01-intro.tex", f"Table 1 shows {v}")
 
 print("\nTable 2 (03-model, tab:gain)")
-paper = {"Llama-8B  fp16": (1.03, 0.78, -0.9),
+paper = {"Llama-8B  fp16": (1.03, 0.87, -0.9),
          "Qwen-32B  fp8":  (1.09, 0.78, -1.3),
          "Qwen-32B  fp16": (1.45, 0.85,  3.8),
-         "Llama-70B fp8":  (1.67, 0.96,  9.7)}
+         "Llama-70B fp8":  (1.67, 0.91,  9.7)}
 for r in tables.gain_rows():
     cap, tput, fstar = paper[r["name"]]
     check(f"{r['name']} capacity", r["cap"], cap)
@@ -139,16 +139,43 @@ print("\nDerived numbers quoted in prose, pinned to their own sentence")
 SITES = [
     ("03-model.tex", "capacity column ($\\times$", "1.45", "3: capacity column quoted in prose"),
     ("03-model.tex", "the capacity gains of", "1.67", "3.5: top of the capacity range"),
-    ("03-model.tex", "throughput ratios of", "0.96", "3.5: 70B throughput ratio"),
+    ("03-model.tex", "throughput ratios of", "0.91", "3.5: 70B throughput ratio"),
     ("03-model.tex", "Equation~\\ref{eq:fstar} gives", "-0.9", "3.5: F* for Llama-8B"),
     ("03-model.tex", "Qwen2.5-32B fp16 and $+", "9.7", "3.5: F* for Llama-70B"),
-    ("03-model.tex", "needs $F$ to fall by", "21", "3.5: required reduction, 70B"),
-    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.78", "6.6: 8B throughput"),
+    ("03-model.tex", "the 70B configuration needs a", "37", "3.5: required reduction, 70B"),
+    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.87", "6.6: 8B throughput"),
     ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "-0.9", "6.6: 8B F*"),
     ("06-evaluation.tex", "$F$ falling below the $F^{*} = ", "3.8", "6.7: F* for the primary model"),
     ("08-discussion.tex", "at $\\effo = 1$ the four rows", "1.22", "8.2: eta_o=1 sensitivity"),
 ]
 for filename, anchor, value, label in SITES:
+    at_site(filename, anchor, value, label)
+
+print("\neta_kv curve tracks the measured data (it was a hardcoded literal)")
+import eff_kv
+measured = dict(eff_kv.curve())
+for gb, want in K.EFF_KV_CURVE:
+    near = [v for g, v in measured.items() if abs(g - gb) <= 0.5]
+    got = near[0] if near else None
+    if got is None:
+        print(f"  FAIL eta_kv at {gb} GB: no measured point")
+        failures.append(f"eta_kv {gb}")
+        continue
+    ok = min(got) - 0.03 <= want <= max(got) + 0.03
+    print(f"  {'ok  ' if ok else 'FAIL'} eta_kv at {gb:5.1f} GB: curve {want}, "
+          f"measured {'/'.join(f'{x:.3f}' for x in sorted(got))}")
+    if not ok:
+        failures.append(f"eta_kv {gb}")
+
+print("\nSites round 4 found stale -- now asserted")
+for filename, anchor, value, label in [
+    ("03-model.tex", "full-pool ITL of $78.4$", "53.2", "3.2: full-pool pair"),
+    ("03-model.tex", "full-pool ITL of $78.4$", "1.47", "3.2: the spread"),
+    ("03-model.tex", "is link-bound here, using", "13.6", "Table 2 caption: 70B budget use"),
+    ("03-model.tex", "At an 80\\,ms target the", "1.67", "Table 2 caption: 80 ms sensitivity"),
+    ("03-model.tex", "applies it to", "19--76", "3: eta_kv extrapolation range"),
+    ("06-evaluation.tex", "holds within each model across", "41", "6: configuration count"),
+]:
     at_site(filename, anchor, value, label)
 
 print()

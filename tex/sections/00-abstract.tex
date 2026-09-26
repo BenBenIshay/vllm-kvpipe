@@ -13,9 +13,10 @@ footprint is $k/L$ of a resident request's, and both tiers are served in one
 forward pass, so weights are read once however the batch is split.
 
 We derive when a second tier pays. The capacity multiplier is one plus the
-interconnect-to-HBM bandwidth ratio times the ratio of device memory to what the
-weights leave free, so --- counter to intuition --- context length cancels and
-the value tracks how much memory the weights consumed. But capacity is not throughput. Charging the fixed per-step cost of
+interconnect bandwidth over the device's \emph{achieved} memory bandwidth, times
+the ratio of device memory to what the weights leave free --- so, counter to
+intuition, context length cancels and the value tracks how much memory the
+weights consumed. But capacity is not throughput. Charging the fixed per-step cost of
 using a host path at all gives a \textbf{second gate}, and it is the binding
 one: at the cost we measure, \emph{every} configuration the multiplier likes
 still loses. We therefore report what that cost would have to be, which turns
