@@ -35,7 +35,9 @@
 
 @article{omniserve,
   key     = {omniserve},
-  title   = {{OmniServe}: Mixed {GPU}/Host Batching under Service-Class {SLOs}},
+  title   = {Serving Hybrid {LLM} Loads with {SLO} Guarantees Using {CPU}-{GPU}
+             Attention Piggybacking},
+  author  = {Zhang, Zhenyu and others},
   journal = {arXiv preprint arXiv:2603.12831},
   year    = {2026},
   note    = {PCIe A100s, CPU-side attention, externally supplied LS/BE class},
@@ -43,7 +45,11 @@
 
 @article{calkv,
   key     = {calkv},
-  title   = {Dynamic {KV} Cache Placement for {LLM} Inference},
+  title   = {Accelerating {LLM} Inference via Dynamic {KV} Cache Placement in
+             Heterogeneous Memory System},
+  author  = {Fang, Yunhua and Xie, Rui and Haq, Asad Ul and Ma, Linsen and
+             El Maghraoui, Kaoutar and Wang, Naigang and Wang, Meng and
+             Liu, Liu and Zhang, Tong},
   journal = {IEEE Computer Architecture Letters},
   year    = {2025},
   note    = {arXiv:2508.13231; simulation with a simulated-annealing oracle},
@@ -70,7 +76,9 @@
 
 @article{bottlenecks,
   key     = {bottlenecks},
-  title   = {Bottlenecks in {LLM} Serving: {VRAM} Capacity, Not Token Budget},
+  title   = {Understanding Bottlenecks for Efficiently Serving {LLM} Inference
+             with {KV} Offloading},
+  author  = {Meng, William and Lee, Benjamin and Wang, Hong},
   journal = {arXiv preprint arXiv:2601.19910},
   year    = {2026},
   note    = {Trace-driven; the premise this paper builds on},
@@ -167,4 +175,73 @@
   note   = {NVLink-C2C: 900\,GB/s bidirectional, \textbf{450\,GB/s per
             direction} --- the unidirectional figure is the one that bounds a
             host-to-device KV stream},
+}
+
+% --- Added 2026-09-26. Papers a reviewer expects this section to engage. Each
+% verified against its published venue before being cited.
+
+% Argues end-to-end serving is COMPUTE-bound for common workloads -- the direct
+% challenge to section 2.1's premise, so it is engaged rather than listed.
+@inproceedings{nanoflow,
+  title     = {{NanoFlow}: Towards Optimal Large Language Model Serving Throughput},
+  author    = {Zhu, Kan and Zhao, Yilong and Zhao, Liangyu and Zuo, Gefei and
+               Gu, Yile and Xie, Dedong and Ye, Yufei and Fu, Yuchen and others},
+  booktitle = {USENIX Symposium on Operating Systems Design and Implementation (OSDI)},
+  year      = {2025},
+  note      = {arXiv:2408.12757}
+}
+
+% Request migration ACROSS instances -- the alternative to tiering within one.
+@inproceedings{llumnix,
+  title     = {{Llumnix}: Dynamic Scheduling for Large Language Model Serving},
+  author    = {Sun, Biao and Huang, Ziming and Zhao, Hanyu and Xiao, Wencong and
+               Zhang, Xinyi and Li, Yong and Lin, Wei},
+  booktitle = {USENIX Symposium on Operating Systems Design and Implementation (OSDI)},
+  year      = {2024}
+}
+
+% Speculative prefetch of the important tokens only: a different way to shrink
+% the per-step transfer, and composable with a tiering policy.
+@inproceedings{infinigen,
+  title     = {{InfiniGen}: Efficient Generative Inference of Large Language
+               Models with Dynamic {KV} Cache Management},
+  author    = {Lee, Wonbeom and Lee, Jungi and Seo, Junghwan and Sim, Jaewoong},
+  booktitle = {USENIX Symposium on Operating Systems Design and Implementation (OSDI)},
+  year      = {2024},
+  note      = {arXiv:2406.19707}
+}
+
+% Low-rank KV compression. If architectures shrink KV enough, our gate closes.
+@article{deepseekv2,
+  title   = {{DeepSeek-V2}: A Strong, Economical, and Efficient Mixture-of-Experts
+             Language Model},
+  author  = {{DeepSeek-AI}},
+  journal = {arXiv preprint arXiv:2405.04434},
+  year    = {2024}
+}
+
+% KV allocation without paging -- orthogonal to placement, but it is the other
+% memory-management paper a reviewer will have in mind.
+@inproceedings{vattention,
+  title     = {{vAttention}: Dynamic Memory Management for Serving {LLMs}
+               without {PagedAttention}},
+  author    = {Prabhu, Ramya and Nayak, Ajay and Mohan, Jayashree and
+               Ramjee, Ramachandran and Panwar, Ashish},
+  booktitle = {ACM International Conference on Architectural Support for
+               Programming Languages and Operating Systems (ASPLOS)},
+  year      = {2025},
+  note      = {arXiv:2405.04437}
+}
+
+% Hierarchical KV caching for INACTIVE sessions -- precisely the case our
+% novelty claim must be distinguished from.
+@inproceedings{cachedattention,
+  title     = {Cost-Efficient Large Language Model Serving for Multi-turn
+               Conversations with {CachedAttention}},
+  author    = {Gao, Bin and He, Zhuomin and Sharma, Puru and Kang, Qingxuan and
+               Jevdjic, Djordje and Deng, Junbo and Yang, Xingkun and
+               Yu, Zhou and Zuo, Pengfei},
+  booktitle = {USENIX Annual Technical Conference (ATC)},
+  year      = {2024},
+  note      = {arXiv:2403.19708}
 }

@@ -88,17 +88,48 @@ different axes and could be combined.
 
 \subsection{Limitations}
 
-The prefill transport is emulated: KV reaches the host pool through a local
-handover whose cost we measure (\S\ref{sec:impl:stash}), not through a
-production prefill node's network path, which is deployment-dependent.
+\paragraph{Scope of the evaluation.} Every measurement is on a single A100-80
+over PCIe --- the regime our own model says cannot pay. The positive claims rest
+on a coherent interconnect we have not yet measured, and \S\ref{sec:eval} marks
+each as a prediction. We evaluate one device: tensor parallelism would introduce
+collectives into precisely the metric under measurement, and adding a second GPU
+is also the most obvious \emph{alternative} to a second memory tier, which we
+therefore cannot price against it.
+
+\paragraph{Scope of the model.} Eq.~\ref{eq:step} charges every weight once,
+which is false for mixture-of-experts models, so the law as written does not
+apply to them. It assumes dense GQA attention: an MLA-class model compresses KV
+enough that the regime changes character (\S\ref{sec:related}). It assumes
+uniform context, and the cancellation of \S\ref{sec:model:cancel} is exact only
+in that limit. And it charges nothing for host DRAM bandwidth, which on a
+480\,GB Grace configuration is of the same order as the link itself and would
+bound $\Xlink$ from behind.
+
+\paragraph{The regime is real but not universal.} The configurations that clear
+both gates are those where weights consume most of the device --- 64\,GB of
+weights on a 96\,GB part. An operator facing exactly that can also quantize the
+weights or add a GPU, and both are common. We think the regime is nonetheless
+worth serving: quantization is an accuracy decision that a serving team often
+cannot take unilaterally, and adding a GPU doubles the cost of the node to
+recover memory that is already installed and idle beside it. But a reader who
+believes those alternatives are always available should read this paper as
+bounding when the technique could help, not as arguing it is the best response.
+
+\paragraph{Mechanism and engineering.} The prefill transport is emulated: KV
+reaches the host pool through a local handover whose cost we measure
+(\S\ref{sec:impl:stash}), not through a production prefill node's network path.
 Speculative decoding is unsupported on the host path, which assumes one query
-token per step. The pinned host mirrors are real memory, sized to the
-configured maximum concurrency and context. We evaluate a single device;
-tensor parallelism would introduce collectives into precisely the metric under
-measurement. And the fixed per-step cost of the streaming path is a floor of
-the current design (\S\ref{sec:impl:cost}) rather than a tuned result --- a
-cross-layer batching of the transfer issue would reduce it, and we have not
-built it.
+token per step. The pinned host mirrors are real memory, sized to the configured
+maximum concurrency and context. The fixed per-step cost is a floor of the
+current design rather than a tuned result --- cross-layer batching of the
+transfer issue would reduce it and we have not built it --- and since it is the
+quantity the second gate turns on (\S\ref{sec:model:omits}), our own headline
+result is bounded by an engineering number rather than by a physical one.
+
+\paragraph{Generality of the interconnect claim.} We measure PCIe and model
+NVLink-C2C. Whether the argument carries to CXL-attached memory or to other
+vendors' coherent links depends on the same three quantities
+(\S\ref{sec:discussion:general}), but we have measured none of them there.
 
 \subsection{Staging versus zero-copy: two hiding windows}
 \label{sec:discussion:coherence}
