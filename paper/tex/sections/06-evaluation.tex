@@ -7,7 +7,7 @@ the placement policy load-bearing, and does a second tier raise \emph{goodput}
 --- requests served within a latency target --- rather than raw throughput?
 
 The order is deliberate and so is the honesty about which we can close. Every
-measurement here is on A100/PCIe, which \S\ref{sec:model:gate} predicts cannot
+measurement here is on A100/PCIe, which \S\ref{sec:model:omits} predicts cannot
 pay, so this section establishes the mechanism, the cost structure and the
 model's \emph{negative} predictions, and states the last two questions as
 protocols with predictions attached. Each subsection opens with its question,
@@ -18,13 +18,16 @@ the claim under test, and what the model predicts, before any number.
 
 \paragraph{Hardware.} A100-80 over PCIe~4, on which every measurement in this
 section is taken. The model identifies PCIe as the regime in which the
-technique cannot pay (\S\ref{sec:model:gate}), so this section is a test of the
-mechanism and of the model's negative prediction, not of the positive one; a
+technique cannot pay --- not through the latency gate of
+\S\ref{sec:model:gate}, which contains no $\Xlink$ and so says nothing about an
+interconnect, but through the bandwidth crossover and the fixed cost of
+\S\ref{sec:model:omits}. This section is therefore a test of the mechanism and
+of the model's negative prediction, not of the positive one; a
 GH200-96 over NVLink-C2C is the substrate the positive claims require and those
-experiments are in progress. Link bandwidth is \emph{measured} on both rather than
-quoted: the widely cited 900\,GB/s for C2C is bidirectional, a KV stream is
-unidirectional, and an independent measurement of the same hardware reports
-419\,GB/s host-to-device~\cite{pie}.
+experiments are in progress. We measure the PCIe link ourselves at $25.1$\,GB/s. For C2C we use
+an \emph{independent} measurement of the same part, $419$\,GB/s
+host-to-device~\cite{pie}, rather than the widely cited 900\,GB/s, which is
+bidirectional where a KV stream is not; we have not measured C2C.
 
 \paragraph{Exclusive access, for every absolute.} Each number we report as an
 absolute is taken on an idle, exclusively allocated device. This is not
@@ -32,9 +35,13 @@ boilerplate: the same measurement on a contended node and on an idle one
 differed by $9.4\times$ (\S\ref{sec:impl:stash}). Ratios between arms run back
 to back are robust to contention; absolutes are not.
 
-\paragraph{Models.} Qwen2.5-32B fp16 as the primary model. On a 96\,GB device
-its weights leave $\Ckv \approx 22$--28\,GB, which is the regime
-\S\ref{sec:model} identifies as the one where a second tier pays. Llama-3.1-8B
+\paragraph{Models.} Qwen2.5-32B fp16 as the primary model, because on a 96\,GB
+device its weights leave $\Ckv \approx 26$\,GB, the regime \S\ref{sec:model}
+identifies as favourable. \textbf{On the A100-80 we actually run, the same
+weights leave a KV pool of $11.8$\,GB}, so $B_{\mathrm{cap}} \approx 22$ at 2048
+context: capacity-bound, as the model requires, but at a smaller
+$\HBM/\Ckv$ than the projections assume. Numbers here should be read as coming
+from that substrate, not the projected one. Llama-3.1-8B
 as a negative control, where the model predicts no benefit. We deliberately do
 not evaluate a 70B-class model: its capacity-limited batch is about seven
 requests, so a single request is 14\% and no result could separate an effect
@@ -52,10 +59,12 @@ different experiment from offering $\lambda$ requests per second; it also
 invites metrics that reward slowness (below). These are the workloads Pie
 reports on~\cite{pie}, which makes our numbers comparable to theirs.
 
-\paragraph{Metric.} \textbf{SLO-attaining goodput}: requests per second whose
-per-output-token latency met a target. Raw throughput is secondary, p99 latency
-and achieved interconnect bandwidth are reported alongside so that ``the
-transfer hides'' is measured rather than inferred.
+\paragraph{Metric.} The goodput comparison of \S\ref{sec:eval:goodput} is
+defined on \textbf{SLO-attaining goodput}: requests per second whose
+per-output-token latency met a target. That experiment is not yet run, so no
+goodput number appears in this section; what we report here is step time,
+end-to-end decode throughput, achieved concurrency and transferred bytes, each
+named where it is used.
 
 We do \emph{not} report mean concurrency. It averages over sampled steps, so an
 arm that serves requests more slowly holds them longer and scores
@@ -64,7 +73,7 @@ relied on it was retracted for exactly that reason.
 
 \paragraph{Baselines.} Stock vLLM with all tiering disabled, which is also
 Pie's baseline and makes the two sets of numbers commensurable. We verify separately that our fork with the feature off matches the unmodified
-engine: across six interleaved runs it is slower by $0.08\%$, less than the
+engine: across six interleaved runs on Qwen2.5-0.5B it is slower by $0.08\%$, less than the
 spread within either arm. A baseline quietly slowed by our own additions would
 inflate every ratio reported here, and it would do so invisibly. Uniform offload at a matched byte budget represents the placement
 that Pie and DirectKV instantiate at their own granularities. Where a
@@ -77,13 +86,16 @@ commensurable.
 
 \emph{Question.} Does admitting a host-tier request consume device blocks?
 \emph{Claim under test.} That it does not, so the host cohort adds to the
-resident cohort rather than displacing it --- the property Table~1's interior
+resident cohort rather than displacing it --- the property Table~\ref{tab:endpoints}'s interior
 point depends on. \emph{Prediction.} Concurrency should rise past the
 all-HBM capacity of the same pool, and it should do so without the device pool
 growing.
 
 Against a fixed KV pool, host-tier requests raise peak concurrency from 8 to 48,
-and 48 is a lower bound because it was the entire offered load.
+and 48 is a lower bound because it was the entire offered load. \textbf{Both arms
+completed all 48 requests, and the mixture took $89.7$\,s against the all-HBM
+arm's $47.8$\,s} --- $0.53\times$ the throughput for identical work, with 42
+reclaims.
 % src: paper/data/preload_capacity.json @ f3df05bdb
 This is a \textbf{mechanism check and not a performance result}, and three
 things bound what it shows. KV is delivered synthetically, so the generated
@@ -159,7 +171,11 @@ host-tier requests & ITL (ms) & tok/s \\
 \caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe.
 \emph{ITL} is the median inter-token latency; \emph{tok/s} is end-to-end decode
 throughput over the whole 12-request run including the drain, \emph{not}
-$B/\mathrm{ITL}$. An affine fit over these four points gives $9.6$\,ms fixed
+$B/\mathrm{ITL}$. \textbf{The arms do not hold the resident cohort fixed}: peak
+concurrency runs 4, 8, 10, 11 down the rows, so $\Delta$ITL conflates a rider's
+cost with additional \emph{resident} requests --- the confound
+\S\ref{sec:eval:ablation} calls disqualifying. ``8 resident'' is the cap, not
+the observed cohort. An affine fit over these four points gives $9.6$\,ms fixed
 $+$ $4.7$\,ms per request, implying $78\%$ overlap; the direct measurement below
 supersedes both that functional form and that number, and the fit is three
 parameters' worth of structure read from four points.}
@@ -218,7 +234,13 @@ riders & step (ms) & GB/step & $\effo$ \\
 At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
 of $1/(N{+}r) = 0.056$, and decode throughput is $254$ tok/s against $296$ at
 $r{=}0$. \textbf{The A100 does not show the benefit}, which is what
-$\Xlink^{*} = \Ckv(1-\effo)/T$ predicts for a $25.1$\,GB/s link. An earlier
+the crossover bandwidth predicts. Setting the capacity gain equal to the cost
+it must beat gives $\Xlink^{*} = 66$\,GB/s for this configuration: below it the
+mixture loses, above it the mixture wins, and our link runs at $25.1$. The same
+number places a coherent link's $419$\,GB/s comfortably above the crossing ---
+which is a \emph{bandwidth} argument, and \S\ref{sec:model:omits} shows the
+fixed cost binds before bandwidth does, so clearing $\Xlink^{*}$ is necessary
+and not sufficient. An earlier
 $+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
 by hand from a co-located run, and we withdraw it.
 
@@ -297,12 +319,11 @@ of the goodput sweep test that directly.
 
 \emph{When the weights are small.} Llama-3.1-8B leaves 75.9\,GB of a 96\,GB
 part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
-$\times$1.11. That is a small gain, not a null --- and it is the second gate of
-\S\ref{sec:model:omits} that makes it a predicted \emph{negative}: at the
-measured fixed cost the throughput form gives $\times$0.88. The prediction under
-test is therefore specific and falsifiable in both directions: 8B should lose,
-and it should lose by roughly the fixed-cost penalty rather than by the capacity
-shortfall.
+$\times$1.22 in capacity. It is the second gate of \S\ref{sec:model:omits} that
+makes it a predicted \emph{negative}: charging $F$ and the unhidden residual
+gives $\times$0.75, and its $F^{*}$ is $-7.0$\,ms, meaning the residual alone
+exceeds what its capacity buys. The prediction is therefore unusually strong ---
+8B should lose on \emph{any} implementation, however cheap the fixed cost.
 
 \emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered
 through the prefill handover, throughput is 2.3\% \emph{below} not offloading
@@ -320,11 +341,11 @@ end of the bandwidth axis rather than as a disappointment.
 \emph{Question.} The one an operator actually asks. \emph{Claim under test.}
 That at a matched latency target the mixture serves more requests per second
 than either endpoint. \emph{Prediction.} On this substrate, \textbf{no}:
-\S\ref{sec:model:gate} puts A100/PCIe below the gate, and charging the fixed
-cost of \S\ref{sec:model:omits} makes the throughput form
-$\times0.93$ for our primary model. On a coherent link the same arithmetic turns
-positive only if the fixed cost falls with the host CPU; the capacity term alone
-does not rescue it.
+charging the fixed cost and the unhidden residual of \S\ref{sec:model:omits}
+makes the throughput form $\times0.86$ for our primary model even on a projected
+coherent link, and worse on this one. The capacity term alone does not rescue
+it: what would is $F$ falling below the $F^{*} = 4.0$\,ms that configuration can
+afford.
 
 We state the protocol here because it is the experiment the positive claim
 requires and it is not yet run. Hold model, device, workload and substrate
@@ -348,7 +369,8 @@ is the predicted sign.
 A memory system that returns different tokens is not a faster memory system. We
 verify in-process that a host-tier request's attention output is bitwise
 identical to the same request served resident, over 576 mixed decode
-layer-steps, and end to end that greedy decoding through the host path produces
-token-identical output to stock vLLM --- including across a mid-flight migration
-in both directions. Appendix~\ref{app:correct} gives the ladder and what each
+layer-steps. End to end, greedy decoding through the host path matched stock
+vLLM on 6 of 6 prompts in one round and 4 of 6 in another; the divergences are
+bf16 accumulation order, not placement, and Appendix~\ref{app:correct} gives the
+evidence for that reading. Appendix~\ref{app:correct} gives the ladder and what each
 rung rules out.

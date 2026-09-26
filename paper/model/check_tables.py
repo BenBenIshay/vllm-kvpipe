@@ -35,14 +35,14 @@ m = model("Qwen-32B  fp16")
 u, C = m.k * S, HW.hbm - m.w - K.OVERHEAD
 B_cap = C / u
 T0 = K.step_ms(m, HW, S, B_cap) / 1e3
-B_off = T0 * HW.x * K.ETA_O / u
+B_off = T0 * HW.x / u   # link ceiling: eta_o is a COST, not a discount
 intro = (TEX / "01-intro.tex").read_text()
 for want, got, label in [
     (26.5, C / 1e9, "C_kv GB"),
     (12, int(B_cap), "all-HBM batch"),
-    (4, int(B_off), "all-host batch"),
-    (16, int(B_cap) + int(B_off), "both batch"),
-    (8.8, T0 * HW.x * K.ETA_O / 1e9, "link GB/step"),
+    (6, int(B_off), "all-host batch"),
+    (18, int(B_cap) + int(B_off), "both batch"),
+    (14.2, T0 * HW.x / 1e9, "link GB/step"),
     (33.9, T0 * 1e3, "ITL_0 ms"),
 ]:
     check(label, got, want, tol=0.01)
@@ -51,24 +51,18 @@ for want, got, label in [
 
 print("\nTable 2 (03-model, tab:gain)")
 model_tex = (TEX / "03-model.tex").read_text()
-for name, cap, tput in [("Llama-8B  fp16", 1.11, 1.14),
-                        ("Qwen-32B  fp8", 1.15, 1.17),
-                        ("Qwen-32B  fp16", 1.27, 1.29),
-                        ("Llama-70B fp8", 1.39, 1.41)]:
+for name, cap, tput, fstar in [("Llama-8B  fp16", 1.22, 0.75, -7.0),
+                               ("Qwen-32B  fp8", 1.28, 0.77, -4.1),
+                               ("Qwen-32B  fp16", 1.48, 0.86, 4.0),
+                               ("Llama-70B fp8", 1.67, 0.96, 9.7)]:
     r = K.analyze(model(name), S, HW, slo_ms=50.0, stage=0.0)
-    check(f"{name} capacity", r["B_tot"] / r["B0"], cap, tol=0.01)
-    check(f"{name} tput", r["gain"], tput, tol=0.01)
+    check(f"{name} capacity", r["cap_gain"], cap, tol=0.01)
+    check(f"{name} tput (F + delta)", r["gain_tput"], tput, tol=0.015)
+    # Eq. fstar: the fixed cost this configuration could afford
+    check(f"{name} F*", (r["cap_gain"] - 1) * r["T0"] - r["delta_ms"], fstar, tol=0.06)
     for v in (cap, tput):
         if f"{v:.2f}" not in model_tex:
             failures.append(f"{name} {v} missing from 03-model.tex")
-
-print("\nSecond gate (03-model, sec:model:omits), F = 12.3 ms")
-F = 12.3
-for name, want in [("Llama-8B  fp16", 0.88), ("Qwen-32B  fp16", 0.93),
-                   ("Llama-70B fp8", 1.01)]:
-    r = K.analyze(model(name), S, HW, slo_ms=50.0, stage=0.0)
-    check(f"{name} gain_tput with F", (r["B_tot"] / r["B0"]) * r["T0"] / (r["T0"] + F),
-          want, tol=0.012)
 
 print("\nClosed form (eq:gain) vs exact (eq:gain-exact) -- eta_bar must be carried")
 for name in ["Llama-8B  fp16", "Qwen-32B  fp16"]:
@@ -76,8 +70,8 @@ for name in ["Llama-8B  fp16", "Qwen-32B  fp16"]:
     C, u = HW.hbm - m.w - K.OVERHEAD, m.k * S
     T0 = K.step_ms(m, HW, S, C / u) / 1e3
     eta_bar = HW.hbm / (HW.bw * T0)
-    exact = 1 + T0 * HW.x * K.ETA_O / C
-    approx = 1 + (HW.x / HW.bw) * (K.ETA_O / eta_bar) * (HW.hbm / C)
+    exact = 1 + T0 * HW.x / C   # eta_o is a cost, not a capacity discount
+    approx = 1 + (HW.x / (HW.bw * eta_bar)) * (HW.hbm / C)
     check(f"{name} closed form == exact", approx, exact, tol=0.01)
 
 print("\nOne value per quantity across all sections")

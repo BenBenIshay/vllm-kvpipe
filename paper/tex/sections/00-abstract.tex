@@ -18,8 +18,7 @@ Both tiers are served in one forward pass, so weights are read once however the
 batch is split.
 
 We first derive when a second tier pays at all. The capacity multiplier is
-$1 + (\Xlink/\BW)(\effo/\bar\eta)(\HBM/\Ckv)$, where $\effo$ is the measured
-fraction of a rider's transfer that overlaps compute and $\bar\eta$ the device's
+$1 + \Xlink/(\BW\,\bar\eta)\cdot(\HBM/\Ckv)$, where $\bar\eta$ is the device's
 achieved read efficiency; it applies only above a latency gate we make
 explicit, and --- counter to intuition --- context length cancels, so the value
 tracks how much of memory the weights consumed rather than how long the
@@ -36,7 +35,8 @@ budget assumes. On PCIe the economics still do not close, which our
 own model predicts and we report as a validated negative that bounds the
 technique. The decision the system actually makes is \emph{how many} requests
 to offload, taken from a measured per-step transfer budget rather than a
-configured fraction; we isolate it by running a uniform offload fraction and
-our derived count on one substrate, and we report where the technique stops
-paying as carefully as where it starts.
+configured fraction. Isolating that decision against a uniform offload fraction
+requires more host-tier requests than a PCIe link admits, so we describe the
+ablation and the substrate it needs rather than claim its result, and we report
+where the technique stops paying as carefully as where it starts.
 \end{abstract}

@@ -305,7 +305,7 @@ Every claim in this subsection and the two that follow ties to one of these.
 Where we cannot name the effect a component exploits, we present it as a design
 choice rather than a contribution --- which is the honest status of the scoring
 rule below, since on our substrate the admission budget never offers it enough
-candidates to choose between (\S\ref{sec:eval:ablation}).
+candidates to choose between: on PCIe it admits two (\S\ref{sec:eval:cost}).
 
 Which requests should be host-tier? The intuitive answer is the long ones, since
 KV grows with context. \textbf{Context length does not discriminate to first
@@ -330,12 +330,15 @@ hierarchical caches already handle (\S\ref{sec:background}). We therefore do not
 claim it. What remains inside the running set is \emph{remaining} generation: a
 request near the end of its output repays the one-time cost of seeding its KV to
 the host over fewer steps, so at equal $S\btok$ it is the worse host-tier
-candidate, not the better one. Placement scores requests on estimated remaining
-generation, using only state the serving system already holds. Concretely, the
-rule is a threshold on that estimate: requests whose estimated remaining
-generation exceeds $\theta$ steps are eligible for the host tier, ranked by that
-estimate, and $\theta$ is set to the number of steps over which a seed amortises
-at the measured host bandwidth.
+candidate, not the better one. We estimate remaining generation as the
+difference between a request's \texttt{max\_tokens} and the tokens it has
+produced --- a bound the scheduler already holds, needing no prediction and no
+externally supplied service class, and loose in the safe direction: a request
+that stops early was over-estimated, one that runs to its limit was exact. The
+rule is a threshold on that estimate. Requests with more than $\theta$ steps
+remaining are eligible for the host tier, ranked by the estimate, with $\theta$
+set to the number of steps over which seeding a request's KV to the host
+amortises at the measured host bandwidth.
 
 \subsection{Admission}
 \label{sec:design:admission}
