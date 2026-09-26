@@ -15,7 +15,7 @@
 \label{sec:related}
 
 \paragraph{Capacity, not compute, is what binds.} A recent trace-driven study
-of production serving finds that ``VRAM capacity, not token budget'' limits
+of KV offloading finds that device memory capacity, not token budget, limits
 batch size~\cite{bottlenecks}, and names scheduler improvements as future work.
 That is the premise this paper builds on, and it is measured rather than
 assumed.
@@ -230,7 +230,9 @@ service class. Ours assumes a coherent interconnect, computes all attention on
 the GPU, and infers tier from observable request properties, so it applies in a
 single-class deployment where no such label exists.
 
-Dynamic KV Placement~\cite{calkv} gives a formal placement model and a
+Fang et al.~\cite{calkv} --- whose title also claims the phrase ``heterogeneous
+memory system'', so the distinction is worth drawing sharply --- give a formal
+placement model and a
 simulated-annealing oracle bound on aggregate bandwidth. It is simulation only,
 on synthetically shrunk HBM, at \emph{token} granularity by importance, and it
 requires perfect foresight; its gains are contingent on 60--80\% attention
@@ -251,13 +253,78 @@ tier --- unchanged. That argument is analytical and we have not measured the
 composition; it is a prediction of Eq.~\ref{eq:cancel}, and a cheap one to
 falsify.
 
+\paragraph{Is decode serving memory-bound at all?} NanoFlow~\cite{nanoflow}
+argues the opposite of \S\ref{sec:background}: that end-to-end serving is
+\emph{compute}-bound for most common workloads once operations of different
+resource classes are overlapped within a device, and it reports $1.91\times$ over
+prior engines by doing so. The claim is not in conflict with ours, but the
+boundary between them is exactly where this paper lives. NanoFlow raises
+utilisation at a \emph{given} batch by filling idle units; our premise is that
+the batch itself is capped by KV capacity before those units saturate. The two
+compose in principle --- a larger batch gives intra-device overlap more to work
+with --- and they collide in practice if the arithmetic recovered by overlapping
+pushes the step into the compute-bound regime, because then admitting a
+host-tier request no longer buys throughput. \S\ref{sec:model:omits} gives the
+crossing point: our own compute term reaches the memory term at batch 142 for an
+8B model at 4K, well above the capacity limit on every device we consider, so we
+expect to remain memory-bound in the regime we target --- but on a device where
+that ordering reverses, NanoFlow's premise holds and ours does not.
+
+\paragraph{Moving the request instead of its memory.} Llumnix~\cite{llumnix}
+reschedules requests \emph{across} model instances by live-migrating them and
+their KV, to balance load, reduce fragmentation and honour priorities. It is the
+natural alternative to a second memory tier: when a request will not fit here,
+one can move it to another GPU rather than move its KV to the host. The choice
+between them is an economic one rather than a technical one --- migration needs
+a second instance with room, which is a provisioning decision, while tiering
+needs only host DRAM, which is already installed and idle. They also compose
+cleanly, since a tier decision is local and a migration decision is global, and
+a scheduler holding both has a strictly larger action set than one holding
+either. We do not evaluate that combination.
+
+\paragraph{Architectures that shrink the cache.} The gate of
+\S\ref{sec:model:gate} opens when weights consume enough of the device that
+little is left for KV. Architectural changes to attention move that boundary
+directly. Multi-head latent attention~\cite{deepseekv2} compresses $K$ and $V$
+into a low-rank latent, cutting KV bytes per token by roughly an order of
+magnitude, and sliding-window and hybrid-attention designs bound the cache by
+construction rather than by context. By Eq.~\ref{eq:cancel} a uniform reduction
+in $\btok$ scales both cohorts and leaves their ratio unchanged --- so shrinking
+KV does not by itself close the gate. What closes it is the \emph{second} gate:
+a smaller cache raises $B_{\mathrm{cap}}$, so the fixed per-step cost is
+amortised over more requests but the capacity gain it must beat is unchanged in
+ratio and smaller in absolute requests. We regard a serving stack built entirely
+on MLA-class models as outside the regime this paper addresses, and say so
+rather than claim the technique is architecture-neutral.
+
+\paragraph{Adjacent memory management.}
+InfiniGen~\cite{infinigen} attacks the same per-step transfer from the other
+end, speculating which tokens matter for the next layer and prefetching only
+those; it reduces the bytes a host-tier request must move, where we decide how
+many requests move bytes at all, and the two are complementary.
+CachedAttention~\cite{cachedattention} keeps the KV of \emph{inactive}
+conversation sessions in a hierarchical store so a later turn skips prefill ---
+the case \S\ref{sec:background} distinguishes from ours, and the reason our
+novelty claim is scoped to actively decoding requests rather than to
+host-resident KV in general. vAttention~\cite{vattention} changes how KV is
+\emph{allocated}, decoupling virtual from physical memory instead of paging in
+user space; it is orthogonal to placement, and a host tier built on it would
+face the same admission question we pose here.
+
 \paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
 \emph{compute} to the CPU to grow the batch --- the same problem statement as
 ours with the opposite mechanism. Its own scaling is the argument against it:
 gains decay from $7.5\times$ on a T4 to 14\% on an H100, because a faster GPU
-makes the CPU's arithmetic relatively worse. Streaming KV to the GPU has the
-opposite dependence: it improves as the interconnect improves, which is the
-direction hardware is moving.
+makes the CPU's arithmetic relatively worse. Streaming KV to the GPU depends on
+a different ratio, $\Xlink/\BW$, and it would be convenient but dishonest to
+present that as simply improving with hardware. Across a generation, HBM
+bandwidth and capacity have both grown faster than host-to-device bandwidth, so
+$\Xlink/\BW$ falls and $\HBM/\Ckv$ falls with the extra capacity --- both
+factors of Eq.~\ref{eq:gain} trend \emph{against} us, which is the same
+structural decay we note in NEO. What would reverse it is a link that scales
+with HBM rather than with PCIe generations, which is precisely the bet a
+coherent interconnect represents. \S\ref{sec:discussion} states our own
+anti-scaling in the same terms.
 
 \paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems that
 share our hardware assumption on the two questions that matter: what unit of KV

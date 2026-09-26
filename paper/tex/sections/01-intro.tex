@@ -23,9 +23,10 @@ with almost no arithmetic per byte read, so the arithmetic units run at
 single-digit utilization while the memory system saturates. What prevents the
 server from batching more requests --- which is what would put those units to
 work --- is not compute. It is that the KV cache has exhausted device memory. A
-recent trace-driven study of production deployments reaches the same conclusion
-from the workload side: what binds is ``VRAM capacity, not token
-budget''~\cite{bottlenecks}.
+recent trace-driven study of KV offloading reaches the same conclusion from the
+workload side, finding device memory capacity rather than token budget to be
+what binds, with median cached contexts above 10K tokens for conversation and
+65K for document analysis~\cite{bottlenecks}.
 
 The machine, however, has more memory than the GPU's. A Grace-Hopper node~\cite{gracehopper} pairs
 96\,GB of HBM with hundreds of gigabytes of host DRAM, and NVLink-C2C connects
