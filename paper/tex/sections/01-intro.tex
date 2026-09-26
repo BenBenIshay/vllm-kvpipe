@@ -83,17 +83,18 @@ is bounded by the sum:
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{lrr}
+\begin{tabular}{lccr}
 \toprule
-\emph{Projected.} Qwen2.5-32B fp16, 8K, GH200-96 & KV read per step & batch \\
+\emph{Projected} & HBM & link & batch \\
 \midrule
-all-HBM (vLLM, SGLang)      & 26.5\,GB HBM, \textbf{0 link} & 12 \\
-all-host (uniform offload)  & \textbf{0 HBM}, 14.2\,GB link & 6 \\
-\textbf{both (this paper)}  & 26.5\,GB HBM \textbf{+} 14.2\,GB link & \textbf{18} \\
+all-HBM (vLLM, SGLang)     & 26.5\,GB      & \textbf{0}    & 12 \\
+all-host (uniform offload) & \textbf{0}    & 14.2\,GB      & 6 \\
+\textbf{both (this paper)} & 26.5\,GB      & 14.2\,GB      & \textbf{18} \\
 \bottomrule
 \end{tabular}
-\caption{Each single-memory design leaves one KV path unused. Weight traffic is
-identical across rows and excluded. \textbf{Projections}, from
+\caption{KV read per step, and the batch it supports, for Qwen2.5-32B fp16 at
+8K on a GH200-96. Each single-memory design leaves one KV path unused; weight
+traffic is identical across rows and excluded. \textbf{Projections}, from
 \texttt{model/killer\_v2.py}: $W = 65.5$\,GB measured, less a 4\,GB device
 reserve, gives $\Ckv = 26.5$\,GB; $\btok = 256$\,KiB, so a request at 8K holds
 2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}; $\Xlink =

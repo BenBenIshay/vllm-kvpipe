@@ -40,7 +40,7 @@ so a slot can be overwritten without persisting anything. DirectKV's kernel has
 the same property, appending only the newly projected $K,V$ to CPU memory. The
 resulting difference in per-token traffic is not marginal:
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
 \small
 \begin{tabular}{lll}
@@ -57,7 +57,7 @@ by one side must return it; one whose device-side copy is a \emph{cache} need
 not. Pie moves two bytes where the other two move one, and its return leg uses
 the slower direction of the link.}
 \label{tab:traffic}
-\end{table}
+\end{table*}
 
 Table~\ref{tab:traffic} states the consequence. This is not a criticism of
 Pie's design so much as a property of its unit:
