@@ -147,70 +147,18 @@ would rather publish than omit.
 \subsection{What a host-tier request costs}
 \label{sec:eval:cost}
 
-Sweeping the number of host-tier requests on an otherwise identical engine and
-fitting
-$\mathrm{ITL}(r) = \mathrm{ITL}_0 + \text{fixed} + r\cdot c$
-separates a fixed per-step cost of using the host path at all from a per-request
-cost that fails to overlap compute. The two extrapolate to completely different
-answers on a faster link, which is why a single operating point cannot settle
-the question.
+\emph{Question.} What does one host-tier request add to a decode step?
+\emph{Claim under test.} That the cost is a transfer partly hidden behind
+compute, plus a fixed per-step overhead. \emph{Prediction.} Both terms are
+non-zero, and the second does not shrink with the link.
 
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{lrr}
-\toprule
-host-tier requests & ITL (ms) & tok/s \\
-\midrule
-0 & 49.99 & 57.5 \\
-1 & 65.66 & 54.7 \\
-2 & 65.93 & 55.8 \\
-3 & 74.98 & 57.0 \\
-\bottomrule
-\end{tabular}
-\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe.
-\emph{ITL} is the median inter-token latency; \emph{tok/s} is end-to-end decode
-throughput over the whole 12-request run including the drain, \emph{not}
-$B/\mathrm{ITL}$. \textbf{The arms do not hold the resident cohort fixed}: peak
-concurrency runs 4, 8, 10, 11 down the rows, so $\Delta$ITL conflates a rider's
-cost with additional \emph{resident} requests --- the confound
-\S\ref{sec:eval:ablation} calls disqualifying. ``8 resident'' is the cap, not
-the observed cohort. An affine fit over these four points gives $9.6$\,ms fixed
-$+$ $4.7$\,ms per request, implying $78\%$ overlap; the direct measurement below
-supersedes both that functional form and that number, and the fit is three
-parameters' worth of structure read from four points.}
-\label{tab:ridercost}
-\end{table}
-% src: paper/data/hide_efficiency.json @ f3df05bdb
+We measure this directly: a fixed resident batch of 16, riders added on top, and
+step time obtained by differencing two generation lengths so that prefill
+cancels by construction. An earlier four-point sweep, which shared a budget
+between riders and residents, gave a different and we now think unusable answer;
+Appendix~\ref{app:ridercost} reports it and why we set it aside.
 
-\textbf{The throughput column is end-to-end over a finite workload, and that
-matters.} It is total decode tokens divided by total decode wall time across all
-12 requests, including the drain at the end, so it is not $B/\mathrm{ITL}$ and
-does not reconcile with the ITL column: at $r{=}0$, $768/13.4\,\mathrm{s}$ gives
-57.3 tok/s while $B/\mathrm{ITL}$ at the peak concurrency of 4 would give 80.
-The two readings of these same four rows disagree about the sign. End to end,
-throughput is flat within noise (57.5, 54.7, 55.8, 57.0). Read as
-$B/\mathrm{ITL}$ at peak concurrency it \emph{rises} (80, 122, 152, 147),
-because riders add concurrency faster than they lengthen the step.
-
-Neither is decisive, and the reason is the experiment rather than the system: a
-12-request closed workload never reaches steady state, so the end-to-end column
-is dominated by the drain, while peak concurrency is an upper bound that no step
-sustains. A third reading of a single two-request point is worse still --- it
-cannot distinguish a steep slope from a large intercept, and read that way it
-implies 89\% of the transfer fails to overlap, which the sweep contradicts. What
-settles the cost is an experiment that holds the resident batch fixed and adds
-riders on top, which is what follows.
-
-The fixed-versus-slope split is also unstable at three points: two runs of the
-same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
-precisely the part that a faster interconnect does \emph{not} shrink, that
-split determines break-even on a coherent link, and three points cannot fix it.
-Any interconnect comparison therefore needs the sweep run at ten host-tier
-counts or more; the curve below is the first step of that and still stops at
-six.
-
-\paragraph{A third reading, and the one we keep.} The two above share a defect
+\paragraph{The measurement we keep.} The superseded sweep shares a defect
 with the fit itself: all of them difference \emph{goodput} runs that still
 contain prefill, and the rider count they attribute cost to is the count
 \emph{offered}, not the count the system created. Measuring $\effo$ directly
