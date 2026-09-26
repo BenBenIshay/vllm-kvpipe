@@ -26,7 +26,11 @@ interconnect, but through the bandwidth crossover and the fixed cost of
 \S\ref{sec:model:omits}. This section is therefore a test of the mechanism and
 of the model's negative prediction, not of the positive one; a
 GH200-96 over NVLink-C2C is the substrate the positive claims require and those
-experiments are in progress. We measure the PCIe link ourselves at $25.1$\,GB/s. For C2C we use
+experiments are in progress. We measure the PCIe link ourselves at $25.1$\,GB/s for the per-layer bulk
+copy; the same sweep reports $24.95$ for a single layer and falls to
+$0.52$\,GB/s at 4\,KB granularity, which is why the transfer path issues runs
+rather than blocks (\S\ref{sec:impl:pool}).
+% src: paper/model/transfer_bw_a100.json @ 2bfc6ca5e For C2C we use
 an \emph{independent} measurement of the same part, $419$\,GB/s
 host-to-device~\cite{pie}, rather than the widely cited 900\,GB/s, which is
 bidirectional where a KV stream is not; we have not measured C2C.
@@ -80,7 +84,8 @@ relied on it was retracted for exactly that reason.
 
 \paragraph{Baselines.} Stock vLLM with all tiering disabled, which is also
 Pie's baseline and makes the two sets of numbers commensurable. We verify separately that our fork with the feature off matches the unmodified
-engine: across six interleaved runs on Qwen2.5-0.5B it is slower by $0.08\%$, less than the
+engine: across six interleaved runs on Qwen2.5-0.5B it is slower by $0.08\%$,
+% src: paper/data/baseline_integrity_20260912.log @ 5377be7c3 less than the
 spread within either arm. A baseline quietly slowed by our own additions would
 inflate every ratio reported here, and it would do so invisibly. Uniform offload at a matched byte budget represents the placement
 that Pie and DirectKV instantiate at their own granularities. Where a
@@ -268,7 +273,7 @@ multiplier has two: a bandwidth ratio $\Xlink/\BW$ and an amplifier
 $\HBM/\Ckv$. Testing the first needs two interconnect generations and we have
 one; testing the second needs one model at two weight precisions, which we have
 not run. What this section does establish is narrower and worth separating from
-the multiplier: the step-time model of Eq.~\ref{eq:step} holds across 54
+the multiplier: the step-time model of Eq.~\ref{eq:step} holds within each model across 41
 configurations, the mechanism is additive, and the cost of a host-tier request
 is decomposed on the substrate we have. The multiplier itself rests on that
 parameter fit plus the model's agreement with a published system's results
@@ -286,8 +291,9 @@ of the goodput sweep test that directly.
 part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
 $\times$1.03 in capacity --- barely anything once its riders are billed for the
 HBM bandwidth they consume. The second gate of \S\ref{sec:model:omits} then
-makes it a predicted \emph{negative}: charging $F$ and the unhidden residual
-gives $\times$0.78, and its $F^{*}$ is $-0.9$\,ms, meaning the residual alone
+makes it a predicted \emph{negative}: charging its own $F$ ($6.2$\,ms at 32
+layers) and the unhidden residual gives $\times$0.87, and its $F^{*}$ is
+$-0.9$\,ms, meaning the residual alone
 exceeds what its capacity buys. The prediction is therefore unusually strong ---
 8B should lose on \emph{any} implementation, however cheap the fixed cost.
 

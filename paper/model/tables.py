@@ -50,7 +50,7 @@ def gain_rows():
         C = HW.hbm - m.w - K.OVERHEAD
         out.append(dict(name=name, W=m.w / 1e9, C=C / 1e9, amp=HW.hbm / C,
                         T0=r["T0"], cap=r["cap_gain"], delta=r["delta_ms"],
-                        tput=r["gain_tput"],
+                        tput=r["gain_tput"], F=r["f_ms"],
                         fstar=(r["cap_gain"] - 1) * r["T0"] - r["delta_ms"]))
     return out
 
@@ -71,8 +71,8 @@ if __name__ == "__main__":
 
     print(f"\nTABLE 2 -- S={S}, {HW.n}, eta_o={K.ETA_O}, F={K.F_FIXED_MS} ms")
     print(f"  {'model':18}{'W':>7}{'C':>7}{'HBM/C':>7}{'ITL_0':>8}"
-          f"{'cap':>7}{'delta':>8}{'tput':>7}{'F*':>8}")
+          f"{'cap':>7}{'delta':>8}{'F':>8}{'tput':>7}{'F*':>8}")
     for r in rows:
         print(f"  {r['name']:18}{r['W']:6.1f}G{r['C']:6.1f}G{r['amp']:7.2f}"
-              f"{r['T0']:7.1f}ms{r['cap']:7.2f}{r['delta']:7.1f}ms{r['tput']:7.2f}"
+              f"{r['T0']:7.1f}ms{r['cap']:7.2f}{r['delta']:7.1f}ms{r['F']:7.1f}ms{r['tput']:7.2f}"
               f"{r['fstar']:+7.1f}ms")
