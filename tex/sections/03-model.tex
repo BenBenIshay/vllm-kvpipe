@@ -378,25 +378,14 @@ that compute is not the binding term.
 \subsection{A published result the model is consistent with}
 \label{sec:model:directkv}
 
-DirectKV~\cite{directkv} reports that on Llama-3.1-8B its zero-copy host-KV
-attention is \emph{slightly slower} than the HBM-resident SGLang baseline, and
-that it wins on OPT-13B and OPT-30B, where SGLang runs out of memory.
-
-Our amplifier offers an account of the ordering. Llama-3.1-8B's 16\,GB of
-weights leave $\Ckv \approx 76$\,GB of a 96\,GB part, so
-$\HBM/\Ckv \approx 1.26$ and there is little to buy; any overhead the mechanism
-carries then shows up as a net loss. OPT-30B's 60\,GB leave
-$\Ckv \approx 32$\,GB, tripling the amplifier.
-
-We put this no more strongly than that, for three reasons a reader will find
-anyway. First, Eq.~\ref{eq:gain} compares a \emph{mixture} against all-HBM,
-while DirectKV is all-host; our law does not predict that an all-host system
-beats an all-HBM one, and on its own terms it predicts the opposite. Second,
-their OPT wins are reported ``where SGLang OOMs'', and OPT uses multi-head
-attention with several times the KV bytes per token of a GQA model --- so the
-baseline may be failing because $S\btok$ is large rather than because weights
-are, and those are different axes. Third, OPT-13B has $\HBM/\Ckv$ close to the
-8B's and yet DirectKV wins on it, which our amplifier alone does not account
-for. The honest summary is that the model is \emph{consistent with} the
-direction of a two-point published ordering, which is weak evidence, and we do
-not rest the contribution on it.
+DirectKV~\cite{directkv} reports that its zero-copy host-KV attention is
+slightly slower than an HBM-resident SGLang baseline on Llama-3.1-8B and wins on
+OPT-13B and OPT-30B. Our amplifier offers an account of that ordering --- the 8B
+leaves $\HBM/\Ckv \approx 1.26$, so there is little to buy, where OPT-30B's
+60\,GB of weights triple it. We put it no more strongly than \emph{consistent
+with}: Eq.~\ref{eq:gain} compares a mixture against all-HBM while DirectKV is
+all-host, their OPT wins are reported where the baseline runs out of memory and
+OPT is multi-head attention with several times the KV bytes per token, and
+OPT-13B has an amplifier close to the 8B's yet they win on it.
+Appendix~\ref{app:directkv} gives the three objections in full. The contribution
+does not rest on this.
