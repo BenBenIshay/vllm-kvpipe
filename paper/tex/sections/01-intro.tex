@@ -100,7 +100,11 @@ reserve, gives $\Ckv = 26.5$\,GB; $\btok = 256$\,KiB, so a request at 8K holds
 2.15\,GB; $\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}; $\Xlink =
 419$\,GB/s measured on this part~\cite{pie}, not the 450 spec. These count
 \emph{capacity} --- how many requests fit, not how fast they are served, a
-difference \S\ref{sec:model:omits} shows is decisive.}
+difference \S\ref{sec:model:omits} shows is decisive. All three rows use the
+same $\mathrm{ITL}_0$, so the all-host row's link budget is computed over a step
+that includes reading an HBM pool that row sets to zero; self-consistently its
+step would be weights-only (21.8\,ms), giving 9.1\,GB and a batch of 4. The
+interior point is unaffected, and one step time keeps the rows comparable.}
 \label{tab:endpoints}
 \end{table}
 
