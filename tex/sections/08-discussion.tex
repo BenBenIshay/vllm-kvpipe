@@ -22,69 +22,54 @@ happens to win.
 \label{sec:discussion:general}
 
 Nothing in the design is specific to HBM-plus-DRAM or to one attention kernel.
-The system needs three things from a substrate: a memory that is larger and
-slower than the device's, a path to it whose bandwidth can be measured, and an
-attention implementation that can read a block table. Everything else --- how
-many requests to place on the slower tier, which ones, when to move them --- is
-derived at runtime from quantities the system measures itself.
+The system needs three things from a substrate: a memory larger and slower than
+the device's, a path to it whose bandwidth can be measured, and an attention
+implementation that can read a block table. A third tier --- CXL-attached
+memory, or NVMe --- adds a second budget and a second affinity threshold and
+leaves the structure unchanged. What does not survive is the hiding argument: a
+tier whose transfer cannot fit inside a layer's compute window is a capacity
+tier for idle requests, not a bandwidth tier for active ones, and
+Eq.~\ref{eq:gate} decides which it is. Similarly, a zero-copy kernel can replace
+our staging buffer through the same backend interface without touching the
+policy; the two are ordered by operating point rather than by quality
+(\S\ref{sec:discussion:coherence}).
 
-\paragraph{More than two tiers.} The placement rule ranks requests by a scalar
-affinity and the admission controller enforces a per-step byte budget on one
-link. A third tier (CXL-attached memory, or NVMe) adds a second budget and a
-second affinity threshold; the structure is unchanged, and the parameters that
-distinguish tiers --- achieved bandwidth, and the per-request bytes a step must
-move --- are already measured rather than configured. What does not survive
-unchanged is the hiding argument: a tier whose transfer cannot fit inside a
-layer's compute window must be treated as a capacity tier for idle requests
-rather than a bandwidth tier for active ones, and Eq.~\ref{eq:gate} is what
-decides which it is.
-
-\paragraph{Different attention capabilities.} Our host tier stages KV through a
-rolling device buffer. A zero-copy kernel that reads host memory directly
-removes that buffer, and our backend interface exists so it can be substituted
-without touching the policy. The two are not ordered by quality but by
-operating point (\S\ref{sec:discussion:coherence}): staging buys a layer-sized
-hiding window at the cost of two extra device-memory passes, and which wins
-depends on whether the per-step transfer fits inside a layer's compute. Because
-the offload ratio here is chosen by admission rather than fixed by the design,
-that choice is ours to make from a measurement rather than a constraint we
-inherit.
-
-\paragraph{What must be recalibrated, and what must not.} Moving to a new
-platform requires re-measuring four quantities: achieved interconnect
-bandwidth, achieved device-memory bandwidth for weights and for paged KV, and
-the fixed per-step cost of the host path. The closed-form rules do not change;
-their inputs do. This is why we report the fixed cost separately from the
-per-byte cost rather than as a single slope --- only one of the two shrinks
-when the interconnect improves, and a system calibrated on their sum will
-mispredict its own behaviour on the next generation of hardware.
+Moving to a new platform requires re-measuring four quantities: achieved
+interconnect bandwidth, achieved device bandwidth for weights and for paged KV,
+and the fixed per-step cost. The rules do not change; their inputs do. This is
+why we report the fixed cost separately from the per-byte cost rather than as a
+single slope --- only one of the two shrinks when the interconnect improves, and
+a system calibrated on their sum will mispredict itself on the next generation.
 
 \subsection{Anti-scaling}
 
 The gain shrinks as device memory grows, and for our primary model it does not
 merely shrink: Qwen2.5-32B on a 144\,GB device leaves $\Ckv \approx 73$\,GB, at
-which point the workload is no longer capacity-bound and the applicability gate
-stops admitting entirely. This is the same structural decay we identify in
-compute-offload systems, whose advantage fades as GPUs strengthen, and it would
-be dishonest to cite that against them without stating it about ourselves.
+which point the workload is no longer capacity-bound and the gate stops
+admitting entirely. Both factors of Eq.~\ref{eq:gain} trend the same way across
+a hardware generation, since HBM bandwidth and capacity have grown faster than
+host-to-device bandwidth. This is the same structural decay we identify in
+compute-offload systems (\S\ref{sec:related}), and it would be dishonest to cite
+that against them without stating it about ourselves.
 
-Two things bear on the trend. Weights are growing faster than device memory
---- mixture-of-experts and 405B-class models push $\HBM/\Ckv$ up, not down ---
-so the configurations where the technique pays are becoming more common rather
-than less. And the gate is the deployment rule: a system that switches itself
-off where it cannot help is behaving correctly, not failing.
+What bears the other way is model growth: 405B-class models push $\HBM/\Ckv$ up,
+not down, so the configurations where the technique pays are becoming more common
+even as each device generation makes them rarer. We do \emph{not} claim
+mixture-of-experts models as part of that trend, although their weight footprints
+are large: Eq.~\ref{eq:step} charges every weight once per step, which is false
+for MoE, so our law does not apply to them without a rederivation we have not
+done. And the gate is itself the deployment rule --- a system that switches
+itself off where it cannot help is behaving correctly.
 
 \subsection{Composition with orthogonal techniques}
 
 Methods that \emph{shrink} the KV cache compose with a system that
-\emph{relocates} it. Quantizing KV scales the device-resident cohort and the
-affordable host cohort together, leaving their ratio --- and so the value of a
-second tier --- unchanged. Quantizing \emph{weights} does the opposite: it
-returns memory to $\Ckv$ and removes the amplifier the technique depends on,
-which is the same mechanism by which a larger device reduces the gain.
-Sparse and low-rank methods reduce what must be stored at some cost in
-exactness; a tier moves bytes without altering them, so the two address
-different axes and could be combined.
+\emph{relocates} it. Quantizing KV scales both cohorts together, leaving their
+ratio --- and so the value of a second tier --- unchanged. Quantizing
+\emph{weights} does the opposite: it returns memory to $\Ckv$ and removes the
+amplifier, by the same mechanism through which a larger device reduces the gain.
+Sparse and low-rank methods trade exactness for size, where a tier moves bytes
+without altering them, so the two address different axes and could be combined.
 
 \subsection{Limitations}
 
