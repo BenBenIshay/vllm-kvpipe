@@ -24,14 +24,15 @@ explicit, and --- counter to intuition --- context length cancels, so the value
 tracks how much of memory the weights consumed rather than how long the
 requests are. A second gate follows from charging the fixed per-step cost of
 using a host path at all, and it is the binding one: at the cost we measure,
-most configurations the capacity multiplier likes still lose.
+\emph{every} configuration the capacity multiplier likes still loses on
+throughput, so we report what that cost would have to be instead.
 
 We implement the design in vLLM and evaluate it on PCIe, the regime the model
 identifies as unfavourable; the coherent-interconnect measurements the model
 says are the favourable ones are in progress and we state them as predictions. Host-tier requests are \emph{additive} --- peak concurrency rises
-from 8 to 48 against a fixed KV pool --- while a direct measurement of a rider's
-step-time cost puts $\effo$ at $0.62$, well short of the perfect overlap the
-budget assumes. On PCIe the economics still do not close, which our
+from 8 to 48 against a fixed KV pool --- while a direct measurement puts the overlap efficiency
+$\effo$ at $0.62$ and the fixed per-step cost at $12.3$\,ms --- the two
+quantities the second gate turns on. On PCIe the economics still do not close, which our
 own model predicts and we report as a validated negative that bounds the
 technique. The decision the system actually makes is \emph{how many} requests
 to offload, taken from a measured per-step transfer budget rather than a
