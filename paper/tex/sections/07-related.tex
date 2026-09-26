@@ -22,50 +22,26 @@ assumed.
 
 \paragraph{Mechanisms for host-resident KV.} DirectKV~\cite{directkv}
 contributes zero-copy GPU attention over CPU-resident KV on coherent
-GH200/GB200 interconnects, through CPU-memory-aware tiling, warp pipelining and
-kernel fusion, eliminating the GPU staging buffer entirely. It is the state of
-the art in \emph{mechanism}, and it is a competing one rather than a substrate
-for ours.
+interconnects, eliminating the staging buffer. It is the state of the art in
+\emph{mechanism}, and a competing one rather than a substrate for ours: their
+kernel reads host memory \emph{during} the attention that needs it, where we
+prefetch layer $\ell{+}1$ while layer $\ell$ computes. They pay no device memory
+and get no overlap; we pay one $k$-window and overlap $\effo$ of the transfer,
+measured at $0.62$ on PCIe. Neither dominates on paper, and settling it needs
+both on one machine --- which needs their SM90a-only kernel, so it is future
+work rather than a result we report.
 
-\textbf{The staging buffer they remove is the thing that makes hiding
-possible.} Their kernel reads host memory \emph{during} the attention that
-needs it, so the transfer is inside the operation rather than alongside it;
-ours prefetches layer $\ell{+}1$ into a rolling device buffer while layer
-$\ell$ computes. The two designs therefore trade in opposite directions. They
-pay no device memory and get no overlap; we pay one $k$-window of device memory
-and overlap $\effo$ of the transfer, which on PCIe we measure at $0.62$ --- a
-real window, but well short of all of it. Neither dominates on paper, and
-settling it needs both mechanisms on one machine, which requires their
-SM90a-only kernel and is therefore future work rather than a result we report. It also means a host-tier
-request cannot simply be moved onto their kernel and remain what we call a
-rider: without a prefetch window there is nothing left to hide, and such a
-request pays the full transfer inside its own step.\footnote{Their architecture
-would admit a mixture --- their \texttt{forward\_decode} already dispatches two
-attention implementations over disjoint subsets of one batch --- but the
-resulting system is a third design point, selective admission \emph{without}
-hiding, not ours built on theirs.}
-
-What their \S8.1 does establish is that the policy dimension is untouched:
-``DirectKV does not change scheduling, batching, or KV-management policies;
-instead, it provides an efficient execution path for CPU-resident KV
-blocks\ldots while leaving the scheduler, model execution graph, and frontend
-API unchanged.'' Whichever mechanism proves faster, the question of \emph{how
-many} requests to serve from the host is left open by it, and that is where
-this paper sits.
-
-It is also worth recording that DirectKV's own analysis agrees with our
-measured PCIe result: they conclude that ``on PCIe, DirectKV should be viewed
-primarily as a capacity-extension mechanism\ldots its performance advantage
-remains bounded by CPU--GPU interconnect bandwidth,'' and report NVLink-C2C
-reducing attention latency by up to $4.2\times$ relative to PCIe. Our
-\S\ref{sec:eval} finds the same boundary from the scheduling side. Their
-evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96, so it does not
-overlap the models we evaluate, and it does not include a 70B-class
-configuration --- which our capacity model identifies as the most favourable
-point of all. We do not evaluate one either (\S\ref{sec:eval:setup} says why: at
-a capacity-limited batch of about seven, one request is 14\% and no result could
-separate an effect from a rounding artifact), so the most favourable point of
-the model's own curve is measured by nobody yet.
+Two things their paper establishes matter here. Its \S8.1 states that the policy
+dimension is untouched: DirectKV ``does not change scheduling, batching, or
+KV-management policies.'' And its own analysis reaches our PCIe conclusion from
+the kernel side --- ``on PCIe, DirectKV should be viewed primarily as a
+capacity-extension mechanism'' --- while reporting NVLink-C2C cutting attention
+latency up to $4.2\times$ relative to PCIe. Neither their evaluation nor ours
+covers a 70B-class configuration, which our own model identifies as the most
+favourable point of its curve (\S\ref{sec:eval:setup} says why we skip it), so
+that point is measured by nobody yet. Appendix~\ref{app:related} gives the
+consequence for composition: a host-tier request moved onto their kernel stops
+being a rider, since without a prefetch window there is nothing left to hide.
 
 \paragraph{The closest prior mechanism: partitioning by layer.}
 Pie~\cite{pie} is the nearest neighbour of our transfer path and deserves a
