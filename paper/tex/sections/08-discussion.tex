@@ -116,51 +116,27 @@ NVLink-C2C. Whether the argument carries to CXL-attached memory or to other
 vendors' coherent links depends on the same three quantities
 (\S\ref{sec:discussion:general}), but we have measured none of them there.
 
-\subsection{Staging versus zero-copy: two hiding windows}
+\subsection{Staging versus zero-copy}
 \label{sec:discussion:coherence}
 
-Our host tier stages: a layer's KV is copied from a pinned host mirror into a
-device rolling slot before attention reads it. DirectKV's kernel instead reads
-CPU-resident KV directly, with no staging buffer. We built on a staged backend
-for two practical reasons --- it runs on PCIe as well as on a coherent link,
-which is what let us measure the negative regime at all, and their kernel is
-SM90a-only with no build on our development hardware. Our results are therefore
-\emph{conservative with respect to mechanism}: a better transfer path would
-raise them.
+Our host tier stages KV through a device rolling slot; DirectKV's kernel reads
+CPU-resident KV directly. We built on a staged backend because it runs on PCIe
+as well as on a coherent link --- which is what let us measure the negative
+regime at all --- and because their kernel is SM90a-only. Our results are
+therefore \emph{conservative with respect to mechanism}.
 
-It is still tempting to read the buffer as a tax that zero-copy removes, and
-that reading is wrong in a way that decides which mechanism belongs where. The
-two designs hide the transfer behind different things. A zero-copy kernel
-overlaps its fetch with the arithmetic of the attention tile it is already
-computing --- a window of one tile, and decode attention's intensity is the GQA
-group size, 4--8 FLOP/byte against a balance point near 100, so there is almost
-no arithmetic there to hide behind. Staging overlaps the fetch for layer
-$\ell{+}1$ with the entire compute of layer $\ell$, including the QKV, output
-and MLP projections, which are weight-bound and long --- 21 of a 34\,ms step for
-Qwen2.5-32B by the projection of \S\ref{sec:model}. \textbf{The staging buffer
-buys a layer-sized hiding window instead of a tile-sized one.}
-
-What it costs is two extra HBM passes per byte and the slot's own footprint, so
-the comparison is a crossover in offload ratio rather than a dominance. When the
-per-step transfer fits inside the layer compute window, staging hides it and pays
-only the extra HBM traffic, which at $\Xlink/\BW \approx 0.105$ is a small
-fraction of something already hidden; when the transfer exceeds that window it is
-exposed under either design, and zero-copy wins by avoiding the passes. This is
-why the two systems make opposite choices and both are right: DirectKV places
-100\% of KV on the host, so its per-step transfer is the whole working set and can
-never fit a compute window, while we place a selected subset and size it to fit
-by construction (\S\ref{sec:design:admission}). \textbf{The offload ratio is the
-quantity our policy controls}, so the choice of mechanism follows from the policy
-rather than constraining it.
-
-A coherent link would help one cost that is not about hiding. Each step projects
-new $K,V$ for every host-tier request and we copy them device-to-host to keep the
-mirror authoritative; mapped host memory would let the kernel write them in
-place, as DirectKV's Alg.~3 does. The saving is small in time --- an asynchronous
-version measured 1.6\,ms --- but it removes a class of state rather than an
-amount of time, and that state is where migration bugs live. What coherence does
-not buy is a cheaper transport: it is a guarantee about visibility, and the same
-bytes still cross the link at link bandwidth when the kernel touches them.
+The two are ordered by operating point rather than by quality, and the ordering
+matters for where each belongs. Staging overlaps a layer's fetch with the whole
+of the previous layer's compute; a zero-copy kernel overlaps it only with the
+attention tile it is already computing, which at decode's arithmetic intensity
+is almost no compute at all. Staging buys a layer-sized hiding window and pays
+two extra HBM passes for it, so it wins while the per-step transfer fits inside
+a layer's compute and loses once the transfer exceeds it. That is why DirectKV,
+which places 100\% of KV on the host and therefore can never fit a compute
+window, is right to use zero-copy, and why we --- sizing a selected subset to fit
+by construction --- are right to stage. Appendix~\ref{app:coherence} works the
+crossover through and notes the one cost a coherent link would remove
+regardless: the device-to-host write of each step's new $K,V$.
 
 \subsection{Placement by hardware, policy by scheduler}
 
