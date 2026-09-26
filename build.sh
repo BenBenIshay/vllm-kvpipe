@@ -64,6 +64,16 @@ done < <(grep -rn --include='*.tex' '% src:' "$PAPER_DIR/tex" 2>/dev/null)
 mapfile -t marks < <(grep -rn --include='*.tex' '\\todo{\|\\needsgh{' "$PAPER_DIR/tex" 2>/dev/null | head -10)
 [[ ${#marks[@]} -gt 0 ]] && note "UNRESOLVED DRAFT MARKER" "${marks[@]}"
 
+# The projection tables are COMPUTED, not measured, so they can drift out of
+# agreement with model/killer_v2.py silently. Fail loudly instead.
+if command -v python3 >/dev/null && [[ -f "$PAPER_DIR/model/check_tables.py" ]]; then
+  if ! (cd "$PAPER_DIR/model" && python3 check_tables.py > "$BUILD/tables.out" 2>&1); then
+    note "TABLES DISAGREE WITH THE GENERATOR" \
+         "$(grep -E '^\s+(FAIL|  -)' "$BUILD/tables.out" | head -8)" \
+         "full report: $BUILD/tables.out"
+  fi
+fi
+
 [[ $src_status -eq 1 ]] && status=1
 
 overfull="$(grep -c "Overfull \\\\hbox" compile.out 2>/dev/null || echo 0)"
