@@ -46,7 +46,10 @@ class HW:
 GH200 = HW("GH200-96",  96, 4000, 450, 495e12)      # spec, unidirectional
 GH200M = HW("GH200-96", 96, 4000, 419, 495e12)      # measured H2D (Pie, same part)
 GH200H = HW("GH200-144", 141, 4800, 450, 495e12)
-A100 = HW("A100-80",    80, 2039,  25, 312e12)
+# 1935 GB/s is the MEASURED peak recorded in paper/model/p4_*.json. The 2039
+# spec figure was used here until 2026-09-26 and is what made the A100
+# full-pool projections in sections 2 and 3 disagree with each other.
+A100 = HW("A100-80",    80, 1935,  25, 312e12)
 H100 = HW("H100-80(PCIe5)", 80, 3350, 55, 495e12)
 
 
@@ -156,7 +159,13 @@ def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
         n = best + max(B_cap, 1.0)/64
         B_res = max(0.0, C/u - n*f)
         T = step_ms(m, hw, S, B_res, n, stage=stage, f=f)
-        if T <= slo_ms and n*u <= (T/1e3)*hw.x:
+        # The link budget must be sized on the RIDER-FREE step T0, not on T.
+        # Using T -- which already contains the riders -- lets each admitted
+        # rider enlarge the budget that admits the next, and pushed the 70B row
+        # above its own Eq. 6 upper bound. It is also the circularity
+        # 04-design forbids: "the step time comes from steps carrying no
+        # host-tier traffic, since the running latency average is circular".
+        if T <= slo_ms and n*u <= (T0/1e3)*hw.x:
             best = n
         else:
             break

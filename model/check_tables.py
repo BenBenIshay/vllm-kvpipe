@@ -36,6 +36,28 @@ def present(value, filename, label):
         failures.append(label)
 
 
+def at_site(filename, anchor, value, label, window=400):
+    """Assert `value` appears WITHIN `window` chars of `anchor`.
+
+    A plain "is this string in the file" test is not enough: a stale number can
+    sit at one site while the correct one sits at another, and the file-wide
+    test passes. Round 3 of review found four headline numbers that had drifted
+    that way, all of them the pre-2026-09-26 value, so every derived number
+    quoted in prose is now pinned to its own sentence.
+    """
+    body = (TEX / filename).read_text()
+    i = body.find(anchor)
+    if i < 0:
+        print(f"  FAIL {label}: anchor {anchor!r} not in {filename}")
+        failures.append(label)
+        return
+    window_text = body[i:i + window]
+    ok = value in window_text
+    print(f"  {'ok  ' if ok else 'FAIL'} {label}: {value!r} near {anchor[:34]!r}")
+    if not ok:
+        failures.append(label)
+
+
 print("Table 1 (01-intro, tab:endpoints)")
 e = tables.endpoints()
 for want, got, label in [(26.5, e["C"] / 1e9, "C_kv GB"),
@@ -52,7 +74,7 @@ print("\nTable 2 (03-model, tab:gain)")
 paper = {"Llama-8B  fp16": (1.03, 0.78, -0.9),
          "Qwen-32B  fp8":  (1.09, 0.78, -1.3),
          "Qwen-32B  fp16": (1.45, 0.85,  3.8),
-         "Llama-70B fp8":  (1.73, 0.97, 10.6)}
+         "Llama-70B fp8":  (1.67, 0.96,  9.7)}
 for r in tables.gain_rows():
     cap, tput, fstar = paper[r["name"]]
     check(f"{r['name']} capacity", r["cap"], cap)
@@ -74,9 +96,9 @@ def cap_at(eff_w=None, kv_scale=1.0, wgb=65.53):
     K.EFF_W, K.EFF_KV_CURVE = ow, oc
     return r["cap_gain"]
 for label, got, want in [("eta_kv -20%", cap_at(kv_scale=0.8), 1.31),
-                         ("eta_kv +20%", cap_at(kv_scale=1.2), 1.64),
+                         ("eta_kv +20%", cap_at(kv_scale=1.2), 1.47),
                          ("eta_w 0.70", cap_at(eff_w=0.70), 1.41),
-                         ("eta_w 0.80", cap_at(eff_w=0.80), 1.50),
+                         ("eta_w 0.80", cap_at(eff_w=0.80), 1.47),
                          ("W = 60 GB", cap_at(wgb=60.0), 1.34),
                          ("W = 68 GB", cap_at(wgb=68.0), 1.53)]:
     check(label, got, want)
@@ -102,6 +124,32 @@ for pat, allowed, label in [
     print(f"  {'ok  ' if not bad else 'FAIL'} {label}: {sorted(seen)}")
     if bad:
         failures.append(f"{label} unexpected: {sorted(bad)}")
+
+print("\nA100 full-pool projections (2 and 3) -- were under no assertion at all")
+A = K.A100
+for name, want_itl, want_w in [("Llama-8B  fp16", 78.4, 11.1), ("Qwen-32B  fp16", 53.2, 45.2)]:
+    m = tables.model(name)
+    C = A.hbm - m.w - K.OVERHEAD
+    check(f"{name} A100 full-pool ITL", K.step_ms(m, A, 4096, C / (m.k * 4096)), want_itl)
+    check(f"{name} A100 weight term", m.w / (A.bw * K.EFF_W) * 1e3, want_w)
+at_site("02-background.tex", "spends $11.1$ of $78$", "14\\% weights", "2: the 8B split")
+at_site("02-background.tex", "Qwen2.5-32B spends $45.2$ of $53$", "85\\% weights", "2: the 32B split")
+
+print("\nDerived numbers quoted in prose, pinned to their own sentence")
+SITES = [
+    ("03-model.tex", "capacity column ($\\times$", "1.45", "3: capacity column quoted in prose"),
+    ("03-model.tex", "the capacity gains of", "1.67", "3.5: top of the capacity range"),
+    ("03-model.tex", "throughput ratios of", "0.96", "3.5: 70B throughput ratio"),
+    ("03-model.tex", "Equation~\\ref{eq:fstar} gives", "-0.9", "3.5: F* for Llama-8B"),
+    ("03-model.tex", "Qwen2.5-32B fp16 and $+", "9.7", "3.5: F* for Llama-70B"),
+    ("03-model.tex", "needs $F$ to fall by", "21", "3.5: required reduction, 70B"),
+    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.78", "6.6: 8B throughput"),
+    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "-0.9", "6.6: 8B F*"),
+    ("06-evaluation.tex", "$F$ falling below the $F^{*} = ", "3.8", "6.7: F* for the primary model"),
+    ("08-discussion.tex", "at $\\effo = 1$ the four rows", "1.22", "8.2: eta_o=1 sensitivity"),
+]
+for filename, anchor, value, label in SITES:
+    at_site(filename, anchor, value, label)
 
 print()
 if failures:

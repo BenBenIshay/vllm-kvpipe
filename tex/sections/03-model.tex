@@ -85,29 +85,38 @@ on Qwen2.5-32B --- plus 13 three-repeat points drawn from the same grid.
 
 Within each model, ITL is linear in $B\cdot S$: $R^2 = 0.975$ for Llama-3.1-8B
 with residuals unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$,
-$-0.09$, $+0.00$\,ms), and $R^2 = 0.92$ for Qwen2.5-32B. $B{=}16,S{=}4096$ and
+$-0.09$, $+0.00$\,ms), and $R^2 = 0.92$ for Qwen2.5-32B. Unbiased in $S$ is the
+weaker statement it sounds like: grouped by KV \emph{magnitude} the same
+residuals are a clean U, from $+2$\,ms below 1\,GB through $-6.6$ in the middle
+to $+6$\,ms (8\%) at the largest points. That curvature is not noise --- it is
+the $\effkv$ degradation of \S\ref{sec:model:params} showing through a linear
+fit, which is why we use the measured $\effkv$ curve rather than the regression
+for anything that matters. $B{=}16,S{=}4096$ and
 $B{=}8,S{=}8192$ both measure $17.17$\,ms. \textbf{Pooling the two models is
 meaningless and we do not report it} --- the fit across both is $R^2 = 0.19$,
 because Eq.~\ref{eq:step}'s intercept is model-dependent, which is the whole
 content of \S\ref{sec:model:modeldep}.
 
 That intercept is the sharper test, because Eq.~\ref{eq:step} predicts it rather
-than fitting it. The fitted intercepts are $9.4$\,ms for Llama-3.1-8B and
-$43.6$\,ms for Qwen2.5-32B; $W/(\BW\effw)$ at the measured peak of
-$1935$\,GB/s and $\effw = 0.75$ predicts $11.1$ and $45.2$\,ms. Agreement is
-within $1.7$\,ms across a $4\times$ range of weight footprint, and the two
-errors have \emph{opposite} signs, which is what a shared miscalibration would
-not produce.
+than fitting it. Predicting it needs $\effw$, which we extract from the $B{=}1$
+points after subtracting their KV term --- small but not negligible, 1.6\% of
+the step at 2K context and 6.0\% at 8K, and leaving it in produces a spurious
+drift in $\effw$ with context. Subtracted, $\effw$ is stable within each model
+(0.741, 0.736, 0.738 for Llama-3.1-8B across 2K--8K; 0.778, 0.777 for
+Qwen2.5-32B) and differs 5.3\% between them.
 
-The residual is mostly one thing, and it is worth reporting because it
-contradicts a simplification we make elsewhere. \textbf{$\effw$ is not a single
-constant}: the $B{=}1$ points give $0.712$ for Llama-3.1-8B and $0.773$ for
-Qwen2.5-32B, an 8.6\% spread. Using each model's own value the predictions move
-to $11.7$ and $43.8$\,ms, which improves Qwen to $0.2$\,ms and worsens Llama to
-$2.3$. So the single-$\effw$ approximation is the better predictor of the two,
-and we keep it while recording that it is an approximation across models rather
-than a measured constant --- Appendix~\ref{app:params} gives the per-model
-figures.
+Against those values Eq.~\ref{eq:step} predicts intercepts of $11.2$ and
+$43.6$\,ms where the regressions fit $9.4$ and $43.6$. \textbf{The decomposition
+is exact for Qwen2.5-32B --- within $0.01$\,ms --- and wrong by $1.9$\,ms, or
+20\%, for Llama-3.1-8B.} We report the split rather than the average because the
+average would hide it: a single $\effw = 0.75$ gives $11.1$ and $45.2$\,ms, both
+overshooting, which looks like uniform miscalibration and is not.
+
+The 8B gap is the model's clearest failure on the data we have. Its most likely
+source is that Eq.~\ref{eq:step} charges weights and KV at efficiencies fitted
+in separate regimes, and an 8B's step is 87\% KV (\S\ref{sec:background}), so
+almost none of it is the term the intercept isolates --- which is also why the
+8B is the row the projections should be trusted least on.
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
 We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
 with identical prompts in both runs, so prefill and warmup cancel; context
@@ -185,7 +194,7 @@ device can hold, not requests per second it can serve. Two effects separate the
 two, and \S\ref{sec:model:omits} charges both. Each rider costs $k/L$ of a
 resident's blocks for the rolling window it streams into, so the resident cohort
 shrinks slightly as the host cohort grows --- which is why
-Table~\ref{tab:gain}'s capacity column ($\times$1.48 for Qwen2.5-32B fp16) sits
+Table~\ref{tab:gain}'s capacity column ($\times$1.45 for Qwen2.5-32B fp16) sits
 below a hand recomputation of Eq.~\ref{eq:gain} ($\times$1.54). And the unhidden
 fraction $(1-\effo)$ of every rider's transfer lands on the step. Neither is
 negligible, and the second is what decides the paper.
@@ -200,7 +209,7 @@ Model (GH200-96) & weights & $\Ckv$ & $\HBM/\Ckv$ & ITL$_0$ & capacity & tput \\
 Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & $\times$1.03 & $\times$0.78 \\
 Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & $\times$1.09 & $\times$0.78 \\
 Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & $\times$1.45 & $\times$0.85 \\
-Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.73 & $\times$0.97 \\
+Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & $\times$1.67 & $\times$0.96 \\
 \bottomrule
 \end{tabular}
 \caption{\emph{All rows are projections}, not measurements. A second memory
@@ -212,7 +221,7 @@ $B_{\mathrm{tot}}/B_0$, charging both the $k/L$ of a resident's blocks each
 rider displaces at $k{=}4$ \emph{and} the two HBM passes its KV makes per step
 (the link writes it into the slot, attention reads it out). \emph{tput} is
 Eq.~\ref{eq:gain-tput}, which additionally charges $F = 12.3$\,ms and the
-unhidden residual $\Delta$ (2--13\,ms across these rows). \textbf{Every row
+unhidden residual $\Delta$ (2.2--12.3\,ms across these rows). \textbf{Every row
 loses on tput while every row gains on capacity}: that gap, not the multiplier,
 is the paper's result, and \S\ref{sec:model:omits} says what would close it.
 Charging the HBM passes is what separates the two small-amplifier rows from the
@@ -223,7 +232,15 @@ measured checkpoints except Qwen-32B fp8, for which we hold no checkpoint and
 quote the nominal size; the fp16 row measures 65.5\,GB against a nominal 64.0,
 so the fp8 row is likely optimistic by a similar margin. \textbf{The two
 Qwen-32B rows differ only in weight precision}, which isolates $\HBM/\Ckv$ from
-every other architectural variable.}
+every other architectural variable.
+\textbf{All rows are computed at a 50\,ms latency target, and for three of the
+four that target --- not the interconnect --- is what caps the host cohort.}
+Only Llama-70B fp8 is link-bound here, using 14.8\,GB of a 13.8\,GB budget; the
+other three stop well short of theirs (2.4 of 19.5, 5.6 of 18.1, 12.8 of 14.2)
+because admitting another rider would breach 50\,ms. At an 80\,ms target the
+capacity column reads $\times$1.37, $\times$1.50, $\times$1.88 and $\times$1.89.
+The multiplier of Eq.~\ref{eq:gain} is the \emph{interconnect} bound and an
+upper bound on these rows, not a description of them.}
 % src: paper/model/tables.py @ this commit (wraps model/killer_v2.py:analyze,
 % S=8192, GH200-96 at the measured 419 GB/s, slo=50 ms, stage=0, eta_o=0.62)
 \label{tab:gain}
@@ -252,21 +269,22 @@ removes its headroom, while quantizing \emph{KV} scales both cohorts together
 and composes.
 
 \paragraph{What is and is not held out.} $\effw$ is calibrated on the $B{=}1$
-points, where the KV term is negligible, and $\effkv$ on sub-capacity working
+points, with their KV term subtracted, and $\effkv$ on sub-capacity working
 sets, so the two come from disjoint parts of the same sweeps. The full-pool step
 times above are \emph{not} an independent check on them --- they are computed
 from those same fits, so comparing Eq.~\ref{eq:step} against them would be
-circular and we do not. The genuine out-of-sample test is the intercept
-recovery of \S\ref{sec:model:cancel}: $\effw$ fitted at $B{=}1$ predicts the
-intercept of a regression over the whole grid, on both models, to within
-$1.1$\,ms. Measuring a real full-pool step on a device large enough to hold one
-would be the stronger test, and we have not run it.
+circular and we do not. The one out-of-sample test we have is the intercept
+recovery of \S\ref{sec:model:cancel}, and it passes on one model of two:
+exactly on Qwen2.5-32B, and 20\% high on Llama-3.1-8B. Measuring a real
+full-pool step on a device large enough to hold one would be the stronger test,
+and we have not run it.
 
 Several of these parameters are measured with error, so it is worth asking
 which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
 8K --- where Table~\ref{tab:gain} reads $\times1.45$ --- $\effw$ over 0.70--0.80
-barely moves it, spanning $\times1.41$--$\times1.50$. \textbf{$\effkv$ is a
-different matter}: $\pm20\%$ spans $\times1.31$--$\times1.64$. Charging the
+barely moves it, spanning $\times1.41$--$\times1.47$. \textbf{$\effkv$ is a
+different matter}: $\pm20\%$ spans $\times1.31$--$\times1.47$, and the downside
+is the larger half. Charging the
 rider's HBM passes is what made it so, because $\effkv$ now prices the rider
 traffic as well as the resident cohort's, and it is the one parameter a new
 kernel generation moves. The reason is structural --- the gain depends on a
@@ -297,15 +315,16 @@ transfer budget, and lowers the predicted gain.
 Equation~\ref{eq:gain} counts requests. A serving system is paid in requests
 \emph{per second}, and the two differ by a term the gain law does not carry: a
 fixed per-step cost $F$ for using the host path at all, independent of how many
-riders use it. It is not small: $F = 12.3$\,ms against a $54$\,ms step on A100.
-Two independent routes give that number, which matters because one of them comes
-from a fit \S\ref{sec:eval:cost} later rejects. The intercept of the rider sweep
-puts it at $9.6$--$12.3$\,ms depending on the run; counting operations puts it
-at $640$ extra kernel launches per step --- about ten per layer across 64
-layers at $0.19$\,ms per layer, so $12.2$\,ms (\S\ref{sec:impl:cost}). The two
-agree to within $0.1$\,ms, and we carry $F = 12.3$\,ms throughout; the
-launch-count derivation is what makes it defensible, since it does not depend on
-a fit \S\ref{sec:eval:cost} rejects. Being
+riders use it. It is not small: we carry $F = 12.3$\,ms against a $54$\,ms step
+on A100, and its uncertainty deserves stating because the paper's result turns
+on it. The value comes from the intercept of the rider sweep, which two runs of
+the same sweep put at $9.6$ and $12.3$\,ms --- a $2.7$\,ms spread we have not
+narrowed. An operator trace independently locates \emph{where} the cost is,
+about $640$ extra kernel launches per step across 64 layers
+(\S\ref{sec:impl:cost}), which is why we believe it is per-layer issue
+structure rather than an artifact; it does not independently fix the
+\emph{magnitude}. So $F = 12.3$ is the pessimistic end of a range whose other
+end is $9.6$, and $F^{*}$ below should be read against both. Being
 launch-bound rather than bandwidth-bound, a faster link does not shrink it. Charging it gives the throughput form
 %
 \begin{equation}
@@ -322,8 +341,8 @@ exceeds the fixed-cost penalty, that is when
 $B_{\mathrm{off}}/B_{\mathrm{cap}} > (F + \Delta)/\mathrm{ITL}_0$.
 
 \textbf{Applied to Table~\ref{tab:gain}, this gate closes every row.} At the
-measured $F$, the capacity gains of $\times$1.03 to $\times$1.73 become
-throughput ratios of $\times$0.78, $\times$0.78, $\times$0.85 and $\times$0.97.
+measured $F$, the capacity gains of $\times$1.03 to $\times$1.67 become
+throughput ratios of $\times$0.78, $\times$0.78, $\times$0.85 and $\times$0.96.
 Not one configuration pays, including the 70B that the capacity model likes
 most. We report that rather than tune around it, because the shape of the result
 is more useful than its sign: inverting Eq.~\ref{eq:gain-tput} gives the fixed
@@ -337,15 +356,15 @@ F^{*} \;=\; \Big(\tfrac{B_{\mathrm{tot}}}{B_0} - 1\Big)\mathrm{ITL}_0 - \Delta,
 Equation~\ref{eq:fstar} gives $-0.9$ and $-1.3$\,ms for the two small-amplifier
 rows --- negative, meaning $\Delta$ alone already exceeds what their capacity
 buys, so no implementation effort rescues them --- and $+3.8$\,ms for
-Qwen2.5-32B fp16 and $+10.6$\,ms for Llama-70B fp8.
+Qwen2.5-32B fp16 and $+9.7$\,ms for Llama-70B fp8.
 
 So the paper's positive claim reduces to one falsifiable number. Against a
-measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 14\% and the
-32B by a factor of three. \textbf{Measuring $F$ on a coherent link is therefore
+measured $F = 12.3$\,ms, the 70B configuration needs $F$ to fall by 21\% and the
+32B by 69\%. \textbf{Measuring $F$ on a coherent link is therefore
 the first experiment we ask of one, ahead of measuring its bandwidth} --- $F$ is
 launch-bound rather than bandwidth-bound, so a faster interconnect does not touch
 it, but it scales with the host CPU and the layer count, and a Grace host is not
-the A100 node's host. If $F \ge 10.6$\,ms there, the technique does not pay
+the A100 node's host. If $F \ge 9.7$\,ms there, the technique does not pay
 anywhere in this table and we will say so.
 
 Equation~\ref{eq:gain} also omits four smaller terms, listed so that a reader
@@ -373,6 +392,12 @@ Capacity binds only when the ITL SLO exceeds the full-pool ITL:
 \mathrm{SLO} \;>\; \frac{W}{\BW\,\effw} + \frac{\Ckv}{\BW\,\effkv}.
 \end{equation}
 %
+The gate is stated as a binary --- above the full-pool step time the technique
+applies, below it the technique does not --- but its effect on the host cohort is
+continuous. A target only slightly above $\mathrm{ITL}_0$ leaves room for very
+few riders whatever the link delivers, which is why Table~\ref{tab:gain}'s rows
+are SLO-bound rather than link-bound at 50\,ms.
+
 Below the gate the scheduler is already refusing requests that HBM could hold,
 because admitting them would break latency --- the system is latency-limited,
 not capacity-limited, and offloading is then strictly harmful. Following (b),
@@ -392,7 +417,10 @@ Both efficiencies in Eq.~\ref{eq:step} are measured on A100-80 across 41
 single-shot configurations on two models. $\effw$, the weight-read efficiency,
 is stable at $0.75$ of peak. $\effkv$, the paged-KV read efficiency, is
 \textbf{not a constant}: it degrades by $1.6\times$ as the KV working set grows,
-from $0.77$ at 4.3\,GB to $0.46$ at 51.5\,GB, and it is worst exactly at the
+from $0.77$ at 4.3\,GB to $0.46$ at 51.5\,GB. That curve is measured on
+Llama-3.1-8B alone --- Qwen2.5-32B's pool caps at 6.4\,GB on an 80\,GB part, so
+every point above it is 8B data --- and Table~\ref{tab:gain} applies it to
+working sets of 19--26\,GB on three other models. It degrades worst and it is worst exactly at the
 capacity-bound operating point this paper is about --- so a roofline charging KV
 at one fixed bandwidth is optimistic precisely where it matters. The
 pool-weighted $\bar\eta$ of Eq.~\ref{eq:gain} follows from the two, and runs
