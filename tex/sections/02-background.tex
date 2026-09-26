@@ -16,101 +16,86 @@
 
 \subsection{Capacity, not compute, caps the batch}
 
-A decode step is memory-bound by a wide margin. It reads every model weight
-once and every resident KV byte once, and performs arithmetic whose intensity
-equals the GQA group size --- 4 to 8 on current models, against an \emph{achieved} balance point of
-order $100$ FLOP/byte on the accelerators in question (Appendix~\ref{app:params}
-derives 116 for a GH200 from measured efficiencies; the machine balance is
-higher still). The consequence is that a decode engine runs at
-single-digit arithmetic utilization, and what stops it running a larger batch
-is not the arithmetic but the bytes: KV cache exhausts the device long before
-the streaming multiprocessors (SMs) saturate. A recent trace-driven study of production serving reaches the
-same conclusion from the workload side, finding device memory capacity rather
-than token budget to be what binds~\cite{bottlenecks}.
+A decode step is memory-bound by a wide margin: it reads every weight and every
+resident KV byte once, at an arithmetic intensity equal to the GQA group size
+(4--8 on current models) against an \emph{achieved} balance point of order 100
+FLOP/byte (Appendix~\ref{app:params}). So a decode engine runs at single-digit
+arithmetic utilization, and what caps its batch is bytes rather than arithmetic
+--- KV exhausts the device long before the streaming multiprocessors (SMs)
+saturate. A trace-driven study of KV offloading reaches the same conclusion from
+the workload side, finding device memory capacity rather than token budget to be
+what binds~\cite{bottlenecks}.
 
-Which of the two reads dominates that step is a property of the model, not of
-the operating point, and the spread is large. At a full pool on an A100-80,
-Llama-3.1-8B spends $10.5$ of $79$\,ms reading weights --- 13\% weights, 87\%
-KV --- while Qwen2.5-32B spends $42.9$ of $56$\,ms, which is 77\% weights and
-23\% KV. The weight terms are measured; the step times they divide are
-projected to a full pool (\S\ref{sec:model:modeldep}), so read the split as
-approximate.
+\textbf{Which of the two reads dominates is a property of the model, not of the
+operating point}, and the spread is large: at a full pool on an A100-80,
+Llama-3.1-8B spends $10.5$ of $79$\,ms on weights (13\%) where Qwen2.5-32B
+spends $42.9$ of $56$ (77\%). Both are capacity-bound, on identical hardware, at
+opposite ends of one axis. The weight terms are measured; the step times they
+divide are projected (\S\ref{sec:model:modeldep}).
 % src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
-Both are capacity-bound, and they sit at opposite ends of the same axis on
-identical hardware.
 
-That spread is what makes a second tier worth having, and the direction is the
-opposite of the intuitive one. The weight read is a \emph{fixed} per-step window
-during which the link carries nothing: the GPU is streaming parameters and wants
-no KV. The larger the weights are relative to the device, the longer that window
-is, and the less HBM is left for resident KV --- so the very configurations where
-weights dominate the step are the ones with both the most idle link time to
-exploit and the least device memory to exploit it with. Qwen2.5-32B is the
-favourable case here \emph{because} it is 77\% weights, and Llama-3.1-8B is
-unfavourable because it is 13\%. \S\ref{sec:model} makes that statement
-quantitative, and \S\ref{sec:model:omits} gives the cost that can cancel it.
+That spread is what makes a second tier worth having, and its direction is the
+opposite of the intuitive one. The weight read is a fixed per-step window in
+which the link carries nothing. The larger the weights relative to the device,
+the longer that window and the less HBM is left for KV --- so configurations
+where weights dominate have both the most idle link time and the least device
+memory. Qwen2.5-32B is favourable \emph{because} it is 77\% weights;
+Llama-3.1-8B is unfavourable because it is 13\%. \S\ref{sec:model} makes this
+quantitative and \S\ref{sec:model:omits} gives the cost that can cancel it.
 
 \subsection{Host memory as a tier for actively decoding requests}
 
-Offloading KV to host memory is an old idea that a new interconnect has
-changed. Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV to the GPU
-every decode step costs more than the step itself, so host memory could only
-ever be a \emph{swap} target: somewhere to park a request that is not currently
-running. NVLink-C2C is specified at 450\,GB/s in each direction and measured at
-419~\cite{pie} (\S\ref{sec:intro}); at the measured rate the bytes a decoding
-request
-needs can cross the link inside the time the GPU spends reading its own
-weights.
+Offloading KV to host memory is an old idea that a new interconnect has changed.
+Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV every decode step
+costs more than the step itself, so host memory could only be a \emph{swap}
+target: somewhere to park a request that is not running. NVLink-C2C is specified
+at 450\,GB/s per direction and measured at 419~\cite{pie}; at that rate the KV a
+decoding request needs can cross the link inside the window the GPU spends
+reading its own weights.
 
-That changes what host memory \emph{is}. It becomes a tier that an
-\emph{actively decoding} request can occupy, which is a state that did not
-previously exist and which no existing KV policy governs --- continuous
-batching, prefix reuse, eviction and hierarchical caching all decide the
-residency of blocks belonging to requests that are not currently running.
+That makes host memory a tier an \emph{actively decoding} request can occupy.
+Several systems already decode from host-resident KV
+(\S\ref{sec:related}); what none of them does is \emph{choose, per request,}
+which tier such a request lives in --- continuous batching, prefix reuse,
+eviction and hierarchical caching all decide residency for requests that are
+\emph{not} currently running.
 
 It also changes what the movement should be. \emph{Swapping} relocates
-ownership: a unit of KV lives on one side, is brought over to be used, and must
-be written back if it changed --- so every offloaded byte crosses the link twice
-per generated token, once in each direction. \emph{Streaming} keeps the host
-copy authoritative and treats the device-side copy as a cache, so the return
-leg carries only the token just produced. The distinction costs a factor of two
-in interconnect pressure on the resource that bounds the whole technique, and
-it follows from what the offloaded unit \emph{is} rather than from any
-optimisation; \S\ref{sec:related} works it through against the systems that
-made each choice.
+ownership: a unit lives on one side, is brought over, and must be written back
+if it changed, so every offloaded byte crosses the link twice per generated
+token. \emph{Streaming} keeps the host copy authoritative and treats the device
+copy as a cache, so the return leg carries only the token just produced. That is
+a factor of two on the resource which bounds the whole technique, and it follows
+from what the offloaded unit \emph{is} rather than from any optimisation;
+\S\ref{sec:related} works it through against the systems that made each choice.
 
 \subsection{System model: a disaggregated decode node}
 \label{sec:background:pd}
 
 We target a \textbf{decode node in a prefill/decode-disaggregated
-deployment}~\cite{distserve,splitwise,mooncake}. Prefill runs on separate
-hardware; a request arrives at the decode node with its KV cache already
-computed, delivered over the cluster transport. This is the production default
-rather than a convenience we adopt: the separation exists because prefill and
-decode have opposite resource profiles, and every major serving stack now
-supports it.
+deployment}~\cite{distserve,splitwise,mooncake}: prefill runs on separate
+hardware, and a request arrives with its KV already computed. This deployment is
+widely used and supported by the major serving stacks, because prefill and
+decode have opposite resource profiles --- though colocated chunked-prefill
+serving remains common, and our own negative result below is that the technique
+does not apply there.
 
-The assumption does real work here, and we state exactly what it buys. On a
-decode node, a host-tier request's KV can be delivered \emph{into host memory}
-and never occupy an HBM block at all --- not even transiently. Riders are
-therefore \textbf{additive}: they are served in addition to a full resident
-cohort rather than displacing part of it.
+The assumption does real work. On a decode node a host-tier request's KV can be
+delivered \emph{into host memory} and never occupy an HBM block, not even
+transiently, so riders are \textbf{additive}: served in addition to a full
+resident cohort rather than displacing part of it.
 
-In a combined prefill+decode engine this is false, and the difference is not
-subtle. A request must be prefilled somewhere, so its KV lands in HBM first and
-is only reclaimed afterwards; riders and residents then draw on the same
-headroom, and we measured the result --- the served total creeps toward the
-all-HBM capacity from below and never passes it, at any setting of the
-resident-cohort cap. A rider whose prefill stays resident frees nothing while
-still costing interconnect bandwidth every step, which is strictly worse than
-leaving it in HBM. We report that negative result in
-\S\ref{sec:eval:capacity}, because it is what motivates the mechanism and
-because it bounds where the technique applies.
+In a combined prefill+decode engine this is false, and not subtly. A request
+must be prefilled somewhere, so its KV lands in HBM first and is reclaimed only
+afterwards; riders and residents then draw on the same headroom. We measured the
+result: the served total creeps toward the all-HBM capacity from below and never
+passes it, at any setting of the resident cap, because a rider whose prefill
+stays resident frees nothing while still paying interconnect every step
+(\S\ref{sec:eval:capacity}).
 
-The assumption's cost is that KV must reach host DDR. We do not wave this
-away: \S\ref{sec:impl:stash} implements the handover and \S\ref{sec:eval}
-reports what it costs, so the reader can price the assumption rather than
-accept it.
+The cost of the assumption is that KV must reach host DRAM.
+\S\ref{sec:impl:stash} implements that handover and measures it, so the reader
+can price the assumption rather than accept it.
 
 % NOTE: a subsection defining "lossless" and describing how we verify it was
 % removed 2026-09-06. Exact placement is a property of moving bytes rather than
