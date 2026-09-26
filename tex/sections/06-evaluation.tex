@@ -182,7 +182,8 @@ riders & step (ms) & GB/step & $\effo$ \\
 % src: paper/data/rider_cost_4p2b.json @ 21ea9b18d
 %
 At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
-of $1/(N{+}r) = 0.056$, and decode throughput is $254$ tok/s against $296$ at
+of $1/(N{+}r) = 0.056$, and decode throughput --- derived as $B/\mathrm{ITL}$
+from the step times, not measured end to end --- is $254$ tok/s against $296$ at
 $r{=}0$. \textbf{The A100 does not show the benefit}, which is what
 the crossover bandwidth predicts. Setting the unhidden transfer equal to what
 the freed capacity buys gives $\Xlink^{*} = \Ckv(1-\effo)/T$, where $\Ckv$ here
