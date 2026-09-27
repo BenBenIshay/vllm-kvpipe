@@ -282,68 +282,25 @@ ahead of it would otherwise block an admission that requires no resources.
 \subsection{Placement}
 \label{sec:design:placement}
 
-\textbf{What is left for a policy to decide.} \S\ref{sec:model} fixes \emph{how
-many} bytes each tier can carry, and it does so without reference to which
-requests supply them: in the fluid limit the freed device memory and the spent
-interconnect both scale with $S\btok$, so any assignment that fills both budgets
-realises the whole gain. A reader who stops there should conclude that placement
-cannot matter, and for the first-order term they are right. It can matter only
-through quantities the fluid model does not carry, and there are five:
+\S\ref{sec:model} fixes \emph{how many} bytes each tier can carry without
+reference to which requests supply them: in the fluid limit, freed device memory
+and spent interconnect both scale with $S\btok$, so any assignment filling both
+budgets realises the whole gain. Placement can therefore matter only through
+what the fluid model omits --- integer effects at long context, a request's
+remaining lifetime, KV growth during decode, migration cost, and avoiding
+recompute-preemption --- and we present it as a mechanism the manager needs
+rather than as a contribution.
 
-\begin{itemize}\itemsep2pt
-\item \textbf{Integer effects.} Both cohorts are counts of whole requests. At
-      long context they are small integers, so which request is chosen changes
-      the rounding, and the loss is a whole request rather than a fraction.
-\item \textbf{Lifetime and turnover.} A request that finishes soon repays the
-      one-time cost of seeding its KV to the host over fewer steps than one that
-      has just arrived.
-\item \textbf{Growth during decode.} A host-tier request's KV grows every step,
-      so a placement that fits the budget now may not in a hundred steps.
-\item \textbf{Migration cost.} Moving a request between tiers is not free, which
-      makes the \emph{timing} of a decision distinct from the decision.
-\item \textbf{Avoiding recompute-preemption.} Demoting a request is an
-      alternative to evicting and recomputing it, and the two have very
-      different costs.
-\end{itemize}
-
-Every claim in this subsection and the two that follow ties to one of these.
-Where we cannot name the effect a component exploits, we present it as a design
-choice rather than a contribution --- which is the honest status of the scoring
-rule below, since on our substrate the admission budget never offers it enough
-candidates to choose between: on PCIe it admits two (\S\ref{sec:eval:cost}).
-
-Which requests should be host-tier? The intuitive answer is the long ones, since
-KV grows with context. \textbf{Context length does not discriminate to first
-order}, by the cancellation of \S\ref{sec:model:cancel}: moving a request of
-context $S$ to the host frees $S\btok$ bytes of device memory and costs
-$S\btok$ bytes of interconnect every subsequent step. Both scale identically, so
-ranking by context is, to first order, ranking arbitrarily. The qualifier is not
-decoration: the cancellation is exact only in the fluid limit with uniform
-context, and at long context both cohorts are small integers, so which requests
-are chosen begins to matter again through rounding
-(\S\ref{sec:model:omits}). \S\ref{sec:eval:ablation} is consistent with the
-first-order claim on our substrate, where the admission budget admits two
-host-tier requests --- a choice set too small for any ranking to separate from
-arrival order.
-
-The discriminating signal is \textbf{temporal}, and it is the lifetime effect
-above. On a decode node under continuous batching every admitted request
-generates on every step, so there is no idle cohort to exploit; a request that
-has genuinely paused --- between turns of a conversation, or while a tool call
-resolves --- has left the running set and is the swap case that existing
-hierarchical caches already handle (\S\ref{sec:background}). We therefore do not
-claim it. What remains inside the running set is \emph{remaining} generation: a
-request near the end of its output repays the one-time cost of seeding its KV to
-the host over fewer steps, so at equal $S\btok$ it is the worse host-tier
-candidate, not the better one. We estimate remaining generation as the
-difference between a request's \texttt{max\_tokens} and the tokens it has
-produced --- a bound the scheduler already holds, needing no prediction and no
-externally supplied service class, and loose in the safe direction: a request
-that stops early was over-estimated, one that runs to its limit was exact. The
-rule is a threshold on that estimate. Requests with more than $\theta$ steps
-remaining are eligible for the host tier, ranked by the estimate, with $\theta$
-set to the number of steps over which seeding a request's KV to the host
-amortises at the measured host bandwidth.
+The intuitive signal is the wrong one. \textbf{Context length does not
+discriminate to first order}: moving a request of context $S$ frees $S\btok$
+bytes of device memory and costs $S\btok$ bytes of interconnect every step, so
+ranking by context is ranking arbitrarily. What survives is \emph{remaining}
+generation, which sets how many steps a one-time seed amortises over. We
+estimate it as \texttt{max\_tokens} minus tokens produced --- a bound the
+scheduler already holds, needing no prediction and loose in the safe direction
+--- and admit requests above a threshold set at the amortisation point, ranked
+by the estimate. On a substrate whose budget admits two host-tier requests, no
+ranking separates from arrival order, and \S\ref{sec:eval:ablation} says so.
 
 \subsection{Admission}
 \label{sec:design:admission}
@@ -368,50 +325,21 @@ should fit; the guard responds to what did.
 \subsection{Migration}
 \label{sec:design:migration}
 
-\paragraph{What it is for.} Two situations in steady state, both of which a
-fixed placement handles badly. Device blocks free when a resident request
-finishes, and a host-tier request can then be \emph{promoted} into them, which
-removes its per-step link traffic for free. And when the resident cohort's KV
-grows past the pool, the engine's alternative to demoting a request is to
-preempt and later recompute it --- so a demotion is worth making whenever it
-costs less than the recompute it avoids. Placement must therefore be revisable,
-with hysteresis on both edges and a cooldown bounding thrash.
+Placement must be revisable, for two situations a fixed assignment handles
+badly: device blocks free when a resident request finishes, and a host-tier
+request promoted into them sheds its link traffic for nothing; and when the
+resident cohort outgrows the pool, demoting a request is worth doing whenever it
+costs less than the recompute-preemption it avoids. Both moves carry hysteresis
+and a cooldown bounding thrash.
 
-\paragraph{What the gate cannot be.} A cost model asking whether a request's
-transfer fits the remaining budget is \emph{necessary but not sufficient}: the
-budget accounts for transfer bytes, while the host path also carries a per-step
-cost independent of how many bytes move (\S\ref{sec:model:omits}). A gate that
-sees only bytes cannot see that cost, and widening the margin does not repair
-the omission.
-
-\paragraph{What the probe scores on.} A demotion is therefore a \textbf{probe} ---
-make the move, wait a settling period, compare. The metric has to be chosen
-carefully, because the obvious one is degenerate: a demotion \emph{always}
-lengthens the step, since it adds link traffic and a fixed cost and removes
-nothing from the step's critical path, so a probe scoring on inter-token latency
-would revert every time and the loop would be an expensive way to do nothing.
-The benefit of a demotion is \emph{capacity}, and capacity shows up as requests
-served, not as latency. The probe therefore scores on \textbf{SLO-attaining
-goodput}: a demotion is kept when the freed device blocks admit enough
-additional work to raise the number of requests meeting the target, and reverted
-when the longer step pushes the resident cohort past that target. Latency enters
-as the constraint, not as the objective. On a link too slow to hide the
-transfer, no amount of freed capacity repays the step it costs, and the probe
-reverts --- which is what \S\ref{sec:eval:ablation} observes on PCIe.
-
-\paragraph{The baseline, and its bias.} The comparison is against a recent
-steady state rather than the instantaneous average, which would otherwise
-absorb startup transients, and the loop needs a warmup so the first probe has a
-steady state to compare against. We use a recent minimum, and note the bias it
-introduces: any noisy series sits above its own recent minimum most of the time,
-so the test regresses toward reverting. That is the conservative direction for a
-mechanism whose failure mode is thrash, but it means the loop under-reports
-beneficial demotions, and a median would be the better choice if the settling
-window could be made long enough to afford one.
-
-The probe is single-variable attribution in a system where requests arrive and
-depart during the settling window, so its verdict is noisy, and the margin and
-backoff bound the cost of a wrong one. Whether it flips to keeping demotions on
-a coherent link is a prediction, and a falsifiable one --- if it does not, the
-host path carries a fixed cost that survives a fast interconnect, which is
-exactly the risk \S\ref{sec:model:omits} names.
+The gate cannot be the byte budget alone, which accounts for transfer bytes
+while the host path also carries a fixed per-step cost
+(\S\ref{sec:model:omits}). A demotion is therefore a \textbf{probe}: make the
+move, wait a settling period, compare. The metric has to be goodput rather than
+latency, because a demotion \emph{always} lengthens the step --- scored on
+latency the probe would revert every time and the loop would be an expensive way
+to do nothing. Its benefit is capacity, which shows up as requests served.
+Latency enters as the constraint. On a link too slow to hide the transfer no
+freed capacity repays the step it costs, so the probe should revert; on a
+coherent link it should keep. We report that as a prediction:
+\S\ref{sec:eval:ablation} explains why a two-rider budget cannot test it.

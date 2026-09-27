@@ -21,32 +21,18 @@ We state the window as a finding rather than a caveat because the alternative
 is worse: a technique whose applicability is unstated gets evaluated where it
 happens to win.
 
-\subsection{Generality across memory tiers and attention backends}
+\subsection{Generality, and what a new tier must supply}
 \label{sec:discussion:general}
 
-Nothing in the design is specific to HBM-plus-DRAM or to one attention kernel.
-The system needs three things from a substrate: a memory larger and slower than
-the device's, a path to it whose bandwidth can be measured, and an attention
-implementation that can read a block table. A third tier --- CXL-attached
-memory, or NVMe --- adds a second budget and a second affinity threshold and
-leaves the structure unchanged. What does not survive is the hiding argument: a
-tier whose transfer cannot fit inside a layer's compute window is a capacity
-tier for idle requests, not a bandwidth tier for active ones, and
-Eq.~\ref{eq:gate} decides which it is. Similarly, a zero-copy kernel can replace
-our staging buffer through the same backend interface without touching the
-policy; the two are ordered by operating point rather than by quality
-(\S\ref{sec:discussion:coherence}).
-
-Moving to a new platform requires re-measuring five quantities: achieved
-interconnect bandwidth, achieved device bandwidth for weights and for paged KV,
-and the host path's two costs, the fixed $F$ and the per-request $c$. The last
-two are what the second gate turns on, and $F$ is the one that decides it: the
-margins in Table~\ref{tab:gain} are $0.5$ and $2.8$\,ms of $F$, so a platform
-whose launch cost differs from ours by a few milliseconds moves rows across the
-line in either direction. The rules do not change; their inputs do. This is
-why we report the fixed cost separately from the per-byte cost rather than as a
-single slope --- only one of the two shrinks when the interconnect improves, and
-a system calibrated on their sum will mispredict itself on the next generation.
+Nothing here is specific to host DRAM or to one attention kernel. A tier must be
+larger than device memory, expose a path whose bandwidth we can measure at
+runtime, and carry a request's per-step traffic inside one layer's compute ---
+the last decides whether it can hold \emph{decoding} requests or only parked
+ones. A third tier below the second adds a budget and a threshold and leaves the
+structure intact. Moving platform means re-measuring five quantities: the two
+read bandwidths, the link, and the host path's fixed and per-request costs.
+Appendix~\ref{app:coherence} works through the staging-versus-zero-copy
+crossover that decides which transfer mechanism suits which operating point.
 
 \subsection{Anti-scaling}
 
@@ -123,43 +109,3 @@ NVLink-C2C. Whether the argument carries to CXL-attached memory or to other
 vendors' coherent links depends on the same three quantities
 (\S\ref{sec:discussion:general}), but we have measured none of them there.
 
-\subsection{Staging versus zero-copy}
-\label{sec:discussion:coherence}
-
-Our host tier stages KV through a device rolling slot; DirectKV's kernel reads
-CPU-resident KV directly. We built on a staged backend because it runs on PCIe
-as well as on a coherent link --- which is what let us measure the negative
-regime at all --- and because their kernel is SM90a-only. Our results are
-therefore \emph{conservative with respect to mechanism}.
-
-The two are ordered by operating point rather than by quality, and the ordering
-matters for where each belongs. Staging overlaps a layer's fetch with the whole
-of the previous layer's compute; a zero-copy kernel overlaps it only with the
-attention tile it is already computing, which at decode's arithmetic intensity
-is almost no compute at all. Staging buys a layer-sized hiding window and pays
-two extra HBM passes for it, so it wins while the per-step transfer fits inside
-a layer's compute and loses once the transfer exceeds it. That is why DirectKV,
-which places 100\% of KV on the host and therefore can never fit a compute
-window, is right to use zero-copy, and why we --- sizing a selected subset to fit
-by construction --- are right to stage. Appendix~\ref{app:coherence} works the
-crossover through and notes the one cost a coherent link would remove
-regardless: the device-to-host write of each step's new $K,V$.
-
-\subsection{Placement by hardware, policy by scheduler}
-
-A further consequence, which we flag as future work because we cannot test it.
-With a single coherent copy, demoting a request to the host tier becomes a
-policy decision rather than a data movement, and promotion could be lazy and
-partial --- the hardware's page migration relocating hot blocks into device
-memory while the memory system supplies hints rather than issuing transfers.
-That is an appealing division of labour, and to our knowledge nobody has
-evaluated it for KV cache.
-
-We are wary of it for one specific reason. Hardware page migration operates at
-4\,KB or 2\,MB granularity and migrates on access, which is structurally the
-same reactive, fine-grained policy whose migration overhead dominates in the
-token-granularity placement literature~\cite{calkv}. Our own claim is that
-request-granularity movement avoids that thrash because whole requests move
-once, at controlled moments. Handing placement back to a fault-driven mechanism
-gives that property up, and whether the hardware's migration is cheap enough to
-survive it is an empirical question we have not answered.

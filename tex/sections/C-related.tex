@@ -194,3 +194,65 @@ point of all. We do not evaluate one either (\S\ref{sec:eval:setup} says why: at
 a capacity-limited batch of about seven, one request is 14\% and no result could
 separate an effect from a rounding artifact), so the most favourable point of
 the model's own curve is measured by nobody yet.
+
+
+\subsection*{The two axes, and moving compute instead}
+
+\paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
+\emph{compute} to the CPU to grow the batch --- the same problem statement as
+ours with the opposite mechanism. Its own scaling is the argument against it:
+gains decay from $7.5\times$ on a T4 to 14\% on an H100, because a faster GPU
+makes the CPU's arithmetic relatively worse. Streaming KV to the GPU depends on
+a different ratio, $\Xlink/\BW$, and it would be convenient but dishonest to
+present that as simply improving with hardware. Across a generation, HBM
+bandwidth and capacity have both grown faster than host-to-device bandwidth, so
+$\Xlink/\BW$ falls and $\HBM/\Ckv$ falls with the extra capacity --- both
+factors of Eq.~\ref{eq:gain-exact} trend \emph{against} us, which is the same
+structural decay we note in NEO. What would reverse it is a link that scales
+with HBM rather than with PCIe generations, which is precisely the bet a
+coherent interconnect represents. \S\ref{sec:discussion} states our own
+anti-scaling in the same terms.
+
+Appendix~\ref{app:related} gives our detailed reading of Pie's own sweep, the
+endpoint argument from DirectKV's text, and the placement of the adjacent
+memory-management work.
+
+\paragraph{Why the request axis?} The two axes are not orthogonal, and it would
+be convenient but wrong to say so: a layer split and a request split spend the
+\emph{same} interconnect budget, and in the fluid model of \S\ref{sec:model} a
+layer split with the right $m/n$ fills both byte budgets and reaches the same
+interior point. They are substitutes, and the case for the request axis has to
+be made on the terms the fluid model omits.
+
+Three of those favour it. A host-tier request holds \emph{zero} device blocks, so
+admitting one requires no allocation at all and the device pool is untouched;
+under a layer split every request retains $(n-m)/n$ of its cache on the device,
+so capacity is freed only in proportion and never for a whole request. Movement
+happens once per request, at a moment the scheduler chooses, rather than once per
+layer per token --- which is what removes Pie's return leg. And only selected
+requests pay link traffic, so a load spike can be absorbed by moving a few
+requests rather than by degrading all of them.
+
+One favours the layer axis, and we concede it: a layer split has no integer
+quantization. It can relocate $1/n$ of a cache where we must relocate a whole
+request, so at long context, where $B_{\mathrm{cap}}$ and $B_{\mathrm{off}}$ are
+small integers (\S\ref{sec:model:omits}), the layer axis reaches operating points
+the request axis cannot express. A system wanting both would use a request split
+for capacity and a layer split for the remainder; we have not built that, and it
+is the more interesting composition than the one usually asserted.
+
+We adopt one of Pie's measurements --- Pie reports GH200 NVLink-C2C at
+419\,GB/s CPU$\to$GPU and 371\,GB/s GPU$\to$CPU, an independent confirmation
+that the widely quoted 900\,GB/s is a bidirectional figure and that a
+host-to-device KV stream should be budgeted well below it.
+
+FlexGen~\cite{flexgen} is the earlier generation of the same family, placing KV
+across GPU, CPU and disk by a linear-programming search with compression; it is
+offline-profiled rather than adaptive. Both pay the staging cost that a
+zero-copy kernel removes, and neither decides a tier per request.
+
+DAK~\cite{dak} pushes host-resident tensors to shared memory via the Tensor
+Memory Accelerator (TMA) and chooses
+per-\emph{operation} offload ratios by greedy search --- but takes a
+\emph{global} offload ratio as an input, which is precisely the quantity a
+policy has to produce.
