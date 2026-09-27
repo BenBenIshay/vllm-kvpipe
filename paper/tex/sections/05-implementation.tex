@@ -17,12 +17,10 @@
 
 The system is implemented in vLLM~v1 in roughly 3{,}900 lines across 22 files.
 Every path is disabled by default and selected at runtime, so a build with the
-feature off exercises the stock code; \S\ref{sec:eval:setup} reports what that
-costs, because a baseline quietly slower than the engine it stands in for would
-flatter every ratio in this paper. Timings here are engine measurements taken
-during development on the A100-80 of \S\ref{sec:eval:setup}, reproducible from
-the harnesses in our artifact but not part of the frozen dataset behind
-\S\ref{sec:eval}.
+feature off exercises the stock code, which \S\ref{sec:eval:setup} verifies.
+Timings here are engine measurements taken during development on the same A100-80,
+reproducible from the harnesses in our artifact but not part of the frozen dataset
+behind \S\ref{sec:eval}.
 
 \paragraph{Host pool and attention.}
 \label{sec:impl:pool}
@@ -32,27 +30,25 @@ Attention subclasses the FlashAttention~\cite{flashattention2} backend: host-tie
 rows are gathered with \texttt{index\_select}, attended against the rolling slot
 with the compacted block table, and scattered back with \texttt{index\_copy\_}.
 
-\paragraph{Two failure modes a design sketch omits.} Both were silent rather
-than fatal, which is why they are worth reporting. First, deferring a
-block-starved request at the head of the waiting queue is \emph{separately}
-necessary: admission with an empty block list and a prompt marked already
-computed are individually necessary and jointly insufficient, because a request
-needing no blocks can still be starved behind one that does. Second, block
-accounting is length-based, so a nulled entry still counts as present ---
-\texttt{allocate\_slots} never refills it, and a promotion gate asking ``do the
-blocks cover the whole sequence?'' passes on an all-null table and serves
-garbage. Refill is therefore all-or-nothing, the gate counts non-null entries,
-and refilled ids reach the worker through a rewrite channel because they replace
+\paragraph{Two failure modes a design sketch omits.} Both were silent rather than
+fatal, which is why they are worth reporting. First, deferring a block-starved
+request at the head of the waiting queue is \emph{separately} necessary: admission
+with an empty block list and a prompt marked already computed are jointly
+insufficient, because a request needing no blocks can still be starved behind one
+that does. Second, block accounting is length-based, so a nulled entry still counts
+as present --- \texttt{allocate\_slots} never refills it, and a promotion gate asking
+``do the blocks cover the whole sequence?'' passes on an all-null table and serves
+garbage. Refill is therefore all-or-nothing, the gate counts non-null entries, and
+refilled ids reach the worker through a rewrite channel because they replace
 positions rather than append.
 
 \paragraph{Prefill handover.}
 \label{sec:impl:stash}
-A host-tier request's KV must reach the host pool before admission. We implement
-a prompt-keyed stash whose entry outlives the producing request; admission is
-contingent on the worker acknowledging the KV is present, since the scheduler
-cannot observe a host-side write. The handover costs \textbf{0.22\,ms per decode
-step} at 2048 context (14.2\,ms amortised over 64 steps, 38\,GB/s), about 3\% of
-a host-tier request's per-step cost.
+A host-tier request's KV must reach the host pool before admission. We implement a
+prompt-keyed stash whose entry outlives the producing request, with admission
+contingent on the worker acknowledging the KV is present. It costs \textbf{0.22\,ms
+per decode step} at 2048 context (14.2\,ms over 64 steps, 38\,GB/s), about 3\% of a
+host-tier request's per-step cost.
 
 \paragraph{What the host path costs per step.}
 \label{sec:impl:cost}
@@ -67,6 +63,5 @@ issuing per layer, which we have not built. Two properties follow and they pull
 opposite ways: $F$ is launch-bound rather than bandwidth-bound, so a faster
 interconnect does not shrink it, but it is \emph{not} machine-independent ---
 launch cost depends on the host CPU and the count scales with layer depth, so a
-Grace host may pay less. Which dominates is the first thing \S\ref{sec:eval}
-must measure. Appendix~\ref{app:impl} gives the three engineering lessons behind
+Grace host may pay less. Appendix~\ref{app:impl} gives the three engineering lessons behind
 the reduction, with one quantified example each.

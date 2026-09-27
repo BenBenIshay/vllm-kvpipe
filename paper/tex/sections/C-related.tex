@@ -75,6 +75,35 @@ mechanism fixed and varies the policy, and reports Pie's published figures
 alongside rather than reproducing them.
 
 
+% tab:endpoints moved here from section 1 (2026-09-27): the body cannot afford
+% two floats in a 1.25pp introduction, and this is the paragraph that argues
+% the table's point at length.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccr}
+\toprule
+\emph{Projected} & HBM & link & batch \\
+\midrule
+all-HBM (vLLM, SGLang)     & 26.5\,GB      & \textbf{0}    & 12 \\
+all-host (uniform offload) & \textbf{0}    & 14.2\,GB      & 6 \\
+\textbf{both (this paper)} & 26.5\,GB      & 14.2\,GB      & \textbf{18} \\
+\bottomrule
+\end{tabular}
+\caption{KV read per step, and the batch it supports, for Qwen2.5-32B fp16 at 8K
+on a GH200-96; each single-memory design leaves one KV path unused.
+\textbf{Projections} from \texttt{model/killer\_v2.py}: $W = 65.5$\,GB measured
+less a 4\,GB device reserve gives $\Ckv = 26.5$\,GB, $\btok = 256$\,KiB,
+$\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}, and $\Xlink = 419$\,GB/s
+measured on this part~\cite{pie} rather than the 450 spec. These count
+\emph{capacity} --- how many requests fit, not how fast they are served, a
+difference \S\ref{sec:model:omits} shows is decisive. All three rows share one
+$\mathrm{ITL}_0$ to stay comparable, which flatters the all-host row: computed
+self-consistently its step would be weights-only and its batch 4. The interior
+point is unaffected.}
+\label{tab:endpoints}
+\end{table}
+
 \paragraph{The endpoint argument.} DirectKV \S6: ``During prefill, the manager
 stores the initial $K,V$ entries from each layer in CPU memory. During decode,
 the GPU reuses these cached entries directly, while only appending new $K,V$
@@ -136,6 +165,51 @@ tier --- unchanged. That argument is analytical and we have not measured the
 composition; it is a prediction of Eq.~\ref{eq:cancel}, and a cheap one to
 falsify.
 
+
+\paragraph{Is decode serving memory-bound at all?} NanoFlow~\cite{nanoflow}
+argues the opposite of \S\ref{sec:background}: that end-to-end serving becomes
+\emph{compute}-bound for most common workloads once operations of different
+resource classes are overlapped within a device, and it reports $1.91\times$ over
+prior engines by doing so. The claim is not in conflict with ours, but the boundary
+between them is exactly where this paper lives. NanoFlow raises utilisation at a
+\emph{given} batch by filling idle units; our premise is that the batch itself is
+capped by KV capacity before those units saturate. The two compose in principle ---
+a larger batch gives intra-device overlap more to work with --- and they collide in
+practice if the arithmetic recovered by overlapping pushes the step into the
+compute-bound regime, because then admitting a host-tier request no longer buys
+throughput. Our own measurement of the margin is in
+Appendix~\ref{app:params}: at batch 142 for an 8B model at 4K --- far above the
+capacity limit on any device we consider --- decode-attention's arithmetic
+intensity has crossed the hardware balance point, yet the step is still
+memory-bound by more than $6\times$ ($46.6$\,ms of memory time against $7.4$ of
+compute, taking the memory term from Eq.~\ref{eq:step} rather than from the
+single-efficiency roofline \S\ref{sec:model:modeldep} refutes). So the two premises
+are not in conflict at the batch sizes a capacity limit permits. On a device where
+that margin closes, NanoFlow's premise holds and ours does not.
+
+\paragraph{Moving the request instead of its memory.} Llumnix~\cite{llumnix}
+reschedules requests \emph{across} model instances by live-migrating them and their
+KV, to balance load, reduce fragmentation and honour priorities. It is the natural
+alternative to a second memory tier: when a request will not fit here, one can move
+it to another GPU rather than move its KV to the host. The choice between them is
+economic rather than technical --- migration needs a second instance with room,
+which is a provisioning decision, while tiering needs only host DRAM, which is
+already installed and idle. They also compose cleanly, since a tier decision is
+local and a migration decision global, and a scheduler holding both has a strictly
+larger action set than one holding either. We do not evaluate that combination.
+
+\paragraph{Architectures that shrink the cache.} The gate of
+\S\ref{sec:model:gate} opens when weights consume enough of the device that little
+is left for KV, and architectural changes to attention move that boundary directly.
+Multi-head latent attention~\cite{deepseekv2} compresses $K$ and $V$ into a
+low-rank latent, cutting KV bytes per token by roughly an order of magnitude, and
+sliding-window and hybrid-attention designs bound the cache by construction rather
+than by context. By Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales both
+cohorts and leaves their ratio unchanged, so shrinking KV does not by itself close
+the gate. What closes it is the \emph{second} gate: a smaller cache raises
+$B_{\mathrm{cap}}$, so the fixed per-step cost is amortised over more requests but
+the capacity gain it must beat is unchanged in ratio and smaller in absolute
+requests.
 
 \paragraph{Adjacent memory management.}
 InfiniGen~\cite{infinigen} attacks the same per-step transfer from the other

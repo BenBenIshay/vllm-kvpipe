@@ -63,7 +63,7 @@ def at_site(filename, anchor, value, label, window=400):
         failures.append(label)
 
 
-print("Table 1 (01-intro, tab:endpoints)")
+print("Table 1 (tab:endpoints, appendix C; quoted in 01-intro)")
 e = tables.endpoints()
 for want, got, label in [(26.5, e["C"] / 1e9, "C_kv GB"),
                          (33.9, e["T0"], "ITL_0 ms"),
@@ -72,8 +72,13 @@ for want, got, label in [(26.5, e["C"] / 1e9, "C_kv GB"),
                          (6, int(e["B_off"]), "all-host batch"),
                          (18, e["both"], "both batch")]:
     check(label, got, want)
+# The table moved to appendix C (2026-09-27) when the introduction's float
+# budget ran out; the intro now quotes the three batch numbers in prose, so each
+# side is checked where it actually lives.
 for v in ("26.5", "14.2", "12", "6", "18", "33.9"):
-    present(v, "01-intro.tex", f"Table 1 shows {v}")
+    present(v, "C-related.tex", f"Table 1 shows {v}")
+at_site("01-intro.tex", "18 against 12", "6 all-host",
+        "1: the endpoint batches quoted in prose")
 
 print("\nTable 2 (03-model, tab:gain)")
 paper = {"Llama-8B  fp16": (1.22, 0.98,  4.8),

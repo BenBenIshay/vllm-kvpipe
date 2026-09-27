@@ -19,7 +19,9 @@ sed -i 's|^\\bibliography{refs}|\\phantomsection\\label{app:refs}\n\\bibliograph
 cd "$BUILD"
 tectonic -X compile --keep-intermediates main.tex >/dev/null 2>&1 || {
   echo "compile failed -- run ./build.sh first" >&2; exit 1; }
-python3 - "$BUILD/main.aux" <<'PY'
+PY_BIN=/mnt/beegfs/benishay/vllm-kvpipe/.venv/bin/python
+[ -x "$PY_BIN" ] || PY_BIN=python3
+"$PY_BIN" - "$BUILD/main.aux" <<'PY'
 import re, sys, pathlib
 aux = pathlib.Path(sys.argv[1]).read_text()
 pg = {m.group(1): int(m.group(2)) for m in
@@ -43,6 +45,32 @@ for i, (nm, lb, want) in enumerate(BODY):
 print(f"{'BODY':<15}{'':>7}{tot:>7.0f}{sum(w for _,_,w in BODY):>8.2f}"
       f"   (references p{refs}, appendix p{app})")
 ev = pg.get("sec:eval")
-print(f"\nevaluation starts p{ev} (budget p7); body {tot:.0f}pp against 10pp")
-sys.exit(1 if tot > 10 else 0)
+
+# The integer page of the bibliography undercounts: section 8 usually fills most
+# of that page before the references begin. Read the true end off the PDF, which
+# is the number the page limit is actually about.
+exact = float(tot)
+try:
+    import pymupdf
+    doc = pymupdf.open(str(pathlib.Path(sys.argv[1]).with_name("main.pdf")))
+    # The phantom label can land on the page before the heading renders on, so
+    # look on that page and the next one.
+    found = False
+    for pno in (refs - 1, refs):
+        if found or pno >= doc.page_count:
+            break
+        page = doc[pno]
+        for b in sorted((b for b in page.get_text("blocks") if b[4].strip()),
+                        key=lambda b: (b[0] > page.rect.width / 2, b[1])):
+            if b[4].strip().startswith("References"):
+                right = b[0] > page.rect.width / 2
+                frac = (0.5 if right else 0.0) + 0.5 * (b[1] - 60) / (752 - 60)
+                exact = pno + frac
+                found = True
+                break
+except ImportError:
+    pass
+
+print(f"\nevaluation starts p{ev} (budget p7); body {exact:.1f}pp against 10pp")
+sys.exit(1 if exact > 10.0 else 0)
 PY

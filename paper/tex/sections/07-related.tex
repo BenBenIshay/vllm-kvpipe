@@ -2,10 +2,11 @@
 % Section 7 -- related work. Claim C4 and the novelty argument.
 %
 % Source: seven papers read end-to-end 2026-08-10.
-% COMPRESSED 2026-09-27 to ~0.75pp. The full engagement with Pie's layer axis,
-% DirectKV's endpoint argument, NEO's compute axis and the KV-reduction line is
-% in appendix C; what stays in the body is the two papers a reviewer would
-% otherwise reject on, and the one that attacks the premise.
+% CUT TO ~0.75pp 2026-09-27. Only the two papers a reviewer would reject on get
+% a paragraph here: DirectKV (the competing mechanism) and Pie (the closest
+% prior placement). NanoFlow's attack on the premise, the migration and
+% KV-shrinking alternatives, NEO's compute axis and the endpoint argument are all
+% in appendix C, which exists for exactly this.
 %
 % PROVENANCE: every number is attributed to the paper that reported it, which is
 % stronger than a % src: into our own data.
@@ -13,29 +14,24 @@
 \section{Related work}
 \label{sec:related}
 
-\paragraph{Capacity, not compute, is what binds.} A trace-driven study of KV
-offloading finds device memory capacity, not token budget, limits batch
-size~\cite{bottlenecks}, and names scheduler improvements as future work. That is
-the premise this paper builds on, measured rather than assumed.
-
 \paragraph{The mechanism is solved; DirectKV is a competitor, not a substrate.}
-DirectKV~\cite{directkv} contributes zero-copy GPU attention over CPU-resident KV
-on coherent interconnects, eliminating the staging buffer. Its kernel reads host
-memory \emph{during} the attention that needs it, where we prefetch layer
-$\ell{+}1$ while layer $\ell$ computes: they pay no device memory and get no
-overlap, we pay one $k$-window and hide about $90\%$ of the transfer. Neither
-dominates on paper and settling it needs both on one machine, which needs their
-SM90a-only kernel. Two things their paper establishes matter here. Its \S8.1
-states the policy dimension is untouched --- the design ``does not change
+A trace-driven study of KV offloading finds device memory capacity, not token
+budget, limits batch size~\cite{bottlenecks} and names scheduler improvements as
+future work --- the premise this paper builds on.
+DirectKV~\cite{directkv} then contributes zero-copy GPU attention over
+CPU-resident KV on coherent interconnects, eliminating the staging buffer. Its
+kernel reads host memory \emph{during} the attention that needs it, where we
+prefetch layer $\ell{+}1$ while layer $\ell$ computes: they pay no device memory
+and get no overlap, we pay one $k$-window and hide about $90\%$ of the transfer.
+Neither dominates on paper and settling it needs both on one machine, which needs
+their SM90a-only kernel. Two things their paper establishes matter here. Its
+\S8.1 states the policy dimension is untouched --- the design ``does not change
 scheduling, batching, or KV-management policies'' --- and its own analysis reaches
 our PCIe conclusion from the kernel side, ``on PCIe, DirectKV should be viewed
 primarily as a capacity-extension mechanism,'' while reporting NVLink-C2C cutting
 attention latency up to $4.2\times$. Neither their evaluation nor ours covers a
 70B-class configuration, which our model identifies as the most favourable point
 of its curve, so that point is measured by nobody yet.
-Appendix~\ref{app:related} gives the consequence for composition: a host-tier
-request moved onto their kernel stops being a rider, because without a prefetch
-window there is nothing left to hide.
 
 \paragraph{The closest prior mechanism partitions by layer.} Pie~\cite{pie}
 targets the same hardware, stages KV through GPU buffers as we do, prefetches per
@@ -44,76 +40,55 @@ layer so transfer overlaps compute, and reports up to $1.9\times$ over vLLM.
 \emph{layers} of KV, ``using per-layer KV cache as the basic management unit'',
 and that split applies to \emph{every request identically} under one global
 expansion factor. So \textbf{no request's KV is ever fully absent from the
-device} --- every request retains $(n-m)/n$ in HBM, always --- and
-\textbf{interconnect bandwidth is spent uniformly}, a fixed fraction of every
-request's KV rather than the whole KV of requests we select, which is what makes
-\emph{which requests} a decision at all. The two axes are not orthogonal: they
-spend the same link budget and in the fluid model reach the same interior point.
-Our case for requests rests on what that model omits (\S\ref{sec:intro}), and one
-thing favours layers, which we concede --- a layer split has no integer
-quantization, so at long context it reaches operating points a request split
-cannot express. Appendix~\ref{app:related} works both through and places NEO's
-compute-offload alternative on the same axes.
+device}, and \textbf{interconnect bandwidth is spent uniformly} --- a fixed
+fraction of every request's KV rather than the whole KV of requests we select,
+which is what makes \emph{which requests} a decision at all. The axes are not
+orthogonal: they spend the same link budget and in the fluid limit reach the same
+interior point, so our case for requests rests on what that limit omits
+(\S\ref{sec:intro}). One thing favours layers and we concede it --- a layer split
+has no integer quantization, so at long context it reaches operating points a
+request split cannot express.
 
-\paragraph{Is decode serving memory-bound at all?} NanoFlow~\cite{nanoflow}
-argues the opposite of \S\ref{sec:background}: that serving is
-\emph{compute}-bound for common workloads once operations of different resource
-classes are overlapped within a device, reporting $1.91\times$ over prior
-engines. The boundary between the claims is exactly where this paper lives.
-NanoFlow raises utilisation at a \emph{given} batch; our premise is that the
-batch is capped by KV capacity before those units saturate. They compose in
-principle, and collide if the arithmetic recovered by overlapping pushes the step
-compute-bound, because then a host-tier request buys no throughput. At batch 142
-for an 8B model at 4K --- far above the capacity limit on any device we consider
---- attention's arithmetic intensity has crossed the hardware balance point yet
-the step is still memory-bound by more than $6\times$
-(Appendix~\ref{app:params}). So the premises do not conflict at the batch sizes a
-capacity limit permits; on a device where that margin closes, NanoFlow's premise
-holds and ours does not.
+\paragraph{What else could be done instead.} Three alternatives bound the
+contribution and Appendix~\ref{app:related} treats each in full.
+NanoFlow~\cite{nanoflow} argues the opposite premise, that serving is
+\emph{compute}-bound once operations of different resource classes are overlapped
+within a device; the claims collide only above the batch a capacity limit permits,
+and at batch 142 for an 8B model at 4K the step is still memory-bound by more than
+$6\times$ (Appendix~\ref{app:params}). Llumnix~\cite{llumnix} live-migrates requests
+\emph{across} instances instead of moving KV down a tier --- an economic choice
+rather than a technical one, since migration needs a second instance with room while
+tiering needs host DRAM already installed and idle. And architectures that shrink
+the cache, MLA~\cite{deepseekv2} and sliding-window attention, do not by themselves
+close the gate: by Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales both
+cohorts and leaves their ratio unchanged. We regard a stack built entirely on
+MLA-class models as outside this paper's regime.
 
-\paragraph{The alternatives: move the request, or shrink the cache.}
-Llumnix~\cite{llumnix} live-migrates requests \emph{across} instances --- the
-natural alternative to a second tier, and the choice is economic rather than
-technical, since migration needs a second instance with room while tiering needs
-host DRAM that is already installed and idle. The two compose, a tier decision
-being local and a migration decision global, and we do not evaluate the
-combination. Architecturally, multi-head latent attention~\cite{deepseekv2}
-compresses $K$ and $V$ into a low-rank latent, cutting $\btok$ by roughly an
-order of magnitude, and sliding-window designs bound the cache by construction.
-By Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales both cohorts and
-leaves their ratio unchanged, so shrinking KV does not by itself close the first
-gate; what it does is raise $B_{\mathrm{cap}}$, amortising the fixed cost over
-more requests while the capacity gain to be beaten is unchanged in ratio and
-smaller in absolute requests. We regard a stack built entirely on MLA-class
-models as outside this paper's regime rather than claim architecture-neutrality.
+\paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing our
+hardware assumption on the two questions that matter. What is unsolved is which
+requests live in which tier, how many a step can absorb without breaking the resident
+cohort's latency, and when a request should move --- DirectKV states as much
+explicitly, Fang et al.~\cite{calkv} close by calling for runtime policies, and
+OmniServe~\cite{omniserve} takes its service classes as externally supplied.
 
-\paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing
-our hardware assumption on the two questions that matter: what unit of KV is
-placed, and who decides. What is unsolved is which requests live in which tier,
-how many host-tier requests a step can absorb without breaking the resident
-cohort's latency, and when a request should move. DirectKV states it explicitly,
-Fang et al.~\cite{calkv} close by calling for runtime policies, and
-OmniServe~\cite{omniserve} takes its service classes as externally supplied
-rather than inferring them.
-
-\begin{table*}[t]
+% Single-column (2026-09-27): spanning both columns forced this to the top of a
+% page and left a gap when it could not, which four rows do not earn.
+\begin{table}[t]
 \centering
-\small
-\begin{tabular}{llll}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
 \toprule
  & placement unit & decided by & device KV \\
 \midrule
 vLLM, SGLang & --- & --- & all of it \\
 Pie~\cite{pie} & layer, uniform & global factor & $(n{-}m)/n$ each \\
 DirectKV~\cite{directkv} & none (all host) & nothing & none \\
-\textbf{this paper} & \textbf{request} & \textbf{placement,} & resident \\
- & & \textbf{admission,} & cohort \\
- & & \textbf{migration} & only \\
+\textbf{this paper} & \textbf{request} & \textbf{3 policies} & cohort only \\
 \bottomrule
 \end{tabular}
-\caption{The mechanism for reading host-resident KV efficiently is solved; the
-open question is which requests should live where. Systems either place nothing
-(both endpoints) or place a fixed fraction of everything (Pie), and none decides
-per request.}
+\caption{Systems either place nothing (both endpoints) or a fixed fraction of
+everything (Pie); none decides per request. Our three policies are placement,
+admission and migration.}
 \label{tab:axes}
-\end{table*}
+\end{table}

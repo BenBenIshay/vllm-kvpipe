@@ -1,90 +1,49 @@
-% PROVENANCE: this section derives from \S\ref{sec:model} and
-% \S\ref{sec:eval} and introduces no new measurements; where it quotes a
-% number it points at the section that sourced it.
+% PROVENANCE: this section derives from \S\ref{sec:model} and \S\ref{sec:eval} and
+% introduces no new measurements; where it quotes a number it points at the section
+% that sourced it.
 %
-% COMPRESSED 2026-09-27: was 2pp of a 10pp body. The four subsections became
-% three short ones plus limitations, which is the part a reviewer looks for.
+% CUT TO ~0.7pp 2026-09-27. The four subsections are now two plus limitations. The
+% expanded forms -- composition with orthogonal techniques, the third-tier
+% structure, the per-limitation detail -- are in appendix F.
 \section{Discussion}
 \label{sec:discussion}
 
 \subsection{The window is a result, and it is shrinking}
 
-Eq.~\ref{eq:gate} and Eq.~\ref{eq:gain-exact} together form a deployment rule
-that can be evaluated before building anything: a second KV tier pays when the
-latency target exceeds the full-pool step time plus $F$, and it pays in
-proportion to $\HBM/\Ckv$. Both exclude configurations the field routinely
-evaluates on. We state the window as a finding rather than a caveat because the
-alternative is worse --- a technique whose applicability is unstated gets
-evaluated where it happens to win.
+Eq.~\ref{eq:gate} and Eq.~\ref{eq:gain-exact} together form a deployment rule that
+can be evaluated before building anything: a second KV tier pays when the latency
+target exceeds the full-pool step time plus $F$, and it pays in proportion to
+$\HBM/\Ckv$. Both exclude configurations the field routinely evaluates on. We state
+the window as a finding rather than a caveat because the alternative is worse --- a
+technique whose applicability is unstated gets evaluated where it happens to win.
 
-The gain also \textbf{shrinks as device memory grows}, and for our primary model
-it does not merely shrink: Qwen2.5-32B on a 144\,GB device (141 usable) leaves
-$\Ckv \approx 71$\,GB, at which point the gate stops admitting at all. Both
-factors of Eq.~\ref{eq:gain-exact} trend the same way across a hardware
-generation, since HBM bandwidth and capacity have grown faster than
-host-to-device bandwidth. This is the same structural decay we identify in
-compute-offload systems (\S\ref{sec:related}), and it would be dishonest to cite
-that against them without stating it about ourselves. What bears the other way is
-model growth: 405B-class models push $\HBM/\Ckv$ up, so the configurations where
-the technique pays are becoming more common even as each device generation makes
-them rarer. We do \emph{not} claim mixture-of-experts models as part of that
-trend despite their weight footprints, because Eq.~\ref{eq:step} charges every
-weight once per step, which is false for MoE.
+The gain also \textbf{shrinks as device memory grows}, and for our primary model it
+does not merely shrink: Qwen2.5-32B on a 144\,GB device leaves $\Ckv \approx
+71$\,GB, at which point the gate stops admitting at all. Both factors of
+Eq.~\ref{eq:gain-exact} trend that way across a hardware generation, since HBM
+bandwidth and capacity have grown faster than host-to-device bandwidth --- the same
+structural decay we identify in compute-offload systems (\S\ref{sec:related}), and
+it would be dishonest to cite that against them without stating it about ourselves.
+Model growth bears the other way: 405B-class models push $\HBM/\Ckv$ up, so the
+favourable configurations are becoming more common even as each device generation
+makes them rarer. Weight \emph{precision} cuts against us for the same reason ---
+quantizing weights returns memory to $\Ckv$ and removes the amplifier, where
+quantizing KV scales both cohorts and leaves their ratio unchanged, so a memory
+system and a precision decision are not independent.
 
-Methods that \emph{shrink} the KV cache compose with a system that
-\emph{relocates} it: quantizing KV scales both cohorts together and leaves their
-ratio unchanged. Quantizing \emph{weights} does the opposite --- it returns
-memory to $\Ckv$ and removes the amplifier, by the same mechanism through which a
-larger device reduces the gain. A memory system and a weight-precision decision
-are therefore not independent, which is not how either is usually discussed.
+Nothing in the design is specific to host DRAM or to one attention kernel --- what
+it asks of a tier is the three properties of \S\ref{sec:background}, and moving
+platform means re-measuring five quantities: the two read bandwidths, the link, and
+the host path's fixed and per-request costs. Appendix~\ref{app:coherence} works
+that through, with the third-tier structure and the staging-versus-zero-copy
+crossover.
 
-\subsection{Generality, and what a new tier must supply}
-\label{sec:discussion:general}
-
-Nothing here is specific to host DRAM or to one attention kernel: what the design
-asks of a tier is the three properties of \S\ref{sec:background}, and a third tier
-below the second adds a budget and a threshold and leaves the structure intact. Moving platform means re-measuring five quantities: the two
-read bandwidths, the link, and the host path's fixed and per-request costs. We
-measure those on PCIe and model NVLink-C2C; whether the argument carries to
-CXL-attached memory or another vendor's coherent link depends on the same five,
-and we have measured none of them there.
-Appendix~\ref{app:coherence} works through the staging-versus-zero-copy
-crossover that decides which transfer mechanism suits which operating point.
-
-\subsection{Limitations}
-
-\paragraph{The evaluation is one device on the wrong link.} Every measurement is
-on a single A100-80 over PCIe --- the regime our own model says cannot pay --- so
-the positive claims rest on a coherent interconnect we have not yet measured and
-\S\ref{sec:eval} marks each as a prediction. We evaluate one GPU: tensor
-parallelism would introduce collectives into precisely the metric under
-measurement, and adding a second GPU is also the most obvious \emph{alternative}
-to a second memory tier, which we therefore cannot price against it.
-
-\paragraph{The model assumes dense GQA attention and uniform context.}
-Eq.~\ref{eq:step} charges every weight once, false for MoE; an MLA-class model
-compresses KV enough that the regime changes character (\S\ref{sec:related}); the
-cancellation of \S\ref{sec:model:cancel} is exact only in the uniform-context
-limit; and nothing is charged for host DRAM bandwidth, which on a 480\,GB Grace
-configuration is of the same order as the link and would bound $\Xlink$ from
-behind.
-
-\paragraph{The regime is real but not universal.} The configurations that clear
-both gates are those where weights consume most of the device. An operator facing
-exactly that can also quantize the weights or add a GPU, and both are common. We
-think the regime is nonetheless worth serving --- quantization is an accuracy
-decision a serving team often cannot take unilaterally, and adding a GPU doubles
-the cost of the node to recover memory already installed beside it --- but a
-reader who believes those alternatives are always available should read this as
-bounding when the technique could help, not as arguing it is the best response.
-
-\paragraph{Our headline is bounded by an engineering number.} $F$ is a floor of
-the current design rather than a tuned result: cross-layer batching of the
-transfer issue would reduce it and we have not built it. Since the second gate
-turns on $F$ (\S\ref{sec:model:omits}), a negative result on a coherent link
-would not be a result about heterogeneous KV memory. Separately, the prefill
-transport is emulated --- KV reaches the host pool through a local handover whose
-cost we measure (\S\ref{sec:impl:stash}), not a prefill node's network path ---
-speculative decoding is unsupported on the host path, which assumes one query
-token per step, and the pinned host mirrors are real memory sized to the
-configured maximum concurrency.
+\paragraph{Limitations.} Four bound the result and
+Appendix~\ref{app:coherence} gives each in full: the evaluation is one device on the
+wrong link, so every positive claim is marked a prediction; the model assumes dense
+GQA attention and uniform context, so it covers neither MoE nor MLA-class models and
+charges nothing for host DRAM bandwidth; the regime is real but not universal, since
+an operator whose weights fill the device can also quantize them or add a GPU; and
+the headline is bounded by an engineering number, since $F$ is a floor of the current
+design rather than a tuned result. The prefill transport is also emulated
+(\S\ref{sec:impl:stash}).
