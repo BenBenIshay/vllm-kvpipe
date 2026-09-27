@@ -176,7 +176,7 @@ that also say what this design is for: it differenced \emph{goodput} runs that
 still contained prefill, and it attributed cost to the rider count
 \emph{offered} rather than the count the system created.
 Appendix~\ref{app:ridercost} reports that sweep. The direct measurement gives
-$\effo = 0.62$ at two riders. One caveat belongs with it: this run's
+the decomposition below. One caveat belongs with it: this run's
 machine-readable output was not archived, and the numbers below are transcribed
 from the run's own record rather than read from an artifact --- the data files
 say so in their own provenance field. It is also a single unreplicated
@@ -186,7 +186,7 @@ first item on the list for new hardware, alongside $F$.
 \begin{center}\small
 \begin{tabular}{rrrr}
 \toprule
-riders & step (ms) & GB/step & $\effo$ \\
+riders & step (ms) & GB/step & growth \\
 \midrule
 0 & 54.10 & 0.000 & --- \\
 2 & 70.79 & 1.115 & 0.62 \\
@@ -200,7 +200,8 @@ of $1/(N{+}r) = 0.056$, and decode throughput --- derived as $B/\mathrm{ITL}$
 from the step times, not measured end to end --- is $254$ tok/s against $296$ at
 $r{=}0$. \textbf{The A100 does not show the benefit}, which is what
 the crossover bandwidth predicts. Setting the unhidden transfer equal to what
-the freed capacity buys gives $\Xlink^{*} = K_{\mathrm{res}}(1-\effo)/T$, where $K_{\mathrm{res}}$ is the
+the freed capacity buys gives $\Xlink^{*} = K_{\mathrm{res}}\,c/(T\,\ell)$, where $\ell$ is a
+rider's link time and $K_{\mathrm{res}}$ is the
 \emph{resident cohort's} KV --- a different quantity from $\Ckv$, and
 $8.59$\,GB at 16 requests and 2048 context ---
 and $T$ the rider-free step of $54.10$\,ms: $\Xlink^{*} = 60$\,GB/s. Our link
@@ -211,21 +212,6 @@ it --- but that is a \emph{bandwidth} argument, and
 $\Xlink^{*}$ is necessary and not sufficient. An earlier
 $+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
 by hand from a co-located run, and we withdraw it.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figs/f6.pdf}
-\caption{The cost of a host-tier request is not affine. Below the knee the
-aggregate transfer still fits inside a step and is imperfectly hidden; above it
-the step \emph{is} the transfer and each request costs its full link time. The
-shaded area is overhead the kink model does not carry --- roughly 13\,ms on a
-53\,ms step at the knee, which is more than two extra requests buy. A faster
-interconnect moves the knee right; it does not shrink the shaded area.
-Qwen2.5-32B, 2048 context, 16 device-tier residents, A100/PCIe at a measured
-25.1\,GB/s, 3 repeats with under 1\% spread.}
-% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
-\label{fig:costcurve}
-\end{figure}
 
 Two properties of the cost curve matter for the coherent-link projection. It is
 \textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
@@ -292,8 +278,8 @@ part after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is only
 $\times$1.03 in capacity --- barely anything once its riders are billed for the
 HBM bandwidth they consume. The second gate of \S\ref{sec:model:omits} then
 makes it a predicted \emph{negative}: charging its own $F$ ($6.2$\,ms at 32
-layers) and the unhidden residual gives $\times$0.87, and its $F^{*}$ is
-$-0.9$\,ms, meaning the residual alone
+layers) and the per-request cost gives $\times$0.98 --- short of parity, and
+its $F^{*}$ of $4.8$\,ms is below the $6.2$ it pays, meaning the residual alone
 exceeds what its capacity buys. The prediction is therefore unusually strong ---
 8B should lose on \emph{any} implementation, however cheap the fixed cost.
 
@@ -318,8 +304,8 @@ than either endpoint. \emph{Prediction.} On this substrate, \textbf{no}:
 charging the fixed cost and the unhidden residual of \S\ref{sec:model:omits}
 makes the throughput form $\times0.85$ for our primary model even on a projected
 coherent link, and worse on this one. The capacity term alone does not rescue
-it: what would is $F$ falling below the $F^{*} = 3.8$\,ms that configuration can
-afford.
+it: the margin is $F^{*} = 12.8$\,ms against the $12.3$ that configuration
+pays, so half a millisecond of $F$ decides it.
 
 We state the protocol here because it is the experiment the positive claim
 requires and it is not yet run. Hold model, device, workload and substrate

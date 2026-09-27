@@ -29,8 +29,8 @@ interconnects, eliminating the staging buffer. It is the state of the art in
 \emph{mechanism}, and a competing one rather than a substrate for ours: their
 kernel reads host memory \emph{during} the attention that needs it, where we
 prefetch layer $\ell{+}1$ while layer $\ell$ computes. They pay no device memory
-and get no overlap; we pay one $k$-window and overlap $\effo$ of the transfer,
-measured at $0.62$ on PCIe. Neither dominates on paper, and settling it needs
+and get no overlap; we pay one $k$-window and hide about $90\%$ of the
+transfer behind the previous layer's compute. Neither dominates on paper, and settling it needs
 both on one machine --- which needs their SM90a-only kernel, so it is future
 work rather than a result we report.
 
@@ -163,7 +163,7 @@ a different ratio, $\Xlink/\BW$, and it would be convenient but dishonest to
 present that as simply improving with hardware. Across a generation, HBM
 bandwidth and capacity have both grown faster than host-to-device bandwidth, so
 $\Xlink/\BW$ falls and $\HBM/\Ckv$ falls with the extra capacity --- both
-factors of Eq.~\ref{eq:gain} trend \emph{against} us, which is the same
+factors of Eq.~\ref{eq:gain-exact} trend \emph{against} us, which is the same
 structural decay we note in NEO. What would reverse it is a link that scales
 with HBM rather than with PCIe generations, which is precisely the bet a
 coherent interconnect represents. \S\ref{sec:discussion} states our own

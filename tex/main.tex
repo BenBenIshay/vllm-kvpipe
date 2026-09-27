@@ -66,11 +66,12 @@
 \newcommand{\btok}{b_{\mathrm{tok}}}
 \newcommand{\effw}{\eta_w}        % weight-read efficiency
 \newcommand{\effkv}{\eta_{kv}}    % paged-KV-read efficiency
-% Overlap efficiency: the fraction of a rider's transfer that actually hides
-% behind compute. Added 2026-09-22 -- it multiplies the gain law, and every
-% earlier estimate of it (0.00, 0.23, 0.38, 0.78, 0.88) came from differencing
-% goodput runs that still contained prefill. Only the 4.2b curve measures it.
-\newcommand{\effo}{\eta_o}        % overlap efficiency
+% RETIRED 2026-09-27: \effo (eta_o, "overlap efficiency"). It was computed as
+% 1 - (step growth)/(link time), but the step growth contains the FIXED cost F,
+% so it (a) double-counted F wherever the throughput form also charged F, and
+% (b) slid with context -- 0.32 at 1K, 0.83 at 8K -- because a fixed cost
+% divided by a link time is not a property of anything. The cost is now stated
+% as what it is: F fixed per step, plus c per request.
 
 \begin{document}
 

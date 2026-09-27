@@ -161,8 +161,8 @@ needs it, so the transfer is inside the operation rather than alongside it;
 ours prefetches layer $\ell{+}1$ into a rolling device buffer while layer
 $\ell$ computes. The two designs therefore trade in opposite directions. They
 pay no device memory and get no overlap; we pay one $k$-window of device memory
-and overlap $\effo$ of the transfer, which on PCIe we measure at $0.62$ --- a
-real window, but well short of all of it. Neither dominates on paper, and
+and hide about $90\%$ of the transfer behind the previous layer's compute ---
+a real window, though a fixed per-step cost dwarfs what escapes it. Neither dominates on paper, and
 settling it needs both mechanisms on one machine, which requires their
 SM90a-only kernel and is therefore future work rather than a result we report. It also means a host-tier
 request cannot simply be moved onto their kernel and remain what we call a

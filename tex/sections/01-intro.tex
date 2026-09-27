@@ -127,9 +127,10 @@ or to everything, neither of which consults the interconnect at all.
 
 \paragraph{When is a second memory tier worth having?} Before building one we
 ask when it pays, and the answer is sharply bounded. We derive a closed-form
-capacity multiplier $1 + \Xlink/(\BW\,\bar\eta)\cdot(\HBM/\Ckv)$, where $\Ckv$
-is the device memory left after weights and $\bar\eta$ the fraction of peak
-bandwidth the device achieves reading a full pool. The step-time model underneath it is validated
+capacity multiplier $1 + \mathrm{ITL}_0\Xlink/\Ckv$, where $\Ckv$ is the device
+memory left after weights and $\mathrm{ITL}_0$ the time a full pool takes to
+read --- equivalently, about $(\Xlink/\BW)(\HBM/\Ckv)$ at the bandwidth the
+device actually achieves over that pool. The step-time model underneath it is validated
 per model on 41 measured configurations; the multiplier itself is not yet
 tested, and \S\ref{sec:eval} says what testing it requires. Two consequences contradict the obvious intuition. Long
 context does \emph{not} help: to first order it shrinks the HBM-resident cohort
@@ -167,10 +168,10 @@ hardware, is the question the model exists to answer.
       budget admits at most two host-tier requests, and no policy
       distinguishes itself on a choice set that small.
 \item \textbf{An implementation in vLLM v1, and a measured account of what a
-      host-tier request costs} (\S\ref{sec:eval}): the overlap efficiency
-      $\effo = 0.62$, the fixed per-step cost $F = 12.3$\,ms, and the
-      non-affine shape of the cost curve --- the three quantities the second
-      gate turns on. Together with the two limits the substrate imposes on
+      host-tier request costs} (\S\ref{sec:eval}): a fixed
+      $F = 12.3$\,ms per step, a per-request $c = 2.2$--$2.9$\,ms, and the
+      knee above which the step \emph{is} the transfer --- the quantities the
+      second gate turns on. Together with the two limits the substrate imposes on
       what we can claim: the placement ablation needs more host-tier requests
       than a PCIe budget admits, and the migration probe needs a rider count at
       which its verdict carries information. We implemented both and report
@@ -189,6 +190,21 @@ deployment~\cite{distserve,splitwise,mooncake}, where a request arrives with
 its KV already computed. \S\ref{sec:background:pd} explains why that assumption
 is what makes host-tier requests additive.
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figs/f6.pdf}
+\caption{The cost of a host-tier request is not affine. Below the knee the
+aggregate transfer still fits inside a step and is imperfectly hidden; above it
+the step \emph{is} the transfer and each request costs its full link time. The
+shaded area is overhead the kink model does not carry --- roughly 13\,ms on a
+53\,ms step at the knee, which is more than two extra requests buy. A faster
+interconnect moves the knee right; it does not shrink the shaded area.
+Qwen2.5-32B, 2048 context, 16 device-tier residents, A100/PCIe at a measured
+25.1\,GB/s, 3 repeats with under 1\% spread.}
+% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
+\label{fig:costcurve}
+\end{figure}
+
 \paragraph{Results.} On A100/PCIe --- the regime our own model says cannot pay
 --- the memory system works and the economics do not. Against a fixed KV pool,
 host-tier requests raise peak concurrency from 8 to 48, itself a lower bound
@@ -197,12 +213,15 @@ against the all-HBM arm's $47.8$ for the same completed work, so this
 establishes that admission is decoupled from the device pool and nothing about
 speed.
 % src: paper/data/preload_capacity.json @ f3df05bdb
-In a separate experiment that isolates a rider's cost --- riders added on top of
-a fixed resident batch, with prefill cancelled by construction --- only
-$\effo = 0.62$ of a host-tier request's transfer overlaps compute, and the
-unhidden residual costs $8.3$\,ms \emph{per rider} --- two riders grew a
-$54.1$\,ms step to $70.8$, or $31\%$ --- leaving decode throughput
-$0.86\times$ that of not offloading at all.
+Figure~\ref{fig:costcurve} is what a host-tier request costs, measured: two
+riders grow a $54.1$\,ms step to $70.8$, and the curve bends where the aggregate
+transfer stops fitting inside a step. Decomposed, the growth is $12.3$\,ms of
+\emph{fixed} cost --- paid once per step for using the host path at all --- plus
+$2.2$\,ms per request. So the prefetch hides about $90\%$ of each transfer, and
+what escapes it is small beside the fixed term. \textbf{That asymmetry is the
+paper's result}: the quantity that decides whether a second tier pays is not
+bandwidth and not how well the transfer hides, but a per-step constant that a
+faster interconnect does not touch.
 % src: paper/data/rider_cost_4p2b.json @ 21ea9b18d
 End to end, through the prefill handover, the deficit is $2.3\%$.
 % src: paper/data/pd_decode_goodput.json @ f3df05bdb

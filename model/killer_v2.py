@@ -17,29 +17,19 @@ EFF_W, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
 # fragmentation. It is subtracted from HBM before C, so the paper must document
 # it: weights + C does NOT equal HBM.
 #
-# ETA_O: the fraction of a rider's transfer that does NOT show up as added step
-# time. Measured at 0.62 (paper/data/rider_cost_4p2b.json: riders on top of a
-# fixed resident batch, prefill cancelled by construction; at r=2 the link time
-# is 44.4 ms and the step grew 16.69, so 1 - 16.69/44.4 = 0.62).
+# THE COST OF A HOST-TIER REQUEST, measured, in two parts. Until 2026-09-27
+# this was expressed as an "overlap efficiency" eta_o = 0.62, which was a
+# mistake twice over: it is (F + unhidden)/link_time, so it counted F twice when
+# the throughput form also charged F, and dividing a FIXED cost by a link time
+# made it slide with context (0.32 at 1K, 0.83 at 8K) for no physical reason.
 #
-# WHERE IT BELONGS, corrected 2026-09-26. It is NOT a discount on the rider
-# budget. The budget is a hard physical ceiling -- a step of length T cannot
-# carry more than T*X bytes across the link, whatever fraction of them hides.
-# eta_o describes what the bytes COST once carried: (1-eta_o) of the transfer
-# time appears as added step time. So it belongs in the throughput form, not in
-# the capacity multiplier. Charging it in both, as this script did between
-# 2026-09-22 and 2026-09-26, counts it twice.
-ETA_O = 0.62
+# The honest decomposition, from step(r) = ITL_0 + F + c*r below the knee:
+#   F  fixed per step, launch-bound, ~12.3 ms on a 64-layer model
+#   c  per request, the part of its transfer that does not hide behind compute
+# Two runs give c = 2.20 and 2.91 ms at 2048 context, i.e. 10-13% of a rider's
+# link time -- so the prefetch hides ~88%, not the 62% the old figure implied.
+UNHIDDEN = 0.12          # fraction of a rider's transfer that lands on the step
 
-# Fixed per-step cost of using the host path at all, ms. Launch-bound (~640
-# extra kernel launches), so a faster link does not shrink it, and it is NOT
-# machine-independent: it scales with layer depth and the host CPU.
-# paper/sections/05-implementation.tex.
-#
-# MEASURED ON Qwen2.5-32B, which has 64 layers. Section 5 says the launch count
-# "scales with layer depth", so billing the same 12.3 ms to a 32-layer model and
-# an 80-layer one contradicts our own account of what F is. Charged per layer
-# from 2026-09-26.
 F_REF_MS, F_REF_LAYERS = 12.3, 64
 
 
@@ -146,7 +136,7 @@ def step_ms(m, hw, S, B_res, B_off=0.0, stage=1.0, f=0.0):
     return max(t_mem, t_cmp)*1e3
 
 
-def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
+def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, unhidden=None):
     u = m.k*S
     C = hw.hbm - m.w - OVERHEAD
     if C <= 0 or u <= 0:
@@ -166,12 +156,18 @@ def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
     T0 = step_ms(m, hw, S, B0)
     cap_bound = B_cap < B_slo - 1e-9
 
-    # riders: displace f of a resident each; must hide in T and keep T <= SLO
+    # riders: displace f of a resident each; must fit the link budget AND keep
+    # the step -- INCLUDING the host path's own costs -- inside the SLO. Charging
+    # F and the per-request term only afterwards, as this did until 2026-09-27,
+    # admitted riders against a step 12-15 ms shorter than the one they produce,
+    # so no row was feasible under its own accounting.
     best = 0.0
     for _ in range(60):
         n = best + max(B_cap, 1.0)/64
         B_res = max(0.0, C/u - n*f)
         T = step_ms(m, hw, S, B_res, n, stage=stage, f=f)
+        if n > 0:
+            T += f_fixed_ms(m) + (UNHIDDEN if unhidden is None else unhidden) * (n*u/hw.x)*1e3
         # The link budget must be sized on the RIDER-FREE step T0, not on T.
         # Using T -- which already contains the riders -- lets each admitted
         # rider enlarge the budget that admits the next, and pushed the 70B row
@@ -186,10 +182,11 @@ def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, eta_o=ETA_O):
     B_res = min(B0, max(0.0, C/u - n*f))
     T = step_ms(m, hw, S, B_res, n, stage=stage, f=f) if n > 0 else T0
     B_tot = B_res + n
-    # The unhidden residual: (1-eta_o) of the riders' link time lands on the step.
-    delta_ms = (1 - eta_o) * (n*u/hw.x) * 1e3
+    # Per-request cost: the part of each rider's transfer that does not hide.
+    # F is charged separately and is NOT in here -- that was the double count.
+    delta_ms = (UNHIDDEN if unhidden is None else unhidden) * (n*u/hw.x) * 1e3
     cap_gain = B_tot/B0 if B0 > 0 else 0.0
-    return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound, eta_o=eta_o,
+    return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound,
                 n=n, B_tot=B_tot, T=T, delta_ms=delta_ms, cap_gain=cap_gain,
                 gain=(B_tot/T)/(B0/T0) if B0 > 0 else 0.0,
                 gain_tput=cap_gain * T0/(T0 + f_fixed_ms(m) + delta_ms) if B0 > 0 else 0.0,
