@@ -171,19 +171,15 @@ by hand from a co-located run, and we withdraw it.
 Two properties of the cost curve matter for the coherent-link projection. It is
 \textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
 ($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$; Fig.~\ref{fig:costcurve}), so
-$\Delta T = F + cr$ fits a
-negative fixed cost, and the fixed-versus-slope split of Appendix~\ref{app:ridercost} is not a meaningful
-decomposition. What the data fits is a kink, $T \approx \max(T_{\mathrm{compute}},
-r S \btok{}/\Xlink) + \text{overhead}$, with the knee at
-$r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
-which is where the byte budget of \S\ref{sec:design:admission} also lands. A
-faster link raises the knee but does not remove the overhead. Three points do
-not resolve that overhead: it measures $18.1$, $8.6$ and $13.5$\,ms at
-$r = 2, 4, 6$, non-monotone, and the knee at $r = 2.4$ falls between the first
-two. Even its smallest value is $8.6$\,ms on a $53$\,ms step, which is most of
-what two extra requests buy. Whether that overhead survives onto a coherent interconnect is
-the question the next substrate has to answer, and it cannot be extrapolated
-from this one.
+$\Delta T = F + cr$ fits a negative fixed cost and the fixed-versus-slope split of
+Appendix~\ref{app:ridercost} is not a meaningful decomposition. What the data fits
+is a kink at $r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
+where the byte budget of \S\ref{sec:design:admission} also lands --- so a faster
+link raises the knee but does not remove the overhead. Three points do not resolve
+that overhead: it measures $18.1$, $8.6$ and $13.5$\,ms at $r = 2, 4, 6$,
+non-monotone, with the knee falling between the first two. Even its smallest value
+is $8.6$\,ms on a $53$\,ms step, most of what two extra requests buy. Whether it
+survives onto a coherent interconnect cannot be extrapolated from this substrate.
 % src: paper/data/rider_cost_phase0.json @ fb7e9db2a
 
 \subsection{Does the capacity model predict it?}
@@ -196,14 +192,11 @@ run it early for that reason --- $\effkv$ sits in the capacity denominator, so a
 kernel generation that reads paged KV more efficiently shortens the step,
 shrinks the transfer budget, and \emph{lowers} the predicted gain.
 
-\textbf{Neither factor of the multiplier is yet measured, and we say so.} The
-multiplier has two: a bandwidth ratio $\Xlink/\BW$ and an amplifier
-$\HBM/\Ckv$. Testing the first needs two interconnect generations and we have
-one; testing the second needs one model at two weight precisions, which we have
-not run. What this section does establish is narrower and worth separating from
-the multiplier: the step-time model of Eq.~\ref{eq:step} holds within each model across 41
-configurations, the mechanism is additive, and the cost of a host-tier request
-is decomposed on the substrate we have. The multiplier itself rests on that
+\textbf{Neither factor of the multiplier is yet measured} (\S\ref{sec:model:gain}),
+so what this section establishes is narrower and worth separating from it: the
+step-time model of Eq.~\ref{eq:step} holds within each model across 41
+configurations, the mechanism is additive, and the cost of a host-tier request is
+decomposed on the substrate we have. The multiplier itself rests on that
 parameter fit plus the model's agreement with a published system's results
 (\S\ref{sec:model:directkv}), and a reader who discounts both should read
 Table~\ref{tab:gain} as a prediction awaiting its experiment.

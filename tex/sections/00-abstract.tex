@@ -1,3 +1,6 @@
+% Compressed 2026-09-27 from 360 to ~250 words: four paragraphs of abstract in a
+% 10pp paper is a paragraph too many, and the second one narrated the mechanism
+% at design-section length.
 \begin{abstract}
 A decode server's batch is capped by device memory, not arithmetic: KV cache
 exhausts HBM long before the arithmetic units are busy, so the GPU runs at
@@ -6,29 +9,25 @@ interconnects make host DRAM fast enough to hold the KV of an \emph{actively
 decoding} request, but existing systems vary how much KV sits on the host and
 never \emph{whose} --- they place none, or a uniform fraction of every request.
 
-We present a heterogeneous KV memory that manages HBM and host DRAM as one
-store and assigns each request to a tier. A \emph{host-tier} request holds no
-device blocks at all: its KV lives in host memory and is streamed in one layer
-at a time, just before the attention that consumes it, through a small buffer
-that is reused across layers --- so it occupies a few percent of the device
-memory a resident request needs. Both tiers are served in a single forward
-pass, so the weights are read once however the batch is split, and an admission
-controller sizes the host cohort from the link bandwidth and step time it
-measures at runtime.
+We present a heterogeneous KV memory that manages HBM and host DRAM as one store
+and assigns each request to a tier. A \emph{host-tier} request holds no device
+blocks at all: its KV lives in host memory and is streamed one layer at a time,
+just before the attention that consumes it, through a small buffer reused across
+layers --- a few percent of the device memory a resident request needs. Both tiers
+are rows of a single forward pass, so the weights are read once however the batch
+is split, and an admission controller sizes the host cohort from the link
+bandwidth and step time it measures at runtime. A capacity model says which
+configurations this helps: from a device profile it returns the cohort that
+maximises decode throughput, and its content is that the value of a second tier
+tracks \textbf{how much of memory the weights consumed} --- not model size, and
+not context length, which cancels.
 
-A capacity model then says which configurations this helps. It takes a
-profile of the device --- the bandwidth each read achieves, the step time, and
-the two costs the host path adds --- and returns the host cohort that maximises
-decode throughput. Its content is that the value of a second tier tracks
-\textbf{how much of memory the weights consumed}, not model size and not
-context length, which cancels.
-
-We implement this in vLLM and measure the costs it turns on: a host-tier
-request adds a fixed $12.3$\,ms per step plus $2.2$\,ms per request, so a
-prefetch one layer deep hides about $90\%$ of each transfer and a per-step
-constant decides the rest. Applied to a Grace-Hopper node the model projects
-$\times1.50$ and $\times1.67$ more served requests for the two
-weight-heavy configurations, and throughput gains of $\times1.01$ and
-$\times1.05$ against margins of a few milliseconds in that constant --- which
-is the measurement we ask of such a node, and the one PCIe cannot supply.
+We implement this in vLLM and measure the costs it turns on: a host-tier request
+adds a fixed $12.3$\,ms per step plus $2.2$\,ms per request, so a prefetch one
+layer deep hides about $90\%$ of each transfer and a per-step constant decides the
+rest. On a Grace-Hopper node the model projects $\times1.50$ and $\times1.67$ more
+served requests for the two weight-heavy configurations and throughput gains of
+$\times1.01$ and $\times1.05$, against margins of a few milliseconds in that
+constant --- the measurement we ask of such a node, and the one PCIe cannot
+supply.
 \end{abstract}
