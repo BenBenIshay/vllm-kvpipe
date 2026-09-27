@@ -196,9 +196,10 @@ is what makes host-tier requests additive.
 \caption{The cost of a host-tier request is not affine. Below the knee the
 aggregate transfer still fits inside a step and is imperfectly hidden; above it
 the step \emph{is} the transfer and each request costs its full link time. The
-shaded area is overhead the kink model does not carry --- roughly 13\,ms on a
-53\,ms step at the knee, which is more than two extra requests buy. A faster
-interconnect moves the knee right; it does not shrink the shaded area.
+shaded area is what the kink model does not carry, and it is where the paper's
+result lives: decomposed, it is a \emph{fixed} $12.3$\,ms per step plus
+$2.2$\,ms per request. A faster interconnect moves the knee right; it does not
+shrink the fixed term.
 Qwen2.5-32B, 2048 context, 16 device-tier residents, A100/PCIe at a measured
 25.1\,GB/s, 3 repeats with under 1\% spread.}
 % src: paper/data/rider_cost_phase0.json @ fb7e9db2a
