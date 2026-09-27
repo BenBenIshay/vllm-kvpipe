@@ -15,11 +15,18 @@
 \label{sec:background}
 
 \subsection{Capacity, not compute, caps the batch}
+\label{sec:background:capacity}
 
 A decode step is memory-bound by a wide margin: it reads every weight and every
 resident KV byte once, at an arithmetic intensity equal to the GQA group size
 (4--8 on current models) against an \emph{achieved} balance point of order 100
-FLOP/byte (Appendix~\ref{app:params}). So a decode engine runs at single-digit
+FLOP/byte (Appendix~\ref{app:params}). This is the premise the offloading
+literature is built on --- FlexGen~\cite{flexgen}, Pie~\cite{pie} and
+DirectKV~\cite{directkv} all exploit it --- and it is not unanimous:
+NanoFlow~\cite{nanoflow} argues that end-to-end serving becomes
+\emph{compute}-bound once operations of different resource classes are
+overlapped within a device. The two claims are about different batch sizes, and
+\S\ref{sec:related} gives the crossing point we measure. So a decode engine runs at single-digit
 arithmetic utilization, and what caps its batch is bytes rather than arithmetic
 --- KV exhausts the device long before the streaming multiprocessors (SMs)
 saturate. A trace-driven study of KV offloading reaches the same conclusion from
@@ -60,6 +67,21 @@ Several systems already decode from host-resident KV
 which tier such a request lives in --- continuous batching, prefix reuse,
 eviction and hierarchical caching all decide residency for requests that are
 \emph{not} currently running.
+
+\paragraph{Host DRAM is the first such tier, not the only one.} The direction of
+travel is towards accelerators attached to more than one kind of memory:
+CXL-attached DRAM behind a coherent link, and high-bandwidth flash placed
+between DRAM and storage, are both being built for exactly the capacity problem
+\S\ref{sec:background:capacity} describes. Nothing in this design is specific to
+host DRAM. What it asks of a tier is three things, and they are the right
+questions to ask of any of them: that the tier be larger than device memory,
+that the path to it have bandwidth we can \emph{measure} at runtime, and that a
+request's per-step traffic over that path fit inside the compute of one
+layer --- which is what decides whether the tier can hold \emph{decoding}
+requests or only parked ones. The capacity model of \S\ref{sec:model} is written
+in those three quantities and nothing else, so it transfers to a new tier by
+re-profiling rather than by re-deriving; \S\ref{sec:discussion:general} works
+through what changes when a third tier is added below the second.
 
 It also changes what the movement should be. \emph{Swapping} relocates
 ownership: a unit lives on one side, is brought over, and must be written back

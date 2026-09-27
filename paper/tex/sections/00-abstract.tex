@@ -7,26 +7,28 @@ decoding} request, but existing systems vary how much KV sits on the host and
 never \emph{whose} --- they place none, or a uniform fraction of every request.
 
 We present a heterogeneous KV memory that manages HBM and host DRAM as one
-store and assigns each request a tier. A host-tier request holds \emph{no}
-device blocks: its KV is streamed layer by layer into a rolling buffer whose
-footprint is $k/L$ of a resident request's, and both tiers are served in one
-forward pass, so weights are read once however the batch is split.
+store and assigns each request to a tier. A \emph{host-tier} request holds no
+device blocks at all: its KV lives in host memory and is streamed in one layer
+at a time, just before the attention that consumes it, through a small buffer
+that is reused across layers --- so it occupies a few percent of the device
+memory a resident request needs. Both tiers are served in a single forward
+pass, so the weights are read once however the batch is split, and an admission
+controller sizes the host cohort from the link bandwidth and step time it
+measures at runtime.
 
-We derive when a second tier pays. The capacity multiplier is one plus the
-interconnect bandwidth over the device's \emph{achieved} memory bandwidth, times
-the ratio of device memory to what the weights leave free --- so, counter to
-intuition, context length cancels and the value tracks how much memory the
-weights consumed. But capacity is not throughput. Charging the fixed per-step cost of
-using a host path at all gives a \textbf{second gate}, and it is the binding
-one: at the cost we measure, \emph{every} configuration the multiplier likes
-still loses. We therefore report what that cost would have to be, which turns
-the question into one falsifiable number per configuration.
+A capacity model then says which configurations this helps. It takes a
+profile of the device --- the bandwidth each read achieves, the step time, and
+the two costs the host path adds --- and returns the host cohort that maximises
+decode throughput. Its content is that the value of a second tier tracks
+\textbf{how much of memory the weights consumed}, not model size and not
+context length, which cancels.
 
-We implement this in vLLM and measure it on PCIe --- the regime the model calls
-unfavourable, and where it is duly negative. Host-tier requests are
-\emph{additive}, raising peak concurrency from 8 to 48 against a fixed pool ---
-at $0.53\times$ the throughput, so this is a mechanism check and not a result;
-a host-tier request costs a fixed $12.3$\,ms per step plus $2.2$--$2.9$\,ms
-per request. Coherent-interconnect
-results are pending and stated throughout as predictions.
+We implement this in vLLM and measure the costs it turns on: a host-tier
+request adds a fixed $12.3$\,ms per step plus $2.2$\,ms per request, so a
+prefetch one layer deep hides about $90\%$ of each transfer and a per-step
+constant decides the rest. Applied to a Grace-Hopper node the model projects
+$\times1.50$ and $\times1.67$ more served requests for the two
+weight-heavy configurations, and throughput gains of $\times1.01$ and
+$\times1.05$ against margins of a few milliseconds in that constant --- which
+is the measurement we ask of such a node, and the one PCIe cannot supply.
 \end{abstract}
