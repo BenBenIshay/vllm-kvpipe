@@ -6,7 +6,7 @@
 
 \subsection{The applicability window is a result}
 
-The gate of Eq.~\ref{eq:gate} and the multiplier of Eq.~\ref{eq:gain} together
+The gate of Eq.~\ref{eq:gate} and the multiplier of Eq.~\ref{eq:gain-exact} together
 form a deployment rule that can be evaluated before building anything: a second
 KV tier pays when the latency target exceeds the full-pool step time, and it
 pays in proportion to $\HBM/\Ckv$ --- how much of device memory the weights
@@ -39,12 +39,11 @@ policy; the two are ordered by operating point rather than by quality
 
 Moving to a new platform requires re-measuring five quantities: achieved
 interconnect bandwidth, achieved device bandwidth for weights and for paged KV,
-the overlap efficiency $\effo$, and the fixed per-step cost. The last two are
-the ones the second gate turns on, and $\effo$ is the one with no sensitivity
-analysis anywhere: at $\effo = 1$ the four rows of Table~\ref{tab:gain} read
-$\times$0.81, $\times$0.85, $\times$1.07 and $\times$1.22 on throughput --- so
-perfect overlap flips the sign for the two favourable rows and not for the
-others. The rules do not change; their inputs do. This is
+and the host path's two costs, the fixed $F$ and the per-request $c$. The last
+two are what the second gate turns on, and $F$ is the one that decides it: the
+margins in Table~\ref{tab:gain} are $0.5$ and $2.8$\,ms of $F$, so a platform
+whose launch cost differs from ours by a few milliseconds moves rows across the
+line in either direction. The rules do not change; their inputs do. This is
 why we report the fixed cost separately from the per-byte cost rather than as a
 single slope --- only one of the two shrinks when the interconnect improves, and
 a system calibrated on their sum will mispredict itself on the next generation.
@@ -54,7 +53,7 @@ a system calibrated on their sum will mispredict itself on the next generation.
 The gain shrinks as device memory grows, and for our primary model it does not
 merely shrink: Qwen2.5-32B on a 144\,GB device (141 usable) leaves $\Ckv \approx 71$\,GB, at
 which point the workload is no longer capacity-bound and the gate stops
-admitting entirely. Both factors of Eq.~\ref{eq:gain} trend the same way across
+admitting entirely. Both factors of Eq.~\ref{eq:gain-exact} trend the same way across
 a hardware generation, since HBM bandwidth and capacity have grown faster than
 host-to-device bandwidth. This is the same structural decay we identify in
 compute-offload systems (\S\ref{sec:related}), and it would be dishonest to cite

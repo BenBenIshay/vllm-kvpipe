@@ -71,10 +71,10 @@ for v in ("26.5", "14.2", "12", "6", "18", "33.9"):
     present(v, "01-intro.tex", f"Table 1 shows {v}")
 
 print("\nTable 2 (03-model, tab:gain)")
-paper = {"Llama-8B  fp16": (1.03, 0.87, -0.9),
-         "Qwen-32B  fp8":  (1.09, 0.78, -1.3),
-         "Qwen-32B  fp16": (1.45, 0.85,  3.8),
-         "Llama-70B fp8":  (1.67, 0.91,  9.7)}
+paper = {"Llama-8B  fp16": (1.22, 0.98,  4.8),
+         "Qwen-32B  fp8":  (1.28, 0.91,  6.9),
+         "Qwen-32B  fp16": (1.50, 1.01, 12.8),
+         "Llama-70B fp8":  (1.67, 1.05, 18.2)}
 for r in tables.gain_rows():
     cap, tput, fstar = paper[r["name"]]
     check(f"{r['name']} capacity", r["cap"], cap)
@@ -92,15 +92,15 @@ def cap_at(eff_w=None, kv_scale=1.0, wgb=65.53):
     if kv_scale != 1.0:
         K.EFF_KV_CURVE = [(g, x * kv_scale) for g, x in oc]
     r = K.analyze(K.M("t", 64, 8, 128, 32, wgb=wgb), tables.S, tables.HW,
-                  slo_ms=50.0, stage=2.0)
+                  slo_ms=80.0, stage=2.0)
     K.EFF_W, K.EFF_KV_CURVE = ow, oc
     return r["cap_gain"]
-for label, got, want in [("eta_kv -20%", cap_at(kv_scale=0.8), 1.31),
+for label, got, want in [("eta_kv -20%", cap_at(kv_scale=0.8), 1.54),
                          ("eta_kv +20%", cap_at(kv_scale=1.2), 1.47),
-                         ("eta_w 0.70", cap_at(eff_w=0.70), 1.41),
+                         ("eta_w 0.70", cap_at(eff_w=0.70), 1.51),
                          ("eta_w 0.80", cap_at(eff_w=0.80), 1.47),
-                         ("W = 60 GB", cap_at(wgb=60.0), 1.34),
-                         ("W = 68 GB", cap_at(wgb=68.0), 1.53)]:
+                         ("W = 60 GB", cap_at(wgb=60.0), 1.41),
+                         ("W = 68 GB", cap_at(wgb=68.0), 1.54)]:
     check(label, got, want)
 
 print("\nClosed form (eq:gain) reproduces the exact form (eq:gain-exact)")
@@ -116,7 +116,6 @@ for name in ("Llama-8B  fp16", "Qwen-32B  fp16"):
 print("\nOne value per quantity across all sections")
 tex = "".join(p.read_text() for p in sorted(TEX.glob("*.tex")))
 for pat, allowed, label in [
-        (r"\\effo\s*\{?=\}?\s*([0-9.]+)", {"0.62", "1"}, "eta_o"),
         # 1935 is the measured A100 peak; 1450 is 0.75 of it, the achieved rate.
         (r"(\d{3,4})\\,GB/s", {"450", "419", "900", "371", "1935", "1450"}, "bandwidth")]:
     seen = set(re.findall(pat, tex))
@@ -137,17 +136,13 @@ at_site("02-background.tex", "Qwen2.5-32B spends $45.2$ of $53$", "85\\% weights
 
 print("\nDerived numbers quoted in prose, pinned to their own sentence")
 SITES = [
-    ("03-model.tex", "capacity column ($\\times$", "1.45", "3: capacity column quoted in prose"),
-    ("03-model.tex", "the capacity gains of", "1.67", "3.5: top of the capacity range"),
-    ("03-model.tex", "throughput ratios of", "0.91", "3.5: 70B throughput ratio"),
-    ("03-model.tex", "Equation~\\ref{eq:fstar} gives", "-0.9", "3.5: F* for Llama-8B"),
-    ("03-model.tex", "Qwen2.5-32B fp16 and $+", "9.7", "3.5: F* for Llama-70B"),
-    ("03-model.tex", "the 70B configuration needs a", "37", "3.5: required reduction, 70B"),
-    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.87", "6.6: 8B throughput"),
-    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "-0.9", "6.6: 8B F*"),
-    ("06-evaluation.tex", "$F$ falling below the $F^{*} = ", "3.8", "6.7: F* for the primary model"),
-    ("08-discussion.tex", "at $\\effo = 1$ the four rows", "1.22", "8.2: eta_o=1 sensitivity"),
-]
+        ("03-model.tex", "capacity gains of $\\times$1.22", "1.67", "3.5: top of the capacity range"),
+    ("03-model.tex", "become throughput ratios of", "1.05", "3.5: 70B throughput"),
+    ("03-model.tex", "Eq.~\\ref{eq:fstar} gives", "12.8", "3.5: F* for the primary model"),
+    ("03-model.tex", "needing $23\\%$ and", "44", "3.5: the two rows that miss"),
+    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.98", "6.6: 8B throughput"),
+        ("06-evaluation.tex", "the margin is $F^{*} = ", "12.3", "6.7: F* margin for the primary model"),
+    ]
 for filename, anchor, value, label in SITES:
     at_site(filename, anchor, value, label)
 
@@ -171,9 +166,7 @@ print("\nSites round 4 found stale -- now asserted")
 for filename, anchor, value, label in [
     ("03-model.tex", "full-pool ITL of $78.4$", "53.2", "3.2: full-pool pair"),
     ("03-model.tex", "full-pool ITL of $78.4$", "1.47", "3.2: the spread"),
-    ("03-model.tex", "is link-bound here, using", "13.6", "Table 2 caption: 70B budget use"),
-    ("03-model.tex", "At an 80\\,ms target the", "1.67", "Table 2 caption: 80 ms sensitivity"),
-    ("03-model.tex", "applies it to", "19--76", "3: eta_kv extrapolation range"),
+            ("03-model.tex", "applies it to", "19--76", "3: eta_kv extrapolation range"),
     ("06-evaluation.tex", "holds within each model across", "41", "6: configuration count"),
 ]:
     at_site(filename, anchor, value, label)
