@@ -118,3 +118,59 @@ request-granularity movement avoids that thrash because whole requests move
 once, at controlled moments. Handing placement back to a fault-driven mechanism
 gives that property up, and whether the hardware's migration is cheap enough to
 survive it is an empirical question we have not answered.
+
+% Moved out of section 8 (2026-09-27) when the body hit its page limit. The
+% limitations themselves remain in the body; this is the detail behind them.
+\subsection*{Generality, and what a new tier must supply}
+\label{sec:discussion:general}
+
+Nothing in this paper is specific to host DRAM or to one attention kernel. A tier
+must be larger than device memory, expose a path whose bandwidth we can measure at
+runtime, and carry a request's per-step traffic inside one layer's compute --- the
+last decides whether it can hold \emph{decoding} requests or only parked ones. A
+third tier below the second adds a budget and a threshold and leaves the structure
+intact. Moving platform means re-measuring five quantities: the two read bandwidths,
+the link, and the host path's fixed and per-request costs. We measure those on PCIe
+and model NVLink-C2C; whether the argument carries to CXL-attached memory or another
+vendor's coherent link depends on the same five, and we have measured none of them
+there.
+
+\subsection*{The limitations at length}
+
+\paragraph{Why one GPU.} Tensor parallelism would introduce collectives into
+precisely the metric under measurement --- the per-step time whose growth the whole
+argument is about --- so a TP baseline would confound the quantity we report with
+the collective's cost. Adding a second GPU is also the most obvious
+\emph{alternative} to a second memory tier rather than a configuration of it, which
+is why we cannot price one against the other on a single-device measurement.
+
+\paragraph{Why the model does not cover MoE or MLA.} Eq.~\ref{eq:step} charges every
+weight once per step. For a mixture-of-experts model only the routed experts are
+read, so the weight term is a function of the routing distribution rather than the
+checkpoint size, and both $\mathrm{ITL}_0$ and $\HBM/\Ckv$ change meaning. An
+MLA-class model~\cite{deepseekv2} compresses KV by roughly an order of magnitude,
+which raises $B_{\mathrm{cap}}$ enough that the fixed cost is amortised over many
+more requests while the ratio the gain depends on is unchanged --- a different
+regime, not a scaled one. Neither follows from a reparameterisation of what we
+derive, and we have not done the rederivation.
+
+\paragraph{Uniform context, and host DRAM bandwidth.} The cancellation of
+\S\ref{sec:model:cancel} is exact only in the fluid limit; both cohorts are counts
+of whole requests, so at long context the integer effects the ratio ignores become
+the leading correction. And the model charges nothing for host DRAM bandwidth, which
+on a 480\,GB Grace configuration is of the same order as the link itself and would
+bound $\Xlink$ from behind --- so a measured $\Xlink$ on such a part is an upper
+bound on what a loaded host would deliver.
+
+\paragraph{Two engineering limits.} Speculative decoding is unsupported on the host
+path, which assumes one query token per step: a rolling slot is sized and rotated
+against a single new $K,V$ per layer, and accepting $n$ draft tokens per step would
+need $n$ of them. And the pinned host mirrors are real memory, sized to the configured
+maximum concurrency and context rather than to live demand, so a node must budget for
+them whether or not the tier is in use.
+
+\paragraph{What the alternatives cost.} An operator facing a configuration that
+clears both gates can quantize the weights or add a GPU, and both are common. We
+think the regime is nonetheless worth serving: quantization is an accuracy decision
+a serving team often cannot take unilaterally, and a second GPU doubles the cost of
+the node to recover memory that is already installed and idle beside it.

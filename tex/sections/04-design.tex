@@ -24,72 +24,29 @@
 \subsection{Overview}
 \label{sec:design:overview}
 
-The system presents device memory (HBM) and host memory (DRAM) as one KV store
-(Table~\ref{tab:notation} collects the notation; Appendix~\ref{app:figures}
-adds a component diagram and a request-lifecycle state machine).
-Each request has a \emph{tier}. A \textbf{device-tier} request behaves exactly
-as in stock vLLM: its KV blocks live in the paged device pool and attention
-reads them there. A \textbf{host-tier} request holds \textbf{no blocks in the
-device pool at all}; its KV lives in host DRAM, and each layer's bytes are
-streamed across the interconnect just before that layer's attention consumes
-them. Both tiers are served in one forward pass, so the weights are read once
-per step however the batch is split.
+Each request has a \emph{tier}: a \textbf{device-tier} request behaves exactly as
+in stock vLLM, while a \textbf{host-tier} request holds \textbf{no blocks in the
+device pool at all}. What follows is how that is possible --- why the host tier
+needs its own address space, what a step does, and how the cohort is sized.
+Appendix~\ref{app:figures} collects the notation, a component diagram and the
+request-lifecycle state machine.
 
 \subsection{Where the two tiers run}
 \label{sec:design:exec}
 
-\textbf{There is no partition of the GPU.} The two tiers are not separate
-streams, kernels or forward passes. They are \emph{rows of the same batch}, and
-the model runs over all of them; the only operation that distinguishes them is
-attention, and only in \emph{where it reads keys and values from}
-(Fig.~\ref{fig:exec}).
-
-\begin{figure}[t]
-\centering
-\resizebox{\columnwidth}{!}{%
-\begin{tikzpicture}[
-  x=1cm, y=1cm, font=\scriptsize,
-  op/.style={draw, rounded corners=2pt, align=center, minimum height=7mm,
-             minimum width=2.2cm, inner sep=1.2mm, fill=black!5},
-  at1/.style={op, fill=black!8, minimum width=2.8cm},
-  at2/.style={op, fill=blue!12, draw=blue!45, minimum width=2.8cm},
-  lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
-  arr/.style={-{Latex[length=1.5mm]}},
-]
-\node[op] (qkv) at (0,0) {QKV projection\\{\scriptsize all $B$ rows}};
-\node[at1] (a1)  at (3.5,0.8) {flash \#1: all rows\\{\scriptsize vs paged pool}};
-\node[at2] (a2)  at (3.5,-0.8) {flash \#2: host rows\\{\scriptsize vs slot $\ell\bmod k$}};
-\node[op] (o)   at (7.0,0) {O-proj, MLP\\{\scriptsize all $B$ rows}};
-\draw[arr] (qkv) -- (a1);
-\draw[arr] (qkv) -- (a2);
-\draw[arr] (a1) -- (o);
-\draw[arr] (a2) -- (o);
-\node[lbl] at (0,-1.1) {weights read once};
-\node[lbl] at (7.0,-1.1) {weights read once};
-\node[lbl, text=blue!70] at (3.5,-1.85)
-     {\#1 masks host rows to a single key;\\
-      \#2 gathers them, attends the slot, scatters back};
-\end{tikzpicture}}
-\caption{\textbf{One layer, one forward pass.} Every operation except attention
-runs once over the whole batch, so a host-tier request adds a row to GEMMs that
-are memory-bound on the weights regardless. Attention is two \emph{sequential}
-kernel launches over disjoint row subsets of the same tensors --- not a spatial
-partition of the device.}
-\label{fig:exec}
-\end{figure}
-
-
-Three consequences follow. Everything but attention is shared, so a host-tier
-request adds one row to GEMMs whose cost is dominated by reading the weights ---
-negligible while those GEMMs are memory-bound, which on an 8B model holds until
-batch 142 (Appendix~\ref{app:params}). The two attention calls are sequential on
-the same hardware, so they do not compete for SMs, and the second's cost scales
-with the host-tier rows rather than the batch. And the first call does no wasted
-work for those rows: masking their \texttt{seqused\_k} to 1 makes them attend a
-single key and be overwritten by the second, worth 22\% of wall time. A host-tier
-request thus occupies a row in a step that was happening anyway, paying its KV
-read out of interconnect bandwidth that sits idle while the step reads weights
---- the sense in which it rides along. \S\ref{sec:eval:cost} measures the ride.
+\textbf{There is no partition of the GPU.} The two tiers are not separate streams,
+kernels or forward passes but \emph{rows of the same batch}; the only operation that
+distinguishes them is attention, and only in \emph{where it reads keys and values
+from} (Fig.~\ref{fig:exec} draws one layer). Three consequences follow. Everything
+but attention is shared, so a host-tier request adds one row to GEMMs that are
+memory-bound on the weights regardless --- on an 8B model until batch 142
+(Appendix~\ref{app:params}). The two attention calls are sequential on the same
+hardware, so they do not compete for SMs, and the second's cost scales with the
+host-tier rows rather than the batch. And the first does no wasted work for those
+rows: masking their \texttt{seqused\_k} to 1 makes them attend a single key and be
+overwritten by the second, worth 22\% of wall time. So a host-tier request occupies a
+row in a step that was happening anyway, paying its KV read out of interconnect
+bandwidth idle while the step reads weights --- the sense in which it rides along.
 
 \subsection{Why the host tier has its own addresses}
 \label{sec:design:spaces}
@@ -98,35 +55,33 @@ The host mirror is \textbf{not} indexed by device block id, and the rest of the
 design rests on that. Under vLLM's allocator, releasing a block nulls the owner's
 block-table entry and returns the id to a free list from which it is promptly
 reissued --- so a mirror keyed by device block id would both \emph{lose the read
-mapping}, the block table no longer recording where the data was, and
-\emph{alias}, the reissued id now denoting another request's data. Each
-\emph{(request, logical block)} therefore gets an id from a private host space,
-held until the request finishes, and device ids may churn underneath. Growth
-needs no device allocation either: a new logical block takes a fresh host block
-and its tokens arrive through the per-layer write path.
+mapping} and \emph{alias}, the reissued id now denoting another request's data. Each
+\emph{(request, logical block)} therefore gets an id from a private host space, held
+until the request finishes, and device ids may churn underneath. Growth needs no
+device allocation either: a new logical block takes a fresh host block and its
+tokens arrive through the per-layer write path.
 
-The price is that the cohort's host ids are scattered while the rolling region is
-a small dense array. A \emph{compaction} once per step bridges them, sorting the
+The price is that the cohort's host ids are scattered while the rolling region is a
+small dense array. A \emph{compaction} once per step bridges them, sorting the
 cohort's blocks onto $[0,R)$ so every layer reuses one block table while the slot
-contents rotate beneath it (Appendix~\ref{app:figures}).
+contents rotate beneath it.
 
 \subsection{A decode step, end to end}
 \label{sec:design:step}
 
-Two granularities matter, and separating them is what keeps the per-layer work
-small: \textbf{addresses} are fixed for the whole step, while slot
-\textbf{contents} change every layer. Once per step, compact. Per layer, issue
-the runs into rolling slot $\ell \bmod k$ --- with $k>1$ issued ahead, so layer
-$\ell{+}1$'s transfer overlaps layer $\ell$'s compute, which is the hiding window
-the design turns on. Per layer, attend: device-tier rows read the paged pool with
-the ordinary block table, host-tier rows read slot $\ell \bmod k$ with the
-compacted one, in one pass over shared weights. Per layer, write: the token
-generated this step projects new $K,V$, which for host-tier rows go to the
+Two granularities matter, and separating them keeps the per-layer work small:
+\textbf{addresses} are fixed for the whole step, while slot \textbf{contents} change
+every layer. Once per step, compact. Per layer, issue the runs into rolling slot
+$\ell \bmod k$ --- with $k>1$ issued ahead, so layer $\ell{+}1$'s transfer overlaps
+layer $\ell$'s compute, which is the hiding window the design turns on. Per layer,
+attend: device-tier rows read the paged pool with the ordinary block table,
+host-tier rows read slot $\ell \bmod k$ with the compacted one, in one pass over
+shared weights. Per layer, write: the new $K,V$ for host-tier rows go to the
 authoritative host mirror \emph{and} into the current slot, so this step's own
-attention sees them. Several transitions are driven by the \emph{worker} rather
-than the scheduler, which is not incidental: the scheduler cannot observe a
-host-side write, so anything conditioned on KV having arrived must wait for an
-acknowledgement rather than assume (Appendix~\ref{app:figures}).
+attention sees them. Several transitions are driven by the \emph{worker} rather than
+the scheduler, which is not incidental: the scheduler cannot observe a host-side
+write, so anything conditioned on KV having arrived must wait for an acknowledgement
+(Appendix~\ref{app:figures}).
 
 \subsection{Admission}
 \label{sec:design:admission}
@@ -150,35 +105,33 @@ request ahead would otherwise block an admission that needs no resources.
 \S\ref{sec:model} fixes \emph{how many} bytes each tier carries without reference
 to which requests supply them: in the fluid limit, freed device memory and spent
 interconnect both scale with $S\btok$, so any assignment filling both budgets
-realises the whole gain. Placement can matter only through what the fluid model
-omits --- integer effects at long context, remaining lifetime, KV growth during
-decode, migration cost, and avoiding recompute-preemption --- so we present it as
-a mechanism the manager needs rather than as a result.
+realises the whole gain. Placement can matter only through what that limit omits
+--- integer effects at long context, remaining lifetime, KV growth, migration
+cost, recompute-preemption --- so we present it as a mechanism the manager needs
+rather than as a result.
 
-The intuitive signal is the wrong one. \textbf{Context length does not
-discriminate to first order}: moving a request of context $S$ frees $S\btok$
-bytes and costs $S\btok$ bytes every step, so ranking by context is ranking
-arbitrarily. What survives is \emph{remaining} generation, which sets how many
-steps a one-time seed amortises over; we estimate it as \texttt{max\_tokens}
-minus tokens produced --- a bound the scheduler already holds, needing no
-prediction and loose in the safe direction --- and admit above a threshold set at
-the amortisation point. On a substrate whose budget admits two host-tier
-requests, no ranking separates from arrival order, and
-\S\ref{sec:eval:ablation} says so.
+The intuitive signal is the wrong one. \textbf{Context length does not discriminate
+to first order}: moving a request of context $S$ frees $S\btok$ bytes and costs
+$S\btok$ bytes every step, so ranking by context is ranking arbitrarily. What
+survives is \emph{remaining} generation, which sets how many steps a one-time seed
+amortises over; we estimate it as \texttt{max\_tokens} minus tokens produced --- a
+bound the scheduler already holds, loose in the safe direction --- and admit above a
+threshold at the amortisation point. On a substrate whose budget admits two host-tier
+requests no ranking separates from arrival order, and \S\ref{sec:eval:ablation} says
+so.
 
 \label{sec:design:migration}
 Placement must also be revisable, for two situations a fixed assignment handles
-badly: device blocks free when a resident request finishes, and a host-tier
-request promoted into them sheds its link traffic for nothing; and when the
-resident cohort outgrows the pool, demoting a request is worth doing whenever it
-costs less than the recompute-preemption it avoids. Both moves carry hysteresis
-and a cooldown bounding thrash. The gate cannot be the byte budget alone, which
-prices transfer bytes while the host path also carries a fixed per-step cost
-(\S\ref{sec:model:omits}), so a demotion is a \textbf{probe}: make the move,
-settle, compare. The metric must be goodput rather than latency, because a
-demotion \emph{always} lengthens the step --- scored on latency the probe would
-revert every time, an expensive way to do nothing --- while its benefit is
-capacity, which shows up as requests served. On a link too slow to hide the
-transfer no freed capacity repays the step it costs, so the probe should revert;
-on a coherent link it should keep. That is a prediction:
+badly: device blocks free when a resident request finishes, and a host-tier request
+promoted into them sheds its link traffic for nothing; and when the resident cohort
+outgrows the pool, demotion is worth doing whenever it costs less than the
+recompute-preemption it avoids. Both moves carry hysteresis and a cooldown bounding
+thrash. The gate cannot be the byte budget alone, which prices transfer bytes while
+the host path also carries a fixed per-step cost (\S\ref{sec:model:omits}), so a
+demotion is a \textbf{probe}: make the move, settle, compare. The metric must be
+goodput rather than latency, because a demotion \emph{always} lengthens the step ---
+scored on latency the probe would revert every time --- while its benefit is
+capacity, which shows up as requests served. On a link too slow to hide the transfer
+no freed capacity repays the step it costs, so the probe should revert; on a
+coherent link it should keep. That is a prediction:
 \S\ref{sec:eval:ablation} explains why a two-rider budget cannot test it.

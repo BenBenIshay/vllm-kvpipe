@@ -9,155 +9,113 @@
 \section{Introduction}
 \label{sec:intro}
 
-A GPU serving LLM decode is mostly idle. Generating one token for a batch reads
-every model weight and every resident KV byte with almost no arithmetic per byte,
-so the arithmetic units run at single-digit utilization while the memory system
-saturates. What stops the server batching more requests is not compute: it is
-that the KV cache has exhausted device memory. A trace-driven study of KV
-offloading reaches the same conclusion from the workload side, finding device
-memory capacity rather than token budget to be what binds~\cite{bottlenecks}.
+A GPU serving LLM decode is mostly idle. Generating one token for a batch reads every
+model weight and every resident KV byte with almost no arithmetic per byte, so the
+arithmetic units run at single-digit utilization while the memory system saturates.
+What stops the server batching more requests is not compute: the KV cache has
+exhausted device memory. A trace-driven study reaches the same conclusion from the
+workload side, finding device memory capacity rather than token budget to be what
+binds~\cite{bottlenecks}.
 
 The machine has more memory than the GPU's. A Grace-Hopper
-node~\cite{gracehopper} pairs 96\,GB of HBM with hundreds of gigabytes of host
-DRAM, and NVLink-C2C connects them at 450\,GB/s per direction.\footnote{The
-commonly quoted 900\,GB/s is bidirectional; a KV stream is unidirectional
-host-to-device, so 450\,GB/s is the figure that bounds it, and we measure rather
-than assume even that.} At that rate the KV a decoding request needs can cross
-the link inside the window during which the GPU is reading its own weights and
-wants nothing from the link. Host DRAM stops being a place to park idle requests
-and becomes usable memory for running ones.
+node~\cite{gracehopper} pairs 96\,GB of HBM with hundreds of gigabytes of host DRAM,
+and NVLink-C2C connects them at 450\,GB/s per direction --- the commonly quoted 900
+is bidirectional, where a KV stream is not. At that rate the KV a decoding request
+needs can cross the link inside the window during which the GPU is reading its own
+weights and wants nothing from the link. Host DRAM stops being a place to park idle
+requests and becomes usable memory for running ones.
 
-\paragraph{Two memories, managed as one.} This paper builds a heterogeneous
-memory system for LLM decode: HBM and host DRAM managed as a single KV store,
-with each request assigned to a tier. A \textbf{device-tier} request behaves as
-in stock vLLM. A \textbf{host-tier} request holds no device blocks at all --- its
-KV lives in host memory, and each layer's bytes are streamed across the link just
-before that layer's attention reads them, into a small buffer reused across all
-layers. Four such buffers serve a 64-layer model, so a host-tier request occupies
-about 6\% of the device memory a resident one needs. Both tiers are rows of the
-same batch in one forward pass, so the weights are read once however the batch is
-split. The target throughout is a decode node in a prefill/decode-disaggregated
-deployment~\cite{distserve,splitwise,mooncake}, where a request arrives with its
-KV already computed --- the assumption that makes a host-tier request
-\emph{additive} rather than merely relocated (\S\ref{sec:background:pd}).
+\paragraph{Two memories, managed as one.} This paper builds a heterogeneous memory
+system for LLM decode: HBM and host DRAM managed as a single KV store, with each
+request assigned to a tier. A \textbf{device-tier} request behaves as in stock vLLM;
+a \textbf{host-tier} request holds no device blocks at all, its KV living in host
+memory and each layer's bytes streamed across the link just before that layer's
+attention reads them, into a small buffer reused across all layers --- four buffers
+for a 64-layer model, about 6\% of the device memory a resident request needs. Both
+tiers are rows of the same batch in one forward pass, so the weights are read once
+however the batch is split. The target throughout is a decode node in a
+prefill/decode-disaggregated deployment~\cite{distserve,splitwise,mooncake}, where a
+request arrives with its KV already computed --- the assumption that makes a
+host-tier request \emph{additive} rather than merely relocated
+(\S\ref{sec:background:pd}).
 
-\paragraph{Why choose per request.} Existing systems vary \emph{how much} KV sits
-on the host and never \emph{whose}. Stock vLLM~\cite{vllm} and
-SGLang~\cite{sglang} keep all of it in HBM and make requests wait when it does not
-fit; DirectKV~\cite{directkv} keeps all of it on the host for every request,
-always, which is why it needs no memory management at all. Pie~\cite{pie} is the
-closest prior work and genuinely uses both memories, holding $m$ of a model's $n$
-layers on the host and tuning $m$ against measured swap time --- but that split
-applies to every request identically.
-
-Granularity buys three things a uniform fraction cannot. Capacity is freed in
-\emph{whole requests}, where a uniform split leaves every request holding
-$(n-m)/n$ of its cache resident and frees capacity only in proportion. Movement
-happens once per request at a moment the scheduler picks rather than once per layer
-per token, which removes the return leg a layer split must pay. And only the
-requests we select consume link bandwidth, so a load spike can be absorbed by
-moving a few requests instead of degrading all of them. Neither endpoint is
-optimal for a reason visible without measurement --- each leaves one KV path
-entirely idle, while a system placing some requests in each reads from both at
-once and its batch is bounded by the sum (Table~\ref{tab:endpoints}).
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{lccr}
-\toprule
-\emph{Projected} & HBM & link & batch \\
-\midrule
-all-HBM (vLLM, SGLang)     & 26.5\,GB      & \textbf{0}    & 12 \\
-all-host (uniform offload) & \textbf{0}    & 14.2\,GB      & 6 \\
-\textbf{both (this paper)} & 26.5\,GB      & 14.2\,GB      & \textbf{18} \\
-\bottomrule
-\end{tabular}
-\caption{KV read per step, and the batch it supports, for Qwen2.5-32B fp16 at 8K
-on a GH200-96; each single-memory design leaves one KV path unused.
-\textbf{Projections} from \texttt{model/killer\_v2.py}: $W = 65.5$\,GB measured
-less a 4\,GB device reserve gives $\Ckv = 26.5$\,GB, $\btok = 256$\,KiB,
-$\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}, and $\Xlink = 419$\,GB/s
-measured on this part~\cite{pie} rather than the 450 spec. These count
-\emph{capacity} --- how many requests fit, not how fast they are served, a
-difference \S\ref{sec:model:omits} shows is decisive. All three rows share one
-$\mathrm{ITL}_0$ to stay comparable, which flatters the all-host row: computed
-self-consistently its step would be weights-only and its batch 4. The interior
-point is unaffected.}
-\label{tab:endpoints}
-\end{table}
+\paragraph{Why choose per request.} Existing systems vary \emph{how much} KV sits on
+the host and never \emph{whose}. vLLM~\cite{vllm} and SGLang~\cite{sglang} keep all
+of it in HBM and make requests wait; DirectKV~\cite{directkv} keeps all of it on the
+host, always, which is why it needs no memory management at all. Pie~\cite{pie}, the
+closest prior work, genuinely uses both memories --- $m$ of a model's $n$ layers on
+the host --- but that split applies to every request identically
+(\S\ref{sec:related}). Choosing per request buys three things a uniform fraction
+cannot: capacity freed in \emph{whole} requests rather than in proportion, movement
+once per request at a moment the scheduler picks rather than once per layer per
+token, and link bandwidth spent only on the requests we select. And neither endpoint
+is optimal for a reason visible without measurement --- each leaves one KV path
+entirely idle, where a system placing some requests in each reads from both and its
+batch is bounded by the sum: for Qwen2.5-32B fp16 at 8K on a GH200-96, 18 against 12
+all-HBM and 6 all-host (Table~\ref{tab:endpoints}).
 
 \paragraph{When does a second tier pay?} Before building one we ask when it is
-worth having, and the answer is narrow enough to be useful. A capacity model takes
-a profile of the device and returns the host cohort that maximises throughput; two
-of its consequences run against intuition. Long context does \emph{not} help,
-shrinking the resident and affordable host cohorts in the same proportion. And the
-value of a second tier tracks \textbf{how much of memory the weights consumed}
-rather than model size --- sharpest in that the \emph{same model at two weight
-precisions} lands at two different points on the curve. Capacity is not
-throughput, and the gap is where this paper spends its effort: charging the host
-path's fixed per-step cost and its per-request cost gives a second condition that
-binds harder than the latency one (\S\ref{sec:model:omits}).
+worth having, and the answer is narrow enough to be useful. Two consequences of the
+capacity model run against intuition: long context does \emph{not} help, shrinking
+the resident and affordable host cohorts in the same proportion, and the value of a
+second tier tracks \textbf{how much of memory the weights consumed} rather than
+model size --- sharpest in that the \emph{same model at two weight precisions} lands
+at two different points on the curve. Capacity is not throughput, though, and the
+gap is where this paper spends its effort: charging the host path's fixed per-step
+cost as well as its per-request cost gives a second condition that binds harder than
+the latency gate (\S\ref{sec:model:omits}).
 
 \paragraph{Contributions.}
 \begin{enumerate}\itemsep2pt
-\item \textbf{A heterogeneous KV memory manager} (\S\ref{sec:design}): HBM and
-      host DRAM as one store, in which a host-tier request holds no device
-      blocks, so tiered requests are additive rather than substitutional.
+\item \textbf{A heterogeneous KV memory manager} (\S\ref{sec:design}): HBM and host
+      DRAM as one store, in which a host-tier request holds no device blocks, so
+      tiered requests are additive rather than substitutional.
 \item \textbf{A capacity model that picks a configuration from a profile}
-      (\S\ref{sec:model}): given measured bandwidths and the host path's two
-      costs it returns the host cohort that maximises decode throughput, and says
-      when that cohort is zero. Its structure explains which configurations are
-      worth serving this way.
-\item \textbf{An admission controller in vLLM} (\S\ref{sec:design:admission}):
-      the host cohort sized at runtime from the rider-free step time and the
-      achieved link bandwidth, rather than from a configured offload fraction.
+      (\S\ref{sec:model}): given measured bandwidths and the host path's two costs
+      it returns the host cohort that maximises decode throughput, and says when
+      that cohort is zero.
+\item \textbf{An admission controller in vLLM} (\S\ref{sec:design:admission}): the
+      host cohort sized at runtime from the rider-free step time and the achieved
+      link bandwidth, not from a configured offload fraction.
 \item \textbf{A measured account of what a host-tier request costs}
-      (\S\ref{sec:eval}), on a substrate the model says cannot pay --- which is
-      what makes the cost decomposition, rather than a headline speedup, the
-      result we can defend today.
+      (\S\ref{sec:eval}), on a substrate the model says cannot pay --- which makes
+      the cost decomposition, rather than a speedup, the result we can defend
+      today.
 \end{enumerate}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{figs/f6.pdf}
-\caption{The cost of a host-tier request is not affine. Below the knee the
-aggregate transfer still fits inside a step and is imperfectly hidden; above it
-the step \emph{is} the transfer and each request costs its full link time. The
-shaded area is what the kink model does not carry, and it is where the paper's
-result lives: decomposed, it is a \emph{fixed} $12.3$\,ms per step plus
-$2.2$\,ms per request. A faster interconnect moves the knee right; it does not
-shrink the fixed term.
-Qwen2.5-32B, 2048 context, 16 device-tier residents, A100/PCIe at a measured
-25.1\,GB/s, 3 repeats with under 1\% spread.}
+\caption{The cost of a host-tier request is not affine. Below the knee the transfer
+still fits inside a step and is imperfectly hidden; above it the step \emph{is} the
+transfer. The shaded area is what the kink model does not carry, and it is where the
+paper's result lives: a \emph{fixed} $12.3$\,ms per step plus $2.2$\,ms per
+request. A faster link moves the knee right; it does not shrink the fixed term.
+Qwen2.5-32B, 2048 context, 16 residents, A100/PCIe at 25.1\,GB/s, 3 repeats under
+1\% spread.}
 % src: paper/data/rider_cost_phase0.json @ fb7e9db2a
 \label{fig:costcurve}
 \end{figure}
 
 \paragraph{What it costs, and why PCIe cannot pay.}
 Figure~\ref{fig:costcurve} is the measurement the rest of the paper turns on. Two
-host-tier requests grow a $54.1$\,ms step to $70.8$, and the curve bends where
-the aggregate transfer stops fitting inside a step. Decomposed, that growth is
+host-tier requests grow a $54.1$\,ms step to $70.8$, and the curve bends where the
+aggregate transfer stops fitting inside a step. Decomposed, that growth is
 $12.3$\,ms of \emph{fixed} cost --- paid once per step for using the host path at
-all --- plus $2.2$\,ms per request, so a prefetch one layer deep hides about
-$90\%$ of each transfer and what escapes it is small beside the fixed term.
+all --- plus $2.2$\,ms per request, so a prefetch one layer deep hides about $90\%$
+of each transfer and what escapes is small beside the fixed term.
 
-That settles the PCIe case, and the arithmetic is worth doing explicitly, because
-a larger batch pays only if the step grows by less. On A100 at 2048 context the
-link affords two host-tier requests on top of sixteen residents --- a batch of
-$1.13\times$ --- while the step grows to $70.8/54.1 = 1.31\times$, most of it the
-fixed term. The product is $0.86\times$: a loss, and not a close one. The
-technique needs a link that affords enough riders for the batch gain to outrun a
-step growth whose largest component does not shrink with bandwidth at all. A
-$25$\,GB/s link does not; the model puts the crossing at $60$\,GB/s, and a
-coherent interconnect runs at $419$~\cite{pie}.
-
-Against a fixed KV pool we confirm the mechanism independently of its economics:
-host-tier requests raise peak concurrency from 8 to 48, with KV delivered
-synthetically and no latency target met --- establishing that admission is
-decoupled from the device pool, and nothing about speed.
+That settles the PCIe case, since a larger batch pays only if the step grows by
+less: the link affords two host-tier requests on sixteen residents, a batch of
+$1.13\times$ against a step growing $1.31\times$, for a product of $0.86\times$.
+The technique needs a link affording enough riders for the batch gain to outrun a
+step growth whose largest component does not shrink with bandwidth at all --- the
+model puts that crossing at $60$\,GB/s, where PCIe gives $25$ and a coherent
+interconnect $419$~\cite{pie}. The mechanism itself we do confirm independently of
+its economics, raising peak concurrency against a fixed KV pool from 8 to 48
+(\S\ref{sec:eval:capacity}).
 % src: paper/data/preload_capacity.json @ f3df05bdb
-On a coherent interconnect the model projects gains for the two weight-heavy
+On a coherent link the model then projects gains for the two weight-heavy
 configurations and losses for the other two, at margins of a few milliseconds in
-the fixed cost --- which is the first thing \S\ref{sec:eval} asks such a machine
-to measure.
+the fixed cost --- the first thing \S\ref{sec:eval} asks such a machine to
+measure.
