@@ -178,3 +178,24 @@ $k{=}1$ would serialise transfer against compute. \S\ref{sec:eval:cost}
 measures the fraction actually hidden.}
 \label{fig:pipeline}
 \end{figure}
+
+% Moved here from section 4 (2026-09-27): a six-symbol table, three of whose
+% symbols section 3 already defines, is not worth a float in a 10pp body.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+symbol & meaning \\
+\midrule
+$L$ & layers in the model \\
+$b$ & tokens per KV block (vLLM block size) \\
+$k$ & rolling slots, $k \ll L$ (we use 4) \\
+$R$ & blocks the \emph{active} host-tier cohort occupies this step \\
+$S$ & context length \\
+$\btok$ & KV bytes per token, $= 2 L\,n_{kv}\,d_h \cdot \mathrm{sizeof(dtype)}$ \\
+\bottomrule
+\end{tabular}
+\caption{Notation local to the design section. Symbols shared with \S\ref{sec:model} ($S$, $\btok$, $L$) carry the same meaning there; $b$, $k$ and $R$ appear only here.}
+\label{tab:notation}
+\end{table}

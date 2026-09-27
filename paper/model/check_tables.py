@@ -45,7 +45,12 @@ def at_site(filename, anchor, value, label, window=400):
     that way, all of them the pre-2026-09-26 value, so every derived number
     quoted in prose is now pinned to its own sentence.
     """
-    body = (TEX / filename).read_text()
+    # Whitespace-collapsed on both sides: an anchor phrase that straddles a line
+    # wrap is not a drifted number, and having a reflow break the gate trains
+    # people to edit the checker instead of the paper (it happened, 2026-09-27).
+    ws = lambda t: re.sub(r"\s+", " ", t)
+    body = ws((TEX / filename).read_text())
+    anchor, value = ws(anchor), ws(value)
     i = body.find(anchor)
     if i < 0:
         print(f"  FAIL {label}: anchor {anchor!r} not in {filename}")
@@ -165,8 +170,8 @@ for gb, want in K.EFF_KV_CURVE:
 
 print("\nSites round 4 found stale -- now asserted")
 for filename, anchor, value, label in [
-    ("03-model.tex", "full-pool ITL of $78.4$", "53.2", "3.2: full-pool pair"),
-    ("03-model.tex", "full-pool ITL of $78.4$", "1.47", "3.2: the spread"),
+    ("03-model.tex", "gives $78.4$", "53.2", "3.2: full-pool pair"),
+    ("03-model.tex", "gives $78.4$", "1.47", "3.2: the spread"),
             ("03-model.tex", "applies it to", "19--76", "3: eta_kv extrapolation range"),
     ("06-evaluation.tex", "holds within each model across", "41", "6: configuration count"),
 ]:
