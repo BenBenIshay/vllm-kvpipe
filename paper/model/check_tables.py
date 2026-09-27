@@ -137,6 +137,7 @@ at_site("02-background.tex", "Qwen2.5-32B spends $45.2$ of $53$", "85\\% weights
 print("\nDerived numbers quoted in prose, pinned to their own sentence")
 SITES = [
         ("03-model.tex", "capacity gains of $\\times$1.22", "1.67", "3.5: top of the capacity range"),
+    ("03-model.tex", "capacity column ($\\times1.50$", "1.54", "3.3: capacity vs hand recomputation"),
     ("03-model.tex", "become throughput ratios of", "1.05", "3.5: 70B throughput"),
     ("03-model.tex", "Eq.~\\ref{eq:fstar} gives", "12.8", "3.5: F* for the primary model"),
     ("03-model.tex", "needing $23\\%$ and", "44", "3.5: the two rows that miss"),

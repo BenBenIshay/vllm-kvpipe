@@ -145,18 +145,14 @@ a serving system does improves it. The amplifier is $\HBM/\Ckv$: \textbf{the
 value of offloading tracks how much of HBM the weights ate}, not model size and
 not context length.
 
-That single observation is the section's most useful consequence, because it
-is counter to how the field selects evaluation models.
-
 Equation~\ref{eq:gain-exact} is a \emph{capacity} result: it counts requests the
-device can hold, not requests per second it can serve. Two effects separate the
-two, and \S\ref{sec:model:omits} charges both. Each rider costs $k/L$ of a
-resident's blocks for the rolling window it streams into, so the resident cohort
-shrinks slightly as the host cohort grows --- which is why
-Table~\ref{tab:gain}'s capacity column ($\times$1.45 for Qwen2.5-32B fp16) sits
-below a hand recomputation of Eq.~\ref{eq:gain-exact} ($\times$1.54). And the unhidden
-per-request cost $c$ lands on the step for every rider admitted. Neither is
-negligible, and a third cost --- the fixed $F$ --- decides the paper.
+device can hold, not requests per second it serves. Two effects separate them
+and \S\ref{sec:model:omits} charges both --- each rider displaces a share of a
+resident's blocks for the window it streams into, which is why
+Table~\ref{tab:gain}'s capacity column ($\times1.50$ for Qwen2.5-32B fp16) sits
+below a hand recomputation of Eq.~\ref{eq:gain-exact} ($\times1.54$); and the
+per-request cost lands on the step for every rider admitted. A third cost, the
+fixed $F$, decides the paper.
 
 \begin{table*}[t]
 \centering
@@ -171,43 +167,20 @@ Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & 12.3\,ms & $\ti
 Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & 15.4\,ms & $\times$1.67 & $\times$\textbf{1.05} \\
 \bottomrule
 \end{tabular}
-\caption{\emph{All rows are projections}, not measurements. A second memory
-tier is an amplifier on $\HBM/\Ckv$ and the table is monotone in it.
-$\Ckv = \HBM - W - 4$\,GB, the last term a device reserve for activations,
-workspace and allocator fragmentation --- so weights and $\Ckv$ do not sum to
-$\HBM$, and Eq.~\ref{eq:gate} uses the same definition. \emph{capacity} is
-$B_{\mathrm{tot}}/B_0$, charging both the $k/L$ of a resident's blocks each
-rider displaces at $k{=}4$ \emph{and} the two HBM passes its KV makes per step
-(the link writes it into the slot, attention reads it out). \emph{tput} is
-Eq.~\ref{eq:gain-tput}, which additionally charges the unhidden residual
-$\Delta$ (2.2--12.3\,ms) and $F$. \textbf{$F$ is charged per layer}:
-\S\ref{sec:impl:cost} measures $12.3$\,ms on a 64-layer model and attributes it
-to per-layer launch structure, so a 32-layer model pays half and an 80-layer one
-a quarter more. Billing every row the 64-layer figure, as we did until we
-checked our own account of what $F$ is, flattered the 8B and penalised the 70B. \textbf{Every row
-loses on tput while every row gains on capacity}: that gap, not the multiplier,
-is the paper's result, and \S\ref{sec:model:omits} says what would close it.
-Charging the HBM passes is what separates the two small-amplifier rows from the
-two large ones --- uncharged they read $\times$1.22 and $\times$1.28 --- so the
-amplifier matters \emph{more} once a rider is billed for the device bandwidth
-it actually consumes, not less. Weight figures are
-measured checkpoints except Qwen-32B fp8, for which we hold no checkpoint and
-quote the nominal size; the fp16 row measures 65.5\,GB against a nominal 64.0,
-so the fp8 row is likely optimistic by a similar margin. \textbf{The two
-Qwen-32B rows differ only in weight precision}, which isolates $\HBM/\Ckv$ from
-every other architectural variable.
-\textbf{All rows are computed at a 50\,ms latency target, and for three of the
-four that target --- not the interconnect --- is what caps the host cohort.}
-Only Llama-70B fp8 is link-bound here, using 13.6\,GB of a 13.8\,GB budget; the
-other three stop well short of theirs (2.4 of 19.5, 5.6 of 18.1, 12.8 of 14.2)
-because admitting another rider would breach 50\,ms. At an 80\,ms target the
-capacity column reads $\times$1.22, $\times$1.28, $\times$1.50 and $\times$1.67
---- the last two at their interconnect bound, where the 50\,ms target held them
-below it.
-The multiplier of Eq.~\ref{eq:gain-exact} is the \emph{interconnect} bound and an
-upper bound on these rows, not a description of them.}
-% src: paper/model/tables.py @ this commit (wraps model/killer_v2.py:analyze,
-% S=8192, GH200-96 at the measured 419 GB/s, slo=50 ms, stage=2, eta_o=0.62, F per layer)
+\caption{\emph{Projections}, not measurements, at 2048 context and an 80\,ms
+latency target --- the first round target above $\mathrm{ITL}_0 + F$ for every
+row, which is the gate once the host path's own fixed cost is charged.
+$\Ckv = \HBM - W - 4$\,GB, the last a device reserve. $F$ is measured at
+$12.3$\,ms on a 64-layer model and charged per layer. \emph{capacity} charges
+each rider the blocks it displaces and the two HBM passes its KV makes;
+\emph{tput} additionally charges $F$ and the per-request cost.
+\textbf{The two rows where weights consume most of the device pay; the two where
+they do not, do not} --- the amplifier doing the work. Weight figures are
+measured checkpoints except Qwen-32B fp8. \textbf{The two Qwen-32B rows differ
+only in weight precision.} Appendix~\ref{app:params} gives the inputs and the
+sensitivity.}
+% src: paper/model/tables.py (wraps killer_v2.py:analyze, S=8192, GH200-96 at
+% the measured 419 GB/s, slo=80 ms, stage=2, F per layer, c = 12% of link)
 \label{tab:gain}
 \end{table*}
 
