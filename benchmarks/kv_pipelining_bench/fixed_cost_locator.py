@@ -34,11 +34,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 
 ROOT = "/mnt/beegfs/benishay/vllm-kvpipe"
 PY = f"{ROOT}/.venv/bin/python"
 BENCH = f"{ROOT}/benchmarks/kv_pipelining_bench/pd_decode_goodput.py"
+# Default kept for reference only. 20260904 holds the PUBLISHED fixed-cost
+# numbers (39.16 / 38.84 / 37.02 ms, the origin of the "37.0" the optimisation
+# cycle started from), so writing there would overwrite the record this script
+# is being re-run to compare against. --logdir is required; the same omission
+# in rider_hide_efficiency.py had to be fixed for the same reason.
 LOGDIR = "/mnt/beegfs/benishay/paper_runs/20260904"
 
 
@@ -46,7 +52,7 @@ def run(args, residents: int, riders: int) -> dict:
     """`residents` requests on HBM plus `riders` on the host tier."""
     arm = "no_riders" if riders == 0 else "riders"
     offered = residents + riders
-    out = f"{LOGDIR}/fixedcost_r{residents}_k{riders}.json"
+    out = f"{args.logdir}/fixedcost_r{residents}_k{riders}.json"
     cmd = [PY, BENCH, "--model", args.model, "--ctx", str(args.ctx),
            "--out-len", str(args.out_len), "--offered", str(offered),
            "--b-hbm-max", str(residents), "--arms", arm,
@@ -70,7 +76,13 @@ def main() -> int:
     ap.add_argument("--out-len", type=int, default=64)
     ap.add_argument("--residents", default="2,4,8")
     ap.add_argument("--gpu-mem-util", type=float, default=0.83)
+    ap.add_argument("--logdir", required=True,
+                    help="output directory. REQUIRED: the old hardcoded "
+                         f"default was {LOGDIR}, which holds the published "
+                         "fixed-cost numbers this script is re-run to compare "
+                         "against. Pass a fresh dated directory.")
     args = ap.parse_args()
+    os.makedirs(args.logdir, exist_ok=True)
 
     rows = []
     for R in [int(x) for x in args.residents.split(",")]:
@@ -78,7 +90,7 @@ def main() -> int:
         trt = run(args, R, 1)
         rows.append({"residents": R, "base": base, "one_rider": trt})
 
-    with open(f"{LOGDIR}/fixed_cost_locator.json", "w") as f:
+    with open(f"{args.logdir}/fixed_cost_locator.json", "w") as f:
         json.dump(rows, f, indent=2)
 
     print("=" * 74)

@@ -11,7 +11,7 @@
 #SBATCH --exclusive
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=250G
-#SBATCH --time=03:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/mnt/beegfs/benishay/paper_runs/20260930/overhead/m0_baseline.%j.out
 
 set -u
@@ -97,6 +97,20 @@ echo "--- B: co-located rig, connector OFF (A/B only)"
   --riders 0,2,4,6 --allow-colocated --repeats 3 \
   --short-len 8 --long-len 136 --gpu-mem-util 0.90 --link-gbps 25.1 \
   --outdir "$OUT" --out B_colocated.json 2>&1 | tail -45
+
+# ------------------------------------------- C: what is the fixed anchor TODAY
+# fixed_cost_locator recorded 39.16 / 38.84 / 37.02 ms at 2/4/8 residents --
+# flat across 4x the residents, which is what ruled out a batch-wide gather and
+# gave the "37.0" the optimisation cycle started from. It attributed the cost to
+# residents losing their fused attention pass. But flash_attn.py:1034 now
+# BYPASSES the two-pass split when the pool override is active, so residents may
+# no longer pay it. If so the anchor is stale in our favour and every projection
+# built on it is wrong. Re-measure before projecting anything.
+echo "--- C: fixed-cost anchor, re-measured"
+"$PY" benchmarks/kv_pipelining_bench/fixed_cost_locator.py \
+  --model Qwen/Qwen2.5-32B-Instruct --ctx 2048 --out-len 64 \
+  --residents 2,4,8 --gpu-mem-util 0.83 \
+  --logdir "$OUT" 2>&1 | tail -30
 
 # ------------------------------------------------------------------- teardown
 echo "--- teardown"
