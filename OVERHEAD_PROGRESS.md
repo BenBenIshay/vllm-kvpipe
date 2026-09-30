@@ -102,10 +102,52 @@ if the connector A/B shows a material gap then **the `0.86x` figure and
 Figure 1's cost curve are both affected**, and that is a paper-level decision,
 not mine.
 
-### C4 — OPEN. **The most consequential finding so far. Paper-level.**
+### C4 — **REFUTED 2026-09-30. My hypothesis was wrong; the paper is right.**
 
-**The paper's "not affine" result may be an admission-ramp artifact, not a
-superlinear mechanism.**
+I proposed that the "not affine" rise was admission-ramp residue. Tested it by
+holding `long_len` at 136 and raising `short_len` to 24 so the short run clears
+the ramp. The gate passed 4/4, and `ramp_end` came out **identical in the short
+and long runs at every rider count** (0/0, 2/2, 6/6, 10/10), so the ramp
+genuinely cancels — 127 to 136 steady steps in the long run, the short run always
+past it, `max_waiting_steady = 0` throughout.
+
+The rise survives almost untouched:
+
+| dT/rider | r=2 | r=4 | r=6 |
+|---|---|---|---|
+| s8 (published shape) | 8.96 | 10.97 | 15.49 |
+| s24 (ramp cleared) | 8.67 | 10.97 | 15.11 |
+
+Ramp residue is **<=3%** (dT 17.91 -> 17.35, 43.90 -> 43.86, 92.93 -> 90.66). It
+does not explain a 70% rise.
+
+**And the real explanation is the paper's own kink model.** Per-rider link time is
+`u/X = 21.4 ms` at ctx 2048 and the knee is `r* = 2.50`:
+
+| r | step | dT | dT/rider | marginal cost of the NEXT rider | kink residual |
+|---|---|---|---|---|---|
+| 2 | 70.92 | 17.35 | 8.67 | **8.67** | 17.35 |
+| 4 | 97.44 | 43.86 | 10.97 | **13.26** | 8.25 |
+| 6 | 144.23 | 90.66 | 15.11 | **23.40** | 10.44 |
+
+The marginal rider costs 8.67 ms below the knee, where its transfer still hides
+inside compute, and **23.40 ms above it — essentially its full 21.4 ms of link
+time, now exposed**. `dT/rider` rises because the marginal rider stops being
+hidden, not because of a superlinear overhead.
+
+So §6.5's conclusion stands: `dT = F + cr` is the wrong shape, an affine fit
+returns a meaningless negative fixed cost, and the kink is the right model. The
+ramp mechanism I described is real and correctly characterised — `ramp_end` is
+exactly the `2(r-1)` I predicted — it is simply too small to matter.
+
+**What this confirms about the campaign's design:** the kink residual is
+non-monotone (17.35 / 8.25 / 10.44) because above the knee it is a small
+difference of large numbers. That is precisely why the overhead has to be
+measured **below** the knee at short context, where `dT` is dominated by overhead
+rather than by exposed transfer. The below-knee regime is not a convenience, it
+is the only place the overhead terms are identifiable.
+
+### C4-orig — the hypothesis as first stated, for the record
 
 Arm A reproduced the published decode-node curve to within **0.35%**
 (53.45 / 71.36 / 97.35 / 146.38 ms against 53.512 / 71.632 / 97.546 / 146.886),
