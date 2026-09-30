@@ -452,6 +452,17 @@ def main() -> int:
         # Residents stay at capacity; the extra r requests become riders.
         cfg.hybrid_b_hbm_max = a.batch
         prompts = all_prompts[:a.batch + r]
+
+        # THROWAWAY AT EACH RIDER COUNT. The engine is warmed once at startup,
+        # not after each change of rider count, and the first measurement at a
+        # new count absorbs one-off work -- host-pool extents and pinned buffers
+        # for the new riders. Measured at ctx 512: rep1 at r=1 came out 38.70 ms
+        # against 61.60-61.78 for reps 2-5, i.e. BELOW the 49.29 ms rider-free
+        # baseline. The below-baseline guard happened to catch that one because
+        # it was too FAST; a too-slow first rep would pass straight through, so
+        # relying on the guard is not enough.
+        measure_step(llm, prompts, a, r)
+
         reps = []
         for i in range(a.repeats):
             m = measure_step(llm, prompts, a, r)

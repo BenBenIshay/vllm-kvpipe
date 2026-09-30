@@ -301,7 +301,10 @@ class DecodePurityMonitor:
             self._orig = None
 
     def _record(self, out) -> None:
-        t = time.perf_counter_ns()
+        # Named t_ns, not t: the token-count comprehension below binds `t` as its
+        # loop variable. Python 3 scopes that separately so it does not actually
+        # clobber this, but the collision is a trap and cost one run already.
+        t_ns = time.perf_counter_ns()
         nst = getattr(out, "num_scheduled_tokens", None) or {}
         total = int(getattr(out, "total_num_scheduled_tokens", 0) or 0)
         if not nst and not total:
@@ -316,6 +319,7 @@ class DecodePurityMonitor:
         except Exception:                                      # noqa: BLE001
             waiting = -1
         self._win.steps.append({
+            "t": t_ns,          # feeds step_ms_direct; omitted once, silently
             "running": len(self.sched.running),
             "waiting": waiting,
             "tokens": total,
@@ -420,6 +424,59 @@ def _selftest() -> int:
           f"step (planted 50.0 ms, ramp 20, drain 90) -> "
           f"{'None' if got is None else f'{got:.2f}'} ms "
           f"over {d.get('n_intervals')} intervals")
+
+    # WIRING TEST. The cases above build step dicts by hand, so they exercise
+    # `Window` but never `_record` -- which is how a missing "t" key shipped and
+    # silently disabled step_ms_direct for a whole run while the selftest stayed
+    # green. This drives the real recording path through fakes.
+    class _FakeQ(list):
+        pass
+
+    class _FakeAdm:
+        def __init__(self, tiers):
+            self._req_tier = tiers
+
+    class _FakeSched:
+        def __init__(self, n_res, n_rid):
+            self.running = list(range(n_res + n_rid))
+            self.waiting = _FakeQ()
+            self.transfer_aware_admission = _FakeAdm(
+                {f"r{i}": ("hbm" if i < n_res else "cpu")
+                 for i in range(n_res + n_rid)})
+
+        def schedule(self):
+            n = len(self.running)
+            class _Out:
+                num_scheduled_tokens = {f"r{i}": 1 for i in range(n)}
+                total_num_scheduled_tokens = n
+            return _Out()
+
+    class _FakeLLM:
+        def __init__(self, sched):
+            inner = type("I", (), {"scheduler": sched})()
+            core = type("C", (), {"engine_core": inner})()
+            self.llm_engine = type("E", (), {"engine_core": core})()
+
+    sched = _FakeSched(16, 6)
+    mon = DecodePurityMonitor(_FakeLLM(sched))
+    mon.attach()
+    mon.start_window()
+    for _ in range(40):
+        sched.schedule()
+    win = mon.stop_window()
+    mon.detach()
+
+    keys = set(win.steps[0]) if win.steps else set()
+    need = {"t", "running", "waiting", "tokens", "extra", "hbm", "cpu"}
+    v = win.verdict(16, 6)
+    wiring_ok = (len(win.steps) == 40 and need <= keys and v["ok"]
+                 and v.get("step_ms_direct") is not None)
+    total += 1
+    passed += wiring_ok
+    print(f"  [{'ok ' if wiring_ok else 'BAD'}] _record wiring: {len(win.steps)} "
+          f"steps, keys {'complete' if need <= keys else 'MISSING ' + str(need - keys)}"
+          f", verdict ok={v['ok']}, step_ms_direct="
+          f"{'present' if v.get('step_ms_direct') is not None else 'MISSING'}")
 
     print(f"\nPURITY GATE SELFTEST {'PASS' if passed == total else 'FAIL'} "
           f"({passed}/{total})")
