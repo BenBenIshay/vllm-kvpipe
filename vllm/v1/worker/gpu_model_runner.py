@@ -3995,10 +3995,16 @@ class GPUModelRunner(
         # already reads "hbm", so their resident blocks must be correct now.
         self._maybe_restore_promoted(scheduler_output, attn_metadata)
 
+        from vllm.v1.hybrid_phase_timers import PT as _PT
+        _t_split = _PT.now()
         self._maybe_set_hybrid_decode_split(
             num_reqs, num_tokens_unpadded, scheduler_output.req_kv_tiers,
             attn_metadata,
         )
+        # Per-step host work before any layer runs: tier classification, the
+        # rolling compaction, and the five small H2D transfers of the step's
+        # index tensors. Charged once per step, not per layer.
+        _PT.add("setup_hybrid_split", _t_split)
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
@@ -4022,6 +4028,11 @@ class GPUModelRunner(
                 inputs_embeds=inputs_embeds,
                 **model_kwargs,
             )
+
+        # Emit this step's phase record. Placed after the forward so every layer
+        # has reported, and before postprocess so the record covers the step's
+        # host-path work only. No-op unless VLLM_KVPIPE_PHASE_TIMERS is set.
+        _PT.step_end()
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:

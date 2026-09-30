@@ -52,6 +52,11 @@ from vllm.v1.attention.backends.utils import (
     get_kv_cache_layout,
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
+# Measurement apparatus for the host-tier path. Imported at module level, not
+# inside the per-layer function: the subject of these measurements is small
+# per-layer costs, so the instrument must not add one.
+from vllm.v1.hybrid_measure_knobs import rungd_layer_limit
+from vllm.v1.hybrid_phase_timers import PT
 
 logger = init_logger(__name__)
 
@@ -586,6 +591,7 @@ class FlashAttentionImpl(AttentionImpl):
         host-block-id pool (rung-d serve-more). The standard single pass already
         ran for all rows; this replaces the CPU rows (whose resident KV is stale)
         and folds this step's token into the pool."""
+        _t = PT.now()
         pool = split.rungd_pool
         cpu_idx = split.cpu_idx
         if (
@@ -596,6 +602,13 @@ class FlashAttentionImpl(AttentionImpl):
             return
         ln = getattr(layer, "layer_name", None)
         lidx = (split.rungd_layer_index or {}).get(ln, 0)
+        # MEASUREMENT KNOB, off by default: restrict the host path to the first
+        # N layers so the per-layer slope of the overhead can be measured inside
+        # one model at fixed head geometry. Numerically invalid when on.
+        _nl = len(getattr(pool, "layers", ()) or ())
+        if _nl and lidx >= rungd_layer_limit(_nl):
+            PT.count("layers_skipped_by_knob")
+            return
         # Item 4: go through the KVTierBackend boundary so policy code never
         # touches the mechanism. `split.tier_backend` is a StagedHostBackend
         # wrapping this pool; DirectKVBackend slots in here on Hopper.
@@ -604,7 +617,9 @@ class FlashAttentionImpl(AttentionImpl):
             from vllm.v1.kv_tier_backend import StagedHostBackend
             backend = StagedHostBackend(pool, 0)
             split.tier_backend = backend
+        _tp = PT.now()
         handle = backend.prepare_layer(lidx)
+        PT.add("prepare_layer", _tp)
         if key is not None and value is not None and split.cpu_cur_compact:
             backend.write_token(
                 lidx, split.cpu_cur_compact, split.cpu_cur_offset,
@@ -612,6 +627,7 @@ class FlashAttentionImpl(AttentionImpl):
                 key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
                 split.cpu_slot_pos, split.cpu_host_pos,
             )
+        _tg = PT.now()
         m = cpu_idx.numel()
         out = output[:num_actual_tokens]
         q_sub = query[:num_actual_tokens].index_select(0, cpu_idx)
@@ -622,7 +638,9 @@ class FlashAttentionImpl(AttentionImpl):
             (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
         )
         descale_shape = (m, self.num_kv_heads)
+        PT.add("rider_gather_alloc", _tg)
         from vllm.v1.kv_tier_backend import TierAttendCtx
+        _ta = PT.now()
         backend.attend(
             lidx, handle, q_sub,
             TierAttendCtx(
@@ -642,7 +660,14 @@ class FlashAttentionImpl(AttentionImpl):
             ),
             out_sub,
         )
+        # The second flash call: one extra attention launch per layer, which
+        # exists because the riders' KV lives in the rolling slot rather than
+        # the resident pool. Intrinsic to a two-source design, and unaffected by
+        # link speed.
+        PT.add("rider_attend", _ta)
+        _ts = PT.now()
         out.index_copy_(0, cpu_idx, out_sub)
+        PT.add("rider_scatter", _ts)
         # Swap-semantics emulation, off by default. A swap design must persist
         # this layer's whole slot before the buffer is reused; a streaming one
         # (ours) has already written the only new bytes to the authoritative
@@ -650,7 +675,13 @@ class FlashAttentionImpl(AttentionImpl):
         # RungdHostPool.writeback_layer.
         wb = getattr(pool, "writeback_layer", None)
         if wb is not None:
+            _tw = PT.now()
             wb(lidx)
+            PT.add("writeback_layer", _tw)
+        # Whole per-layer rider pass. This is the `~11*L` block that switches on
+        # the moment ANY rider exists, so its per-layer cost times L is the
+        # candidate `A*L` term of the overhead law.
+        PT.add("pool_cpu_override", _t)
 
     def _maybe_hybrid_two_pass(
         self,

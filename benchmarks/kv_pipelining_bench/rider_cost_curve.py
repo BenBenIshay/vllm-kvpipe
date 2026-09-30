@@ -102,6 +102,27 @@ def pool_bytes(llm) -> tuple[int, int]:
             int(getattr(p, "writeback_bytes", 0) or 0))
 
 
+def pool_counters(llm) -> dict:
+    """Pool counters that matter for the overhead law.
+
+    `stream_runs` is the H2D memcpy LAUNCH count. It is the quantity a faster
+    link does not change -- 2 per run per layer, and the run count is the active
+    rider count when extents are contiguous -- so it has to be counted rather
+    than inferred from the rider count or the bytes. `nominal` is what the real
+    path would have moved, so an arm that deliberately moves less can still be
+    charged the link time the real path would have paid.
+    """
+    p = find_pool(llm)
+    if p is None:
+        return {"stream": 0, "writeback": 0, "nominal": 0, "runs": 0}
+    return {
+        "stream": int(getattr(p, "stream_bytes", 0) or 0),
+        "writeback": int(getattr(p, "writeback_bytes", 0) or 0),
+        "nominal": int(getattr(p, "stream_bytes_nominal", 0) or 0),
+        "runs": int(getattr(p, "stream_runs", 0) or 0),
+    }
+
+
 def tier_counts(llm) -> dict:
     """How many requests the scheduler actually placed on each tier."""
     try:
@@ -142,7 +163,7 @@ def run_once(llm, prompts, out_len: int, seed: int) -> dict:
                 peak.update(c)
 
     th = threading.Thread(target=sampler, daemon=True)
-    s_before, w_before = pool_bytes(llm)
+    c_before = pool_counters(llm)
     if _PURITY is not None:
         _PURITY.start_window()
     t0 = time.perf_counter()
@@ -151,11 +172,13 @@ def run_once(llm, prompts, out_len: int, seed: int) -> dict:
     wall = time.perf_counter() - t0
     stop.set()
     th.join(timeout=1.0)
-    s_after, w_after = pool_bytes(llm)
+    c_after = pool_counters(llm)
     win = _PURITY.stop_window() if _PURITY is not None else None
     return {"wall_s": wall, "out_len": out_len,
-            "stream_bytes": s_after - s_before,
-            "writeback_bytes": w_after - w_before,
+            "stream_bytes": c_after["stream"] - c_before["stream"],
+            "writeback_bytes": c_after["writeback"] - c_before["writeback"],
+            "nominal_bytes": c_after["nominal"] - c_before["nominal"],
+            "stream_runs": c_after["runs"] - c_before["runs"],
             "completed": len(outs), "tiers": dict(peak),
             "purity_window": win}
 
@@ -173,6 +196,8 @@ def measure_step(llm, prompts, a, r: int) -> dict:
     step_ms = (long_["wall_s"] - short["wall_s"]) / dtoks * 1000.0
     d_stream = long_["stream_bytes"] - short["stream_bytes"]
     d_wb = long_["writeback_bytes"] - short["writeback_bytes"]
+    d_nom = long_["nominal_bytes"] - short["nominal_bytes"]
+    d_runs = long_["stream_runs"] - short["stream_runs"]
 
     # DECODE-PURITY GATE (ground rule 1). The long run carries the decode steps
     # the estimate is made of, so it must satisfy all four conditions. The short
@@ -197,6 +222,8 @@ def measure_step(llm, prompts, a, r: int) -> dict:
         "purity": purity,
         "stream_bytes_per_step": d_stream / dtoks,
         "writeback_bytes_per_step": d_wb / dtoks,
+        "nominal_bytes_per_step": d_nom / dtoks,
+        "h2d_launches_per_step": d_runs / dtoks,
         "tiers_short": short["tiers"], "tiers_long": long_["tiers"],
         "wall_short_s": short["wall_s"], "wall_long_s": long_["wall_s"],
     }
@@ -238,6 +265,35 @@ def main() -> int:
                         "prefills locally, and a rider cannot be created while "
                         "HBM is full because its prefill needs resident blocks "
                         "(measured: riders cap at 2 however many are offered).")
+    # ---- sweep axes the overhead law needs, which this harness did not expose
+    p.add_argument("--block-size", type=int, default=0,
+                   help="KV block size (0 = engine default 16). Swept at FIXED "
+                        "ctx and rider count to separate a per-BLOCK cost from "
+                        "a per-BYTE one: halving the block size doubles the "
+                        "block count while the bytes stay put. A per-block cost "
+                        "is host work a faster link does not touch; a per-byte "
+                        "cost shrinks with bandwidth. Nothing else in the model "
+                        "distinguishes them.")
+    p.add_argument("--k-window", type=int, default=0,
+                   help="rolling slots (0 = engine default 4). The residual-cost "
+                        "analysis names batching ACROSS layers as the way past "
+                        "the per-layer issue structure, and these slots are what "
+                        "it would use -- so the overhead's sensitivity to it is "
+                        "worth measuring rather than assuming.")
+    p.add_argument("--xfer-mode", default="real",
+                   choices=("real", "minbytes", "nobus"),
+                   help="VLLM_KVPIPE_RUNGD_XFER_MODE. 'minbytes' keeps every "
+                        "H2D launch but moves one block row per copy, which is "
+                        "an infinitely fast link and therefore the CEILING for "
+                        "any interconnect; 'nobus' issues no bus copy at all, "
+                        "the unreachable floor. real-minbytes is the byte cost, "
+                        "minbytes-nobus the launch cost. Non-real modes are "
+                        "NUMERICALLY INVALID -- timing only.")
+    p.add_argument("--rungd-layers", type=int, default=0,
+                   help="restrict the rider host path to the first N layers so "
+                        "the per-layer slope can be measured inside one model "
+                        "at fixed head geometry (0 = all). NUMERICALLY INVALID "
+                        "when set; implies the _UNSAFE acknowledgement.")
     p.add_argument("--allow-colocated", action="store_true",
                    help="permit running WITHOUT --connector. Required, because "
                         "co-located is not the setup this feature targets: the "
@@ -286,6 +342,17 @@ def main() -> int:
         os.environ.pop("VLLM_KVPIPE_ADMIT_MARGINAL", None)
     if a.rungd_async:
         os.environ["VLLM_KVPIPE_RUNGD_ASYNC"] = "1"
+    os.environ["VLLM_KVPIPE_RUNGD_XFER_MODE"] = a.xfer_mode
+    if a.rungd_layers > 0:
+        os.environ["VLLM_KVPIPE_RUNGD_LAYERS"] = str(a.rungd_layers)
+        os.environ["VLLM_KVPIPE_RUNGD_LAYERS_UNSAFE"] = "1"
+    if a.xfer_mode != "real" or a.rungd_layers > 0:
+        print("!" * 66)
+        print("! NUMERICALLY INVALID ARM: "
+              f"xfer_mode={a.xfer_mode} layers={a.rungd_layers or 'all'}")
+        print("! Generated tokens are meaningless. TIMING ONLY -- this arm must")
+        print("! never be cited for correctness, quality or tokens/s.")
+        print("!" * 66)
     tok = os.path.join(ROOT, "hf_token")
     if os.path.exists(tok) and not os.environ.get("HF_TOKEN"):
         with open(tok) as fh:
@@ -320,6 +387,11 @@ def main() -> int:
             kv_connector="PipelinedDecodeBenchConnector",
             kv_role="kv_both",
             kv_connector_extra_config={"fill_mean": 0.015, "fill_std": 0.0})
+
+    if a.block_size:
+        extra["block_size"] = a.block_size
+    if a.k_window:
+        extra["kv_k_window"] = a.k_window
 
     llm = LLM(model=a.model, dtype=a.dtype,
               enable_prefix_caching=False,
@@ -397,6 +469,10 @@ def main() -> int:
         rows.append({"riders": r, "step_ms": step,
                      "stream_gb_per_step": gbs / 1e9,
                      "writeback_gb_per_step": gbw / 1e9,
+                     "nominal_gb_per_step": statistics.median(
+                         [m["nominal_bytes_per_step"] for m in est]) / 1e9,
+                     "h2d_launches_per_step": statistics.median(
+                         [m["h2d_launches_per_step"] for m in est]),
                      "tiers": est[-1]["tiers_long"],
                      # `usable` is what downstream fitting must filter on. A row
                      # with usable=False is reported so the failure is visible,
@@ -538,6 +614,12 @@ def main() -> int:
            "force_riders": bool(a.force_riders),
            "dtype": a.dtype, "repeats": a.repeats,
            "gpu_mem_util": a.gpu_mem_util,
+           "block_size": a.block_size or 16,
+           "k_window": a.k_window or 4,
+           "xfer_mode": a.xfer_mode,
+           "rungd_layers": a.rungd_layers or 0,
+           "numerically_valid": (a.xfer_mode == "real"
+                                 and a.rungd_layers == 0),
            "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
            "n_rows_usable": sum(1 for x in rows if x.get("usable")),
            "n_rows": len(rows),

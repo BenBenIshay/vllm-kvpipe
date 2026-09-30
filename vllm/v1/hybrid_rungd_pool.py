@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import torch
 
+from vllm.v1.hybrid_phase_timers import PT
+
 
 class RungdHostPool:
     def __init__(
@@ -104,6 +106,43 @@ class RungdHostPool:
         # Bytes pulled host->device by the per-layer refresh. Counted so a
         # harness can compare arms on TRAFFIC rather than on request counts.
         self.stream_bytes = 0
+        # What `real` WOULD have moved, so an arm that moves less can still be
+        # charged the link time the real path would have paid.
+        self.stream_bytes_nominal = 0
+        # H2D memcpy launches issued (2 per run per layer). The launch COUNT is
+        # what a faster link does not change, so it has to be counted, not
+        # inferred from the bytes.
+        self.stream_runs = 0
+        # MEASUREMENT APPARATUS. Separates the two costs the whole C2C
+        # projection turns on, by changing only what crosses the bus:
+        #
+        #   real      the design.
+        #   minbytes  same run structure, same 2*L*R launches, same views,
+        #             same stream order -- but each copy moves ONE block row
+        #             instead of n. This is an infinitely fast link: the
+        #             per-byte term goes to ~0 while every launch is still
+        #             issued. It is therefore the CEILING for any interconnect,
+        #             C2C included, since no link removes a launch.
+        #   nobus     the loop and the views run, no bus copy is issued at all.
+        #             The floor -- unreachable by any link, and the difference
+        #             from `minbytes` is precisely the cost of the launches.
+        #
+        # So: real - minbytes = the byte cost; minbytes - nobus = the launch
+        # cost; nobus - baseline = everything else the host path costs.
+        #
+        # Numerically INVALID: the rolling slot does not receive the right KV,
+        # so generated tokens are meaningless. Timing only, never a correctness
+        # or quality claim.
+        self._xfer_mode = _os.environ.get(
+            "VLLM_KVPIPE_RUNGD_XFER_MODE", "real").strip().lower()
+        if self._xfer_mode not in ("real", "minbytes", "nobus"):
+            raise ValueError(
+                f"VLLM_KVPIPE_RUNGD_XFER_MODE={self._xfer_mode!r}: expected "
+                "one of real, minbytes, nobus")
+        if self._xfer_mode != "real":
+            print(f"*** RungdHostPool: XFER_MODE={self._xfer_mode} -- bus "
+                  f"copies altered, OUTPUT IS NUMERICALLY INVALID. "
+                  f"Timing measurement only.", flush=True)
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
@@ -427,6 +466,7 @@ class RungdHostPool:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compact the active cohort's host blocks into [0:W) and return
         (block_table [n_req, max_blk], seqused [n_req]) in active order."""
+        _t = PT.now()
         host_set: set[int] = set()
         for r in active_req_ids:
             host_set.update(self.req_blocks.get(r, []))
@@ -454,11 +494,23 @@ class RungdHostPool:
             )
         max_blk = max((len(self.req_blocks.get(r, [])) for r in active_req_ids),
                       default=1)
+        # NAMED ARTIFACT: one Python-level tensor element assignment per rider
+        # block, every step (R=8 at ctx 2048 / block 16 is 1024 __setitem__
+        # calls). Timed separately because it is per-BLOCK host work that a
+        # faster link does not touch and that a vectorised build would remove,
+        # so the projection must not carry it as if it were intrinsic.
+        _tbt = PT.now()
         bt = torch.zeros(len(active_req_ids), max_blk, dtype=torch.int32)
         for row, r in enumerate(active_req_ids):
             for j, hb in enumerate(self.req_blocks.get(r, [])):
                 bt[row, j] = self._compact[hb]
+        PT.add("build_step_bt_python", _tbt)
         seq = torch.tensor(seq_lens, dtype=torch.int32)
+        PT.context(n_active=len(active_req_ids), w_blocks=self._w_cur,
+                   n_runs=len(self._runs), max_blk=int(max_blk),
+                   layers=len(self.layers), block_size=self.block_size,
+                   xfer_mode=self._xfer_mode)
+        PT.add("build_step", _t)
         return bt, seq
 
     def compact_of(self, req_id: str, position: int) -> tuple[int, int]:
@@ -481,16 +533,46 @@ class RungdHostPool:
         active set degrades to more, smaller copies -- still correct, and still
         without touching the data on the CPU.
         """
+        _t = PT.now()
         ln_name = self.layers[layer_idx]
         hk, hv = self.host_k[ln_name], self.host_v[ln_name]
         kslot = self.rolling_k[layer_idx % self.k]
         vslot = self.rolling_v[layer_idx % self.k]
         moved = 0
+        nominal = 0
+        launches = 0
+        mode = self._xfer_mode
         for hs, cs, n in self._runs:
-            kslot.narrow(0, cs, n).copy_(hk.narrow(0, hs, n), non_blocking=True)
-            vslot.narrow(0, cs, n).copy_(hv.narrow(0, hs, n), non_blocking=True)
-            moved += 2 * kslot.narrow(0, cs, n).numel() * kslot.element_size()
+            if n <= 0:
+                continue
+            full = 2 * kslot.narrow(0, cs, n).numel() * kslot.element_size()
+            nominal += full
+            if mode == "real":
+                kslot.narrow(0, cs, n).copy_(hk.narrow(0, hs, n),
+                                             non_blocking=True)
+                vslot.narrow(0, cs, n).copy_(hv.narrow(0, hs, n),
+                                             non_blocking=True)
+                moved += full
+                launches += 2
+            elif mode == "minbytes":
+                # One block row per copy: the launch is still issued on the same
+                # stream in the same order, but there are almost no bytes behind
+                # it. See _xfer_mode in __init__.
+                kslot.narrow(0, cs, 1).copy_(hk.narrow(0, hs, 1),
+                                             non_blocking=True)
+                vslot.narrow(0, cs, 1).copy_(hv.narrow(0, hs, 1),
+                                             non_blocking=True)
+                moved += 2 * kslot.narrow(0, cs, 1).numel() * \
+                    kslot.element_size()
+                launches += 2
+            # nobus: the narrow() views above were still built; no copy issued.
         self.stream_bytes += moved
+        self.stream_bytes_nominal += nominal
+        self.stream_runs += launches
+        # The launch COUNT is the quantity a faster link leaves untouched, so
+        # it is counted per step rather than derived from the rider count.
+        PT.count("h2d_launches", launches)
+        PT.add("issue_runs", _t)
 
     def writeback_layer(self, layer_idx: int) -> int:
         """SWAP-SEMANTICS EMULATION. Write this layer's whole rolling slot back
@@ -560,9 +642,11 @@ class RungdHostPool:
         [w_max, block_size, nkv, head_dim] tensor that attention can consume
         directly.
         """
+        _t = PT.now()
         kslot = self.rolling_k[layer_idx % self.k]
         vslot = self.rolling_v[layer_idx % self.k]
         if self._w_cur == 0:
+            PT.add("stream_layer", _t)
             return kslot, vslot
         if not self._async:
             self._issue_runs(layer_idx)
@@ -574,6 +658,9 @@ class RungdHostPool:
                 self._issue_runs(layer_idx)                 # first layer / miss
             if layer_idx + 1 < len(self.layers):
                 self._launch_prefetch(layer_idx + 1)
+        # stream_layer minus issue_runs is the async event bookkeeping, so the
+        # two together say whether RUNGD_ASYNC is buying or costing.
+        PT.add("stream_layer", _t)
         return kslot, vslot
 
     def write_token(
@@ -591,6 +678,7 @@ class RungdHostPool:
         current rolling slot (compact block). Vectorized: flatten (block, offset)
         into one axis and scatter all rows with a single index_copy_ per target
         (no per-row Python loop)."""
+        _t = PT.now()
         n = keys.shape[0]
         if n == 0:
             return
@@ -616,6 +704,15 @@ class RungdHostPool:
         vslot.view(vslot.shape[0] * bs, *vslot.shape[2:]).index_copy_(
             0, slot_pos, values)
         # host mirrors (pinned CPU): pos = host_block*bs + off
+        # NAMED ARTIFACT: two PAGEABLE, hence blocking, D2H copies per layer --
+        # 64 host/device serialisation points per step. The bytes are trivial
+        # (one token's KV), so this is a synchronisation cost, not a bandwidth
+        # one, and a faster link does not remove it. Timed on its own because
+        # the earlier profiler charged this call the model's own compute and
+        # produced a "21 ms" figure that was worth ~4 ms.
+        _td = PT.now()
         k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
+        PT.add("write_token_d2h_blocking", _td)
         hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(0, host_pos, k_cpu)
         hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(0, host_pos, v_cpu)
+        PT.add("write_token", _t)
