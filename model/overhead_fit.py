@@ -147,6 +147,27 @@ def load_points(paths: list[str], link_gbps: float | None,
             if nominal <= 0:
                 drop("no rider traffic recorded (rider axis not real)")
                 continue
+
+            # KNEE FILTER. The law dT = F + c*r describes the regime where a
+            # rider's transfer still hides inside the step. Above the knee
+            # r* = T0*X/u the step IS the transfer and every extra rider costs
+            # its full link time, which is a different regime with genuine
+            # curvature -- measured: the marginal rider goes 8.67 -> 23.40 ms
+            # across the knee at ctx 2048.
+            #
+            # Feeding both regimes to one fit is how M1's automated run selected
+            # `A + C_link + E_superlinear` over the affine law: a single
+            # above-knee point (r=16 at ctx 256, where r* = 13.9) supplied
+            # curvature and the r^2 term absorbed it. Held-out error was 4.2%,
+            # so the accuracy gate PASSED on a structurally wrong model -- the
+            # gate cannot catch this, only the filter can.
+            t0_ms = float(base["step_ms"])
+            u_bytes = (nominal / r) * 1e9 if r else 0.0
+            knee = (t0_ms / 1e3) * (X * 1e9) / u_bytes if (X and u_bytes) else 0.0
+            if knee and r >= knee:
+                drop(f"above the knee (r={r} >= r*={knee:.1f}): transfer-bound, "
+                     f"a different regime")
+                continue
             pts.append({
                 "src": os.path.basename(path),
                 "r": r, "S": S, "bs": bs,
