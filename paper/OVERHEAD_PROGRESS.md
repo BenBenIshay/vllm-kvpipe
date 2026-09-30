@@ -117,6 +117,38 @@ the rise may be real, and the test is what decides it.
 curve, the negative-`F` argument, and the choice to model a kink rather than an
 affine law would all need revisiting. That is a paper decision, not mine.
 
+### C5 — CLOSED 2026-09-30, negatively. The anchor is not stale; it is confirmed.
+
+I flagged the risk that `fixed_cost_locator`'s 37.0 ms was stale in our favour,
+because it attributed the cost to residents losing their fused attention pass and
+`flash_attn.py:1034` now bypasses the two-pass split under the pool override. If
+so, every projection built on it would be wrong. Re-measured:
+
+| residents | 2026-09-04 base / +1 / F+c | today base / +1 / F+c |
+|---|---|---|
+| 2 | 46.91 / 86.07 / **39.16** | 46.58 / 62.47 / **15.89** |
+| 4 | 48.03 / 86.87 / **38.84** | 47.71 / 63.04 / **15.33** |
+| 8 | 49.91 / 86.93 / **37.02** | 49.87 / 65.34 / **15.47** |
+
+**The cost did fall 2.46x** (38.34 -> 15.56 mean), so 37.0 is history, not the
+current state — which is how the paper uses it, as the optimisation cycle's
+starting point. Fine.
+
+**The trap: that column is `F + c`, not `F`.** It is
+`ITL(+1 rider) - ITL(base)` at ONE rider, so it carries the fixed term plus one
+rider's marginal cost. Comparing 15.56 against the model's `F = 12.3` directly
+would be an error, and an easy one to make.
+
+**Read correctly it validates the model.** `F = 12.29 + c = 4.45` predicts
+`F + c = 16.74`; measured **15.56**, ratio **0.93**. Seven percent agreement from
+an independent script and a different estimator entirely (server ITL medians
+versus wall-clock differencing). The anchor holds.
+
+Supporting: still **flat across residents** (3.6% spread), so it remains a
+per-step/per-layer effect and not a batch-wide gather — the original structural
+conclusion survives the magnitude change. Baselines reproduced to **0.7%**, a
+third independent confirmation of the substrate.
+
 ### C3 — OPEN, low risk, will be cross-checked in M3.
 
 **Does the `minbytes` arm really keep the launch cost intact?** It issues the

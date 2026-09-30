@@ -128,12 +128,12 @@ echo "=== fit over all real arms collected to date"
     --link-gbps 25.1 --out "$OUT/fit_latest.json" 2>&1 | tail -50
 
 echo
-echo "--- teardown"
-"$PY" -c "
-import sys; sys.path.insert(0,'benchmarks/kv_pipelining_bench')
-try:
-    from bench_teardown import terminate_engine; terminate_engine(); print('ok')
-except Exception as e: print('teardown helper unavailable:', e)
-" 2>&1 | tail -3
+# STRAY-PROCESS CHECK, not a teardown call: bench_teardown.terminate_engine
+# takes a subprocess handle and is for the SERVER-launching harnesses, while
+# rider_cost_curve runs the engine in-process and dies with the script. What
+# matters is that nothing outlived the job -- orphaned EngineCore processes
+# drained two nodes on 2026-09-06 -- and that is checked by polling processes,
+# not nvidia-smi, which reads 0 between engines and is not a lock.
+echo "--- stray processes (expect none)"
 ps -u "$USER" -o args= | grep -E "[.]venv/bin/python.*kv_pipelining_bench|^VLLM::EngineCore" | head -5
 echo "========= M2 slice $SLICE done $(date -Is) ========="

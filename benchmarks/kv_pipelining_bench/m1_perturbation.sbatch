@@ -105,15 +105,17 @@ echo "=== fit (real arms only; co-located and invalid arms are filtered out)"
     --link-gbps 25.1 --out "$OUT/fit_t0.json" 2>&1 | tail -40
 
 echo
-echo "--- teardown"
-"$PY" -c "
-import sys; sys.path.insert(0,'benchmarks/kv_pipelining_bench')
-try:
-    from bench_teardown import terminate_engine; terminate_engine(); print('ok')
-except Exception as e: print('teardown helper unavailable:', e)
-" 2>&1 | tail -3
-# No delay command anywhere: this cluster's submit filter rejects any batch
-# script containing one, apparently textually. The teardown helper is
-# synchronous, so none is needed.
+# STRAY-PROCESS CHECK, not a teardown call. bench_teardown.terminate_engine
+# takes a subprocess handle and exists for the harnesses that launch a SERVER;
+# rider_cost_curve runs the engine IN-PROCESS
+# (VLLM_ENABLE_V1_MULTIPROCESSING=0), so it dies with the script and there is
+# nothing to terminate. M0 called it anyway and logged a misleading
+# "missing 1 required positional argument: 'proc'".
+#
+# What does matter is confirming nothing outlived the job: orphaned EngineCore
+# processes drained two nodes on 2026-09-06. Poll processes, not nvidia-smi,
+# which reads 0 between engines and is not a lock. (No delay command here --
+# this cluster's submit filter rejects any batch script containing one.)
+echo "--- stray processes (expect none)"
 ps -u "$USER" -o args= | grep -E "[.]venv/bin/python.*kv_pipelining_bench|^VLLM::EngineCore" | head -5
 echo "================ M1 done $(date -Is) ================"
