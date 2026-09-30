@@ -156,15 +156,15 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-09-30 16:40</span>
+      <span><b>snapshot</b> 2026-09-30 17:05</span>
     </div>
   </header>
 
   <div class="status">
     <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M1 running on nova07 (job 2179687)</span></span>
-    <span class="pill"><span class="k">M0 + M0b</span><span class="v">complete, gate satisfied</span></span>
-    <span class="pill"><span class="k">suite</span><span class="v">9/9 with instrumentation</span></span>
-    <span class="pill"><span class="k">reproduced</span><span class="v">published curve to 0.35%</span></span>
+    <span class="pill"><span class="k">law, ctx 512</span><span class="v">&Delta;T = 11.67 + 1.129&middot;r</span></span>
+    <span class="pill"><span class="k">F vs paper</span><span class="v">11.67 vs 12.29 &mdash; agrees to 5%</span></span>
+    <span class="pill"><span class="k">timers</span><span class="v">0.76% systematic &rarr; shares only</span></span>
   </div>
 
   <h2>Read this first &mdash; open concerns</h2>
@@ -346,6 +346,57 @@
         is reported as a bound, not a measurement.</small>
     </div>
   </div>
+
+  <h2>First measurement of the law &mdash; below the knee</h2>
+  <div class="law">
+    <p style="margin-top:0">ctx 512, batch 16, 5 repeats, knee at <span class="mono">r* = 9.2</span>, so all six rider
+      points are below it. This is the regime the campaign was designed around, and it is the first time the law has been
+      measured where it is identifiable.</p>
+    <div class="scroller" style="border:0;box-shadow:none;background:transparent;margin:14px 0">
+      <table>
+        <thead><tr><th class="num">r</th><th class="num">&Delta;T</th><th class="num">&Delta;T/rider</th><th class="num">marginal</th><th class="num">link_ms</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td class="num">12.39</td><td class="num">12.39</td><td class="num">12.39</td><td class="num">6.17</td></tr>
+          <tr><td class="num">2</td><td class="num">14.06</td><td class="num">7.03</td><td class="num">1.67</td><td class="num">12.34</td></tr>
+          <tr><td class="num">3</td><td class="num">15.29</td><td class="num">5.10</td><td class="num">1.23</td><td class="num">18.52</td></tr>
+          <tr><td class="num">4</td><td class="num">16.46</td><td class="num">4.12</td><td class="num">1.17</td><td class="num">24.69</td></tr>
+          <tr><td class="num">6</td><td class="num">18.35</td><td class="num">3.06</td><td class="num">0.95</td><td class="num">37.03</td></tr>
+          <tr><td class="num">8</td><td class="num">20.57</td><td class="num">2.57</td><td class="num">1.11</td><td class="num">49.38</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><b>&Delta;T/rider falls monotonically</b>, 12.39 down to 2.57 &mdash; which <i>is</i> the affine signature, since
+      <span class="mono">F/r</span> shrinks. Above the knee it rose. So the convexity at ctx 2048 was the knee crossing
+      and nothing else, and no superlinear term is hiding here.</p>
+    <p style="font-size:17px;margin:16px 0"><span class="mono" style="font-weight:500">&Delta;T = 11.67 + 1.129&middot;r</span>
+      &nbsp;&mdash;&nbsp;<span style="color:var(--muted)">max residual 0.41 ms, 3.3% of &Delta;T at r=1</span></p>
+    <div class="scroller" style="border:0;box-shadow:none;background:transparent">
+      <table>
+        <thead><tr><th>quantity</th><th class="num">measured, ctx 512</th><th class="num">paper, ctx 2048</th><th>what the model requires</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">F</td><td class="num"><b>11.67 ms</b></td><td class="num">12.29 ms</td><td>context-<b>in</b>dependent if launch-bound &mdash; <b>agrees to 5%</b></td></tr>
+          <tr><td class="mono">c</td><td class="num"><b>1.13 ms/rider</b></td><td class="num">4.45 ms/rider</td><td>proportional to S &mdash; <b>ratio 3.94 for 4&times; context</b></td></tr>
+          <tr><td>hidden fraction</td><td class="num"><b>82%</b></td><td class="num">79% claimed</td><td>&mdash;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <small class="note" style="margin-top:14px">The first direct test of the model's central structural claim &mdash; that
+      <span class="mono">F</span> is launch-bound and so follows neither the link nor the context, while
+      <span class="mono">c</span> is a transfer term and follows both. It passes. It also resolves the earlier
+      9.93-vs-12.29 worry: at ctx 512 the intercept is 11.67, not 9.93. <b>Scope:</b> one context, one model, timers off,
+      six points &mdash; the factorial is still needed to split per-block from per-byte and to test the per-layer claim.</small>
+  </div>
+
+  <h2>A controller defect, visible in the same data</h2>
+  <p>The <span class="mono">eta</span> column reads <b>&minus;1.01 at r=1</b>, &minus;0.14 at r=2, turning positive only
+    from r=3. A negative hiding efficiency is not a physical quantity &mdash; it is <span class="mono">F</span> leaking
+    into a per-byte one, because the controller computes <span class="mono">eta = 1 &minus; &Delta;T/link_ms</span> and so
+    charges the fixed cost to the bytes. The honest value is
+    <span class="mono">1 &minus; c/link_per_rider = 0.82</span>.</p>
+  <p>This confirms empirically what reading <code>overlap_efficiency()</code> only suggested. Since
+    <code>VLLM_KVPIPE_ADMIT_MARGINAL</code> gates on that eta, <b>the marginal-admission criterion is broken at exactly
+    the low rider counts where the decision matters</b>, and would refuse riders it should admit. Recorded as a finding;
+    not fixed, since this campaign characterises rather than optimises.</p>
 
   <h2>The finding that needed no GPU</h2>
   <p>Auditing the eight archived rider curves in <code>paper_runs/20260916</code> before booking time showed the P/D rule
