@@ -76,6 +76,13 @@ os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_CACHE", "/mnt/beegfs/benishay/huggingface")
 
+from decode_purity import DecodePurityMonitor  # noqa: E402
+from decode_purity import report as purity_report  # noqa: E402
+
+# Set once the engine exists. None = gate not attached (unit-test paths only);
+# a measured point must never be reported with the gate detached.
+_PURITY: DecodePurityMonitor | None = None
+
 
 def find_pool(llm):
     try:
@@ -136,6 +143,8 @@ def run_once(llm, prompts, out_len: int, seed: int) -> dict:
 
     th = threading.Thread(target=sampler, daemon=True)
     s_before, w_before = pool_bytes(llm)
+    if _PURITY is not None:
+        _PURITY.start_window()
     t0 = time.perf_counter()
     th.start()
     outs = llm.generate(prompts, sp, use_tqdm=False)
@@ -143,10 +152,12 @@ def run_once(llm, prompts, out_len: int, seed: int) -> dict:
     stop.set()
     th.join(timeout=1.0)
     s_after, w_after = pool_bytes(llm)
+    win = _PURITY.stop_window() if _PURITY is not None else None
     return {"wall_s": wall, "out_len": out_len,
             "stream_bytes": s_after - s_before,
             "writeback_bytes": w_after - w_before,
-            "completed": len(outs), "tiers": dict(peak)}
+            "completed": len(outs), "tiers": dict(peak),
+            "purity_window": win}
 
 
 def measure_step(llm, prompts, a, r: int) -> dict:
@@ -162,9 +173,28 @@ def measure_step(llm, prompts, a, r: int) -> dict:
     step_ms = (long_["wall_s"] - short["wall_s"]) / dtoks * 1000.0
     d_stream = long_["stream_bytes"] - short["stream_bytes"]
     d_wb = long_["writeback_bytes"] - short["writeback_bytes"]
+
+    # DECODE-PURITY GATE (ground rule 1). The long run carries the decode steps
+    # the estimate is made of, so it must satisfy all four conditions. The short
+    # run is 8 tokens, most of which is admission ramp, so its steady cohort is
+    # not a meaningful quantity -- but contamination is, and a prefill or a
+    # queued request there corrupts the subtraction just as badly.
+    purity = None
+    if long_["purity_window"] is not None:
+        v_long = long_["purity_window"].verdict(a.batch, r)
+        v_short = short["purity_window"].verdict(a.batch, r)
+        short_contam = [x for x in v_short["violations"]
+                        if x.startswith(("prefill leaked", "requests queued"))]
+        purity = {
+            "ok": v_long["ok"] and not short_contam,
+            "long": v_long,
+            "short_contamination": short_contam,
+        }
+
     return {
         "riders_requested": r,
         "step_ms": step_ms,
+        "purity": purity,
         "stream_bytes_per_step": d_stream / dtoks,
         "writeback_bytes_per_step": d_wb / dtoks,
         "tiers_short": short["tiers"], "tiers_long": long_["tiers"],
@@ -208,6 +238,13 @@ def main() -> int:
                         "prefills locally, and a rider cannot be created while "
                         "HBM is full because its prefill needs resident blocks "
                         "(measured: riders cap at 2 however many are offered).")
+    p.add_argument("--allow-colocated", action="store_true",
+                   help="permit running WITHOUT --connector. Required, because "
+                        "co-located is not the setup this feature targets: the "
+                        "node prefills locally, a rider cannot be created while "
+                        "HBM is full, and riders cap at 2 however many are "
+                        "offered. The only legitimate use is a deliberate A/B "
+                        "against the decode-node rig.")
     p.add_argument("--rungd-async", action="store_true", default=True)
     p.add_argument("--no-rungd-async", dest="rungd_async", action="store_false")
     p.add_argument("--seed", type=int, default=1234)
@@ -215,6 +252,20 @@ def main() -> int:
     p.add_argument("--outdir",
                    default="/mnt/beegfs/benishay/paper_runs/20260916/rider_curve")
     a = p.parse_args()
+
+    # GROUND RULE 1: P/D-emulated, feature on the D node. Enforced here rather
+    # than trusted, because --connector is opt-in and the archived dataset
+    # behind the paper's F anchor was run without it.
+    if not a.connector and not a.allow_colocated:
+        p.error("refusing to run co-located: pass --connector for the "
+                "decode-node rig, or --allow-colocated if you really mean to "
+                "measure the co-located case (A/B only).")
+    if not a.connector:
+        print("!" * 66)
+        print("! CO-LOCATED RIG -- local prefill, riders cap at 2. This is NOT")
+        print("! the setup the feature targets. A/B use only.")
+        print("!" * 66)
+
     os.makedirs(a.outdir, exist_ok=True)
 
     riders = [int(x) for x in a.riders.split(",") if x != ""]
@@ -284,6 +335,14 @@ def main() -> int:
               hybrid_pcie_gbps=a.link_gbps, **extra)
     cfg = llm.llm_engine.vllm_config.scheduler_config
 
+    # Attach the decode-purity gate before any measurement. Class A: per-step
+    # counting only, no CUDA calls, so it is on for every run rather than being
+    # a flag someone forgets for the run that needed it.
+    global _PURITY
+    _PURITY = DecodePurityMonitor(llm)
+    _PURITY.attach()
+    print("decode-purity gate attached (per-step, non-perturbing)")
+
     print("\nwarming up (one throwaway generation)")
     run_once(llm, all_prompts[:a.batch], a.short_len, a.seed)
 
@@ -300,6 +359,10 @@ def main() -> int:
                   f"stream {m['stream_bytes_per_step'] / 1e9:6.3f} GB/step, "
                   f"back {m['writeback_bytes_per_step'] / 1e9:5.3f}, "
                   f"tiers {m['tiers_long']}")
+            if m["purity"] is not None:
+                purity_report(m["purity"]["long"], f"r={r} rep{i + 1}")
+                for x in m["purity"]["short_contamination"]:
+                    print(f"  [r={r} rep{i + 1}] short-run contamination: {x}")
         # ROBUST ESTIMATOR, and it needs to be. Differencing two wall times
         # occasionally yields an implausible step -- a slow short run makes the
         # difference too small (measured: 24.73 ms against a 53.4 ms baseline,
@@ -308,7 +371,19 @@ def main() -> int:
         # 71 ms to 48 ms and the fit returned F = -56 ms. Discard samples below
         # the rider-free baseline -- adding work cannot shorten a step -- then
         # take the median of what remains.
-        cand = [m["step_ms"] for m in reps]
+        # Purity first, robustness second. A rep that failed the gate is not a
+        # noisy measurement of the right thing, it is a measurement of a
+        # different thing, so it is dropped before the estimator sees it.
+        pure = [m for m in reps
+                if m["purity"] is None or m["purity"]["ok"]]
+        n_impure = len(reps) - len(pure)
+        if n_impure:
+            print(f"      DISCARDED {n_impure}/{len(reps)} rep(s) on the "
+                  f"decode-purity gate")
+        usable = bool(pure)
+        est = pure if pure else reps
+
+        cand = [m["step_ms"] for m in est]
         if rows:
             floor = rows[0]["step_ms"] * 0.95
             kept = [x for x in cand if x >= floor]
@@ -317,12 +392,18 @@ def main() -> int:
                       f"sample(s) below the {floor:.1f} ms baseline")
             cand = kept or cand
         step = statistics.median(cand)
-        gbs = statistics.median([m["stream_bytes_per_step"] for m in reps])
-        gbw = statistics.median([m["writeback_bytes_per_step"] for m in reps])
+        gbs = statistics.median([m["stream_bytes_per_step"] for m in est])
+        gbw = statistics.median([m["writeback_bytes_per_step"] for m in est])
         rows.append({"riders": r, "step_ms": step,
                      "stream_gb_per_step": gbs / 1e9,
                      "writeback_gb_per_step": gbw / 1e9,
-                     "tiers": reps[-1]["tiers_long"], "reps": reps})
+                     "tiers": est[-1]["tiers_long"],
+                     # `usable` is what downstream fitting must filter on. A row
+                     # with usable=False is reported so the failure is visible,
+                     # but it is NOT a measurement of the rider cost at this r.
+                     "usable": usable,
+                     "n_reps": len(reps), "n_impure": n_impure,
+                     "reps": reps})
 
     base = rows[0]["step_ms"] if rows else float("nan")
     print("\n" + "=" * 66)
@@ -335,9 +416,10 @@ def main() -> int:
         eta = (1 - dt / link_ms) if link_ms > 0 else float("nan")
         row.update(dT_ms=dt, dT_per_rider_ms=(dt / r if r else 0.0),
                    link_ms=link_ms, eta=eta)
+        mark = "" if row.get("usable", True) else "  <-- IMPURE, not a rider cost"
         print(f"{r:>7} {row['step_ms']:>9.2f} {dt:>8.2f} "
               f"{(dt / r if r else 0):>9.2f} {row['stream_gb_per_step']:>9.3f} "
-              f"{link_ms:>9.2f} {eta:>6.2f}")
+              f"{link_ms:>9.2f} {eta:>6.2f}{mark}")
 
     # ------------------------------------------------------------------ fit
     # THE DELIVERABLE, and it must be on screen in hour one rather than fitted
@@ -442,9 +524,24 @@ def main() -> int:
               f"decode tok/s {tput * 1000:6.1f} vs {base_tput * 1000:6.1f} "
               f"({tput / base_tput:.3f}x)")
 
+    # PROVENANCE. The eight curves archived in paper_runs/20260916 record
+    # neither the rig nor the forcing, so which of them was the decode-node
+    # emulation had to be recovered afterwards by grepping the run logs for
+    # "PipelinedDecodeBenchConnector" -- and it turned out the two datasets the
+    # paper quotes disagree on it. Never again: the JSON says what it was.
     out = {"fit": out_fit, "model": a.model, "ctx": a.ctx, "batch": a.batch,
            "link_gbps": a.link_gbps, "async": a.rungd_async,
-           "short_len": a.short_len, "long_len": a.long_len, "rows": rows}
+           "short_len": a.short_len, "long_len": a.long_len,
+           "connector": bool(a.connector),
+           "rig": ("decode_node_pd_emulated" if a.connector
+                   else "co_located_local_prefill"),
+           "force_riders": bool(a.force_riders),
+           "dtype": a.dtype, "repeats": a.repeats,
+           "gpu_mem_util": a.gpu_mem_util,
+           "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
+           "n_rows_usable": sum(1 for x in rows if x.get("usable")),
+           "n_rows": len(rows),
+           "rows": rows}
     path = os.path.join(a.outdir, a.out)
     with open(path, "w") as fh:
         json.dump(out, fh, indent=2)
