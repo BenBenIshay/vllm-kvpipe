@@ -20,6 +20,37 @@ next to the campaign's run outputs, and updated whenever this file is.
 
 ---
 
+## Scope: what counts as the feature's cost
+
+**Seeding a rider does NOT.** Ben, 2026-09-30: *"this is an artifact of the
+emulation itself, if we are focusing on the decode node we assume the P nodes put
+the data in the DDR, it's not part of the cost of our feature/riders."*
+
+So the one-off cost of *creating* a rider — `seed_req`, which copies the
+request's whole prefill into the host pool as `2*L` copies — is out of scope. In
+a real P/D deployment the prefill node has already put that KV in host memory;
+the decode node never pays to put it there. It is a cost of emulating prefill
+locally.
+
+Already excluded by construction, which is worth stating so it stays deliberate
+rather than incidental: seeding happens once per request, identically in the
+short and the long run, so the differencing estimator cancels it; the phase
+timers do not instrument `seed_req`; and the `minbytes`/`nobus` arms never reach
+it, since it does not go through `_issue_runs`.
+
+What remains in scope is the **per-step** cost of *having* riders — the `~11*L`
+switch-on ops, the `2*L*R` memcpys, and the transfer itself. That is `F` and `c`,
+and it is what this campaign decomposes.
+
+Not in scope either, and not a cost of anything: the **admission ramp**. The
+scheduler admits the cohort over several steps rather than all at once, so the
+batch climbs to its target (`~2(r-1)` extra steps, up to `r-1` requests waiting)
+and drains at the end. Only the steady phase between them is "a decode step with
+r riders". The estimator is supposed to subtract ramp and drain by differencing
+two generation lengths; C4 is about the case where it fails to.
+
+---
+
 ## Open concerns
 
 ### C1 — ANSWERED 2026-09-30. Measured: the rigs differ 5-8%, with inconsistent sign.
@@ -148,6 +179,40 @@ Supporting: still **flat across residents** (3.6% spread), so it remains a
 per-step/per-layer effect and not a batch-wide gather — the original structural
 conclusion survives the magnitude change. Baselines reproduced to **0.7%**, a
 third independent confirmation of the substrate.
+
+### C6 — OPEN, for the record. The published configuration runs at 98.5% of the KV pool.
+
+My first attempt at the C4 test was wrong, and the way it failed is informative.
+
+I held the token difference at 128 by raising both lengths (short 48 / long 176,
+then 96 / 224). The KV pool on this machine is
+**`GPU KV cache size: 35,472 tokens`**. Arm A's 16 residents at ctx 2048 with
+long_len 136 need `16 * 2184 = 34,944` — it fits with **1.5%** to spare. At
+long_len 176 they need `16 * 2224 = 35,584`, which does not fit; at 224,
+`36,352`.
+
+So the engine evicted and RECOMPUTED, and the gate caught it immediately:
+
+* `prefill leaked into the window: 2208 tokens over 1 steps` — one request
+  re-prefilling its 2048-token prompt plus ~160 generated tokens,
+* 15 extra steps at r=0, where arm A had exactly 136 for 136 tokens,
+* the r=0 baseline moved **53.45 -> 64.21 ms**,
+* reps at r=2 ranging **45 to 90 ms**, one of them below the baseline,
+* `stream_gb_per_step` *falling* (1.115 -> 0.990).
+
+None of that is about riders. My error, caught by the gate rather than by
+reading the numbers and inventing a story for them — which is what the gate is
+for.
+
+**The finding worth keeping:** the published measurement configuration sits at
+98.5% pool occupancy, so anything that lengthens a sequence tips it into
+preemption. That is worth knowing before anyone reruns or extends those
+measurements, and it is an argument for reporting pool headroom alongside any
+step-time number.
+
+Corrected test holds `long_len` fixed at 136 and varies only `short_len`
+(8 / 24 / 48, token differences 128 / 112 / 88). Pool state then stays identical
+across arms and the experiment has one variable. Job 2179686.
 
 ### C3 — OPEN, low risk, will be cross-checked in M3.
 
