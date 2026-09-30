@@ -332,6 +332,45 @@ still required to separate per-block from per-byte and to test the per-layer
 claim. But the shape is established and the two coefficients the C2C projection
 needs are now measured rather than assumed.
 
+### F3 — the noise floor, measured by accident. **Corrects an earlier claim of mine.**
+
+`VLLM_KVPIPE_PHASE_TIMERS=2` sets a `dev` flag that nothing reads, so level 2
+executes exactly the level-1 path — the docstring described CUDA event pairs
+never written. My oversight, and it is left unimplemented on purpose: host issue
+time is the right primary metric for a launch-bound cost, and the
+byte-versus-launch split is already measured directly by the three XFER_MODE
+arms with no stream operation at all.
+
+The oversight paid for itself. Because level 2 *is* level 1, M1's `t1` and `t2`
+arms were an unintended **pure replicate** — two independent runs at identical
+configuration — which is the run-to-run noise floor nothing else here had
+measured:
+
+| comparison | per-step deltas | mean | sign |
+|---|---|---|---|
+| t0 -> t1 (timers on) | +0.24 +0.57 +0.60 +0.59 +1.10 +0.96 +0.76 | **+0.69%** | **7/7 positive** |
+| t1 -> t2 (identical code) | +0.14 +0.27 +0.47 +0.45 +0.11 -0.29 -0.47 | +0.10% | 5/7, mixed |
+
+So the timer effect is real and systematic, distinguishable by its **sign
+consistency** rather than its magnitude.
+
+**And it corrects what I reported earlier.** I said the timers shift the fitted
+coefficients by +2.0% on `F` and +3.2% on `c`, and that this was outside noise:
+
+    t0: F = 11.67  c = 1.129
+    t1: F = 11.91  c = 1.166
+    t2: F = 12.25  c = 1.074      <- identical configuration to t1
+
+Two *identical* runs differ by **2.9% on F and 8% on c** — as much as the effect
+I attributed to instrumentation. That shift is inside coefficient noise, and my
+inference from it was wrong.
+
+The shares-only decision stands, because the per-step effect is genuinely
+systematic, but for a better-supported reason: **a six-point fit amplifies
+sub-1% step noise into ~3% on `F` and ~8% on `c`**. That is a direct instruction
+for M2 — more rider points, and the bootstrap CIs are load-bearing rather than
+decoration.
+
 ### F2 — a controller defect, visible in the same data
 
 The `eta` column reads **-1.01 at r=1**, -0.14 at r=2, and only turns positive
