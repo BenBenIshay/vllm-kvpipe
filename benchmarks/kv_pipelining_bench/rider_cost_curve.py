@@ -84,6 +84,27 @@ from decode_purity import report as purity_report  # noqa: E402
 _PURITY: DecodePurityMonitor | None = None
 
 
+def _git(*args) -> str:
+    import subprocess
+    try:
+        return subprocess.run(("git", "-C", ROOT, *args), check=True,
+                              capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+    except Exception:                                          # noqa: BLE001
+        return ""
+
+
+def _git_sha() -> str:
+    return _git("rev-parse", "HEAD")[:12]
+
+
+def _git_dirty() -> bool:
+    """True if the tree differs from HEAD. A dirty tree means the SHA does not
+    identify the code that ran, which is worse than no SHA at all -- so it is
+    recorded rather than hidden."""
+    return bool(_git("status", "--porcelain", "--", "benchmarks", "vllm"))
+
+
 def find_pool(llm):
     try:
         core = llm.llm_engine.engine_core
@@ -683,6 +704,14 @@ def main() -> int:
            "numerically_valid": (a.xfer_mode == "real"
                                  and a.rungd_layers == 0),
            "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
+           # CODE PROVENANCE. Each arm of a sweep is a fresh process, so editing
+           # the harness while a job runs means later arms pick up the change and
+           # the job is no longer internally consistent. That happened on
+           # 2026-09-30: t0_c512 ran without the per-rider warmup and without a
+           # working direct estimator, t0_c256 ran with both, and which was which
+           # had to be inferred. Now every artifact states the code that made it.
+           "git_commit": _git_sha(),
+           "git_dirty": _git_dirty(),
            "n_rows_usable": sum(1 for x in rows if x.get("usable")),
            "n_rows": len(rows),
            "rows": rows}
