@@ -241,6 +241,7 @@ class DecodePurityMonitor:
             self._orig = None
 
     def _record(self, out) -> None:
+        t = time.perf_counter_ns()
         nst = getattr(out, "num_scheduled_tokens", None) or {}
         total = int(getattr(out, "total_num_scheduled_tokens", 0) or 0)
         if not nst and not total:
