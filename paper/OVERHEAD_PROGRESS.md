@@ -290,6 +290,36 @@ optional. No action needed beyond keeping the gate.
 
 ## History
 
+### 2026-09-30 — M0 + M0b COMPLETE. Gate satisfied.
+
+| gate | result |
+|---|---|
+| correctness suite | **9/9** with instrumentation present |
+| published curve reproduced | **0.35%** (53.45 / 71.36 / 97.35 / 146.38) |
+| decode purity | green **4/4** once `short_len >= 24`; the failure at 8 produced C4 |
+| connector A/B | answered: **5-8%, inconsistent sign** (C1) |
+| fixed anchor re-measured | **15.56 ms** `F+c`, validating the model to 7% (C5) |
+
+Three claims of mine were tested against measurement in the process. One was
+confirmed (C5, the anchor holds), one was **refuted** (C4, the "not affine" rise
+is real and is the kink), and one was a configuration error of my own that the
+gate caught (C6, KV-pool exhaustion). That ratio is the point of running the
+gates rather than reasoning about the numbers.
+
+**Estimator hardened.** Ben rejected the argument that differencing cancels rider
+seeding — correctly: riders are seeded when ADMITTED, during the ramp, so a short
+run ending before the last admission pays less seeding than the long run. Rather
+than patch the argument, the monitor now also measures the steady step
+**directly**, as the median interval between consecutive `schedule()` calls over
+the steady window. Ramp, drain, seeding and prefill are then excluded by
+construction, with nothing to cancel. Both estimators are reported side by side;
+agreement is the evidence and a divergence is itself a finding.
+
+**Instrumentation cost, measured not asserted** (Ben's follow-up): 439 ns for the
+clock read, 28.5 us for the whole per-step record at a 22-request batch — 0.053%
+of a 53.5 ms step, forty times under the 2% gate. The end-to-end bound is
+stronger: 0.35% against uninstrumented published numbers, i.e. inside noise.
+
 ### 2026-09-30 — M0 started
 
 **Setup.** Isolated worktree created from `hybrid-kv-tiers` HEAD, *not* from
