@@ -156,15 +156,46 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-09-30 17:05</span>
+      <span><b>snapshot</b> 2026-09-30 18:00</span>
     </div>
   </header>
 
   <div class="status">
-    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M1 running on nova07 (job 2179687)</span></span>
-    <span class="pill"><span class="k">law, ctx 512</span><span class="v">&Delta;T = 11.67 + 1.129&middot;r</span></span>
-    <span class="pill"><span class="k">F vs paper</span><span class="v">11.67 vs 12.29 &mdash; agrees to 5%</span></span>
-    <span class="pill"><span class="k">timers</span><span class="v">0.76% systematic &rarr; shares only</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M2 slice B on nova07, slice A queued</span></span>
+    <span class="pill"><span class="k">M0 M1</span><span class="v">complete</span></span>
+    <span class="pill"><span class="k">F</span><span class="v">11.77 ms &plusmn;3%, 0.184 ms/layer</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">r&middot;S term</span><span class="v">per-BYTE, not per-block</span></span>
+  </div>
+
+  <h2>The decisive result: per-byte, not per-block</h2>
+  <div class="law">
+    <p style="margin-top:0">The regression could not tell a per-<b>block</b> cost from a per-<b>byte</b> one: with block
+      size fixed at 16, <span class="mono">blocks = r&middot;S/16</span> and <span class="mono">bytes &prop; r&middot;S</span>
+      are exactly proportional, and three models tied at BIC &minus;21.96. Halving the block count at fixed bytes is the
+      only thing that separates them. <b>Prediction registered before the arm reported:</b></p>
+    <div class="scroller" style="border:0;box-shadow:none;background:transparent;margin:14px 0">
+      <table>
+        <thead><tr><th>hypothesis</th><th class="num">predicted &Delta;c</th><th class="num">distance from measured</th></tr></thead>
+        <tbody>
+          <tr><td>per-<b>block</b></td><td class="num">&minus;37.7%</td><td class="num">34.0 pp</td></tr>
+          <tr><td>per-<b>byte</b></td><td class="num">0.0%</td><td class="num"><b>3.7 pp</b></td></tr>
+          <tr><td><b>measured</b> (bs 16&rarr;32)</td><td class="num"><b>&minus;3.7%</b></td><td class="num">noise floor 12%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><span class="mono">c</span> went 1.032 &rarr; 0.994 while the block count halved and the bytes stayed put
+      (1.3% difference). The <span class="mono">&Delta;T</span> differences are flat in r (+1.02, +0.41, +1.25, +1.08,
+      +0.98 ms), so what little moved sits in <span class="mono">F</span> &mdash; and that &minus;0.79 ms is inside the
+      0.72 ms drift measured across an hour, for arms 12 minutes apart. Measuring drift <i>first</i> is what allows that
+      statement instead of a guess.</p>
+    <p><b>This is the better outcome for the feature.</b> A per-byte term is link-bound and shrinks on C2C; a per-block
+      term would have been host work no interconnect touches.</p>
+    <small class="note"><b>Open tension, named rather than smoothed:</b> the fit's <span class="mono">r&middot;S</span>
+      coefficient contributes 0.851 ms/rider at ctx 512, but the <code>minbytes</code> arm removes only 0.532 &mdash;
+      leaving ~0.32 ms/rider proportional to <span class="mono">r&middot;S</span> yet not recovered by collapsing the
+      bytes. Probably partial overlap of transfer with compute in the real arm, but not assertable on two contexts.
+      Slice A's ctx 1024 and 2048 arms tighten it. So the link-bound share of <span class="mono">c</span> is
+      <b>47% by the arms, up to 75% by the fit</b> &mdash; that interval is the main thing still open.</small>
   </div>
 
   <h2>Read this first &mdash; open concerns</h2>
