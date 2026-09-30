@@ -332,6 +332,65 @@ still required to separate per-block from per-byte and to test the per-layer
 claim. But the shape is established and the two coefficients the C2C projection
 needs are now measured rather than assumed.
 
+### F4 — `F` is context-independent to 0.1%, and `c` splits into two terms
+
+Second below-knee sweep, ctx 256 (knee `r* = 48.79/3.50 = 13.9`, so r=16 is the
+only point above it and is excluded from the fit).
+
+| ctx | `F` | `c` | `c/S` | hidden | max resid |
+|---|---|---|---|---|---|
+| 256 | **11.68** | 0.722 | 0.00282 | 79% | 0.53 ms |
+| 512 | **11.67** | 1.129 | 0.00221 | 82% | 0.41 ms |
+| 2048 (paper) | 12.29 | 4.45 | 0.00217 | 79% claimed | — |
+
+Two independent contexts give `F` = 11.68 and 11.67 — **agreement to 0.1%**, and
+5.3% spread across the full 8x range including the paper's own value. A
+launch-bound cost must not follow the context, and now it demonstrably does not.
+
+**`c` is not purely per-byte.** `c/S` is 0.00282 at ctx 256 against 0.00221 and
+0.00217 — the short context is 27% high, the signature of a context-independent
+per-rider piece inside `c`. Solving `c = B*L + k*S` on the two measured contexts:
+
+    B*L ~= 0.32 ms/rider        k ~= 0.00159 ms per rider per token
+
+At 64 layers, 0.32 ms spread over 128 memcpys is ~2.5 us per launch, which is
+plausible — and it is exactly the `B*L*r` term the plan hypothesised. Emerging
+shape:
+
+    dT ~= 11.67          fixed, switches on with rider 1     [link-invariant]
+        + 0.32 * r       per-rider launch, the 2*L*R memcpys [link-invariant]
+        + 0.00159 * r*S  the transfer that does not hide     [link-bound]
+
+**Provisional, and the reason matters:** two contexts give two equations for two
+unknowns, so that split is exactly determined with no residual degrees of freedom
+to test it. M2's ctx 1024 and 2048 arms are what falsify or confirm it.
+
+**The two estimators cross-validate.** Differenced vs direct agrees within 0.2%
+at r = 0..12 — except at r=16, the only point above the knee, where differenced
+reads 74.21 against direct 72.18, a **-2.7%** gap. The ramp at r=16 is ~30 steps,
+far beyond what an 8-token short run can clear, so differencing inflates while
+the direct estimator is immune. That is the C4 mechanism appearing as a
+disagreement between two independent estimators, and it confirms the direct one
+is the more robust.
+
+### F3b — a methodological error of mine: editing the harness mid-job
+
+I edited the harness while job 2179687 was running. Each arm of a sweep is a
+fresh process, so later arms picked the changes up: `t0_c512` ran without the
+per-rider warmup and without a working direct estimator; `t0_c256` ran with both.
+The job is not internally consistent, and nothing in its output said so — which
+arm had which code had to be inferred from whether the direct column was
+populated.
+
+Fixed forward: every artifact now records `git_commit` and `git_dirty`, with
+dirty recorded rather than hidden, since a dirty tree means the SHA does not
+identify the code that ran. Rule for M2 onward: freeze the harness before
+submitting; if something needs changing, let the job finish or cancel it.
+
+Silver lining, but luck rather than method: `F` came out 11.67 and 11.68 across
+two *different* code versions, which is a stronger robustness signal than either
+arm alone.
+
 ### F3 — the noise floor, measured by accident. **Corrects an earlier claim of mine.**
 
 `VLLM_KVPIPE_PHASE_TIMERS=2` sets a `dev` flag that nothing reads, so level 2
