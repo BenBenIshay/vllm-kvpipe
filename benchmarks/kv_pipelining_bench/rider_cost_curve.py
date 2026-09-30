@@ -208,12 +208,41 @@ def measure_step(llm, prompts, a, r: int) -> dict:
     if long_["purity_window"] is not None:
         v_long = long_["purity_window"].verdict(a.batch, r)
         v_short = short["purity_window"].verdict(a.batch, r)
+
+        # THE CROSS-RUN CONDITION, and it is the one that actually threatens
+        # this estimator. Differencing assumes the ramp is IDENTICAL in both
+        # runs so that it cancels. Admission staggers by about 2(r-1) steps, so
+        # at r=6 the ramp needs ~10 steps while `--short-len 8` gives the short
+        # run only 8 -- it never reaches steady state, its ramp is truncated
+        # relative to the long run's, and the residue R_long - R_short lands in
+        # the numerator. The step is then OVERESTIMATED by an amount that grows
+        # with r, which is exactly the shape the paper reads as "not affine".
+        cross = []
+        if v_short.get("ramp_end") is None:
+            cross.append(
+                f"the SHORT run never reached steady state (ramp not cleared "
+                f"in {v_short.get('n_steps')} steps at r={r}), so the ramp does "
+                f"not cancel and the step is overestimated -- raise "
+                f"--short-len above the ramp length (~2(r-1) steps)")
+        elif v_long.get("ramp_end") is not None:
+            # Both cleared it; the residue is the DIFFERENCE in ramp length.
+            dr = abs(v_long["ramp_end"] - v_short["ramp_end"])
+            if dr > 2:
+                cross.append(
+                    f"ramp length differs between the two runs by {dr} steps "
+                    f"(short ends at {v_short['ramp_end']}, long at "
+                    f"{v_long['ramp_end']}): that difference does not cancel")
+
         short_contam = [x for x in v_short["violations"]
-                        if x.startswith(("prefill leaked", "requests queued"))]
+                        if x.startswith(("prefill leaked", "requests queued IN"))]
         purity = {
-            "ok": v_long["ok"] and not short_contam,
+            "ok": v_long["ok"] and not short_contam and not cross,
             "long": v_long,
+            "short": {k: v_short.get(k) for k in
+                      ("n_steps", "n_steady", "ramp_end", "max_waiting",
+                       "max_waiting_steady", "prefill_tokens")},
             "short_contamination": short_contam,
+            "cross_run": cross,
         }
 
     return {
@@ -435,6 +464,8 @@ def main() -> int:
                 purity_report(m["purity"]["long"], f"r={r} rep{i + 1}")
                 for x in m["purity"]["short_contamination"]:
                     print(f"  [r={r} rep{i + 1}] short-run contamination: {x}")
+                for x in m["purity"]["cross_run"]:
+                    print(f"  [r={r} rep{i + 1}] CROSS-RUN: {x}")
         # ROBUST ESTIMATOR, and it needs to be. Differencing two wall times
         # occasionally yields an implausible step -- a slow short run makes the
         # difference too small (measured: 24.73 ms against a 53.4 ms baseline,

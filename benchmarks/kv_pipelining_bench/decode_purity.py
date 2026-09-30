@@ -53,11 +53,10 @@ from dataclasses import dataclass, field
 
 print = functools.partial(print, flush=True)  # noqa: A001
 
-# Steps to ignore at each end of a window when judging steady state. Admission
-# ramps up over the first few steps and drains at the end; those steps are real
-# but they are not the steady cohort, and the step-time estimator already
-# cancels them by differencing two generation lengths.
-RAMP_STEPS = 3
+# The steady window is found from the data (see Window.ramp_end), not by
+# trimming a fixed number of steps: the ramp length depends on the rider count
+# -- measured at about 2(r-1) extra steps -- so a constant trim is either too
+# small at high r or discards real steps at low r.
 
 
 def _sched_of(llm):
@@ -88,26 +87,59 @@ class Window:
     # Each step is a dict:
     #   running, waiting, tokens, extra (tokens beyond 1/req), hbm, cpu
 
-    def _steady(self) -> list:
-        if len(self.steps) <= 2 * RAMP_STEPS:
-            return list(self.steps)
-        return self.steps[RAMP_STEPS:-RAMP_STEPS]
+    def ramp_end(self, b_res: int, riders: int) -> int | None:
+        """First step at which the requested cohort is fully admitted.
 
-    def summary(self) -> dict:
-        st = self._steady()
+        Admission STAGGERS: at r riders the engine queues up to r-1 requests
+        while it works up to the full cohort, so the first several steps run a
+        smaller batch. Those steps are legitimate -- the estimator is built to
+        cancel them -- but only if BOTH the short and the long run clear the
+        ramp. That is checked in `measure_step`, not here; this just reports
+        where the ramp ends.
+        """
+        want = b_res + riders
+        for i, s in enumerate(self.steps):
+            if (s["waiting"] == 0 and s["running"] == want
+                    and s["hbm"] == b_res and s["cpu"] == riders):
+                return i
+        return None
+
+    def _steady(self, b_res: int, riders: int) -> list:
+        """Steps from the end of the ramp to the last full-cohort step.
+
+        The trailing steps are the drain, where requests have finished and the
+        batch shrinks; they are as legitimate and as irrelevant as the ramp.
+        """
+        start = self.ramp_end(b_res, riders)
+        if start is None:
+            return []
+        want = b_res + riders
+        end = None
+        for i in range(len(self.steps) - 1, start - 1, -1):
+            if self.steps[i]["running"] == want:
+                end = i
+                break
+        if end is None:
+            return []
+        return self.steps[start:end + 1]
+
+    def summary(self, b_res: int = 0, riders: int = 0) -> dict:
         if not self.steps:
             return {"n_steps": 0, "n_steady": 0}
+        st = self._steady(b_res, riders)
         run = [s["running"] for s in st] or [0]
         return {
             "n_steps": len(self.steps),
             "n_steady": len(st),
+            "ramp_end": self.ramp_end(b_res, riders),
             # prefill leakage, over the WHOLE window: a single prefill step
             # anywhere in it is a contamination, ramp or not.
             "prefill_steps": sum(1 for s in self.steps if s["extra"] > 0),
             "prefill_tokens": sum(s["extra"] for s in self.steps),
-            # queueing, whole window for the same reason
+            # queueing: reported for the whole window (so the ramp is visible)
+            # AND for the steady window, which is the one that must be clean.
             "max_waiting": max(s["waiting"] for s in self.steps),
-            # cohort stability, steady portion only
+            "max_waiting_steady": max((s["waiting"] for s in st), default=0),
             "running_min": min(run),
             "running_max": max(run),
             "running_mode": max(set(run), key=run.count),
@@ -120,8 +152,16 @@ class Window:
         }
 
     def verdict(self, b_res: int, riders: int) -> dict:
-        """The four conditions of the P/D decode-purity gate."""
-        s = self.summary()
+        """The conditions of the P/D decode-purity gate.
+
+        Queueing is judged on the STEADY window, not the whole run. Queueing
+        during the initial admission ramp is expected (`max_waiting = r-1` at r
+        riders) and cancels in the differencing estimator -- provided both runs
+        clear the ramp, which `measure_step` checks separately. Queueing that
+        persists into steady state is fatal, because then the batch is not the
+        one being charged.
+        """
+        s = self.summary(b_res, riders)
         if not s["n_steps"]:
             return {"ok": False, "violations": ["no steps recorded"], **s}
 
@@ -131,10 +171,23 @@ class Window:
                 f"prefill leaked into the window: {s['prefill_tokens']} tokens "
                 f"over {s['prefill_steps']} steps (need --connector for "
                 f"decode-node emulation)")
-        if s["max_waiting"] > 0:
+        if s["ramp_end"] is None:
             v.append(
-                f"requests queued: max_waiting={s['max_waiting']} (wall time "
-                f"includes queue drain, so the step estimate is not a step)")
+                f"the requested cohort was NEVER fully admitted: no step had "
+                f"waiting=0 with running={b_res + riders}, hbm={b_res}, "
+                f"cpu={riders} (peak seen: hbm={s['hbm_max']}, "
+                f"cpu={s['cpu_max']})")
+            return {"ok": False, "violations": v, **s}
+        if s["n_steady"] < 8:
+            v.append(
+                f"only {s['n_steady']} steady steps after the ramp (ends at "
+                f"step {s['ramp_end']} of {s['n_steps']}): too few to be a "
+                f"step-time measurement -- raise --long-len")
+        if s["max_waiting_steady"] > 0:
+            v.append(
+                f"requests queued IN STEADY STATE: "
+                f"max_waiting={s['max_waiting_steady']} -- the batch is not "
+                f"the one being charged")
         if s["cpu_mode"] != riders:
             v.append(
                 f"rider count is not the requested one: cpu_mode="
@@ -147,9 +200,9 @@ class Window:
         want = b_res + riders
         if s["running_mode"] != want:
             v.append(
-                f"batch is not B_res+r: running_mode={s['running_mode']} "
-                f"(min {s['running_min']}, max {s['running_max']}), "
-                f"expected {want}")
+                f"batch is not B_res+r in steady state: running_mode="
+                f"{s['running_mode']} (min {s['running_min']}, max "
+                f"{s['running_max']}), expected {want}")
 
         return {"ok": not v, "violations": v, **s}
 
@@ -219,6 +272,70 @@ class DecodePurityMonitor:
         return w
 
 
+def _selftest() -> int:
+    """Synthetic windows covering every condition and the real failure shapes.
+
+    Run: python decode_purity.py --selftest
+    """
+    def mk(ramp, steady, drain, b_res=16, r=6, steady_wait=0, extra=0,
+           clean_first=0, hbm=None, cpu=None):
+        w = Window()
+        want = b_res + r
+        for i in range(ramp):
+            partial = max(0, r - (ramp - i))
+            w.steps.append({"running": b_res + partial, "waiting": r - 1,
+                            "tokens": 1, "extra": extra, "hbm": b_res,
+                            "cpu": partial})
+        for i in range(steady):
+            wait = 0 if i < clean_first else steady_wait
+            w.steps.append({"running": want, "waiting": wait, "tokens": want,
+                            "extra": 0,
+                            "hbm": b_res if hbm is None else hbm,
+                            "cpu": r if cpu is None else cpu})
+        for _ in range(drain):
+            w.steps.append({"running": 3, "waiting": 0, "tokens": 3,
+                            "extra": 0, "hbm": 3, "cpu": 0})
+        return w
+
+    cases = [
+        # (label, window, b_res, riders, expect_ok, expect_substring)
+        ("ramp queueing then clean steady state",
+         mk(10, 126, 10), 16, 6, True, None),
+        ("queueing that appears AFTER a clean start",
+         mk(10, 126, 10, steady_wait=2, clean_first=20), 16, 6, False,
+         "queued IN STEADY STATE"),
+        ("queueing on every step: cohort never clean",
+         mk(10, 126, 10, steady_wait=2), 16, 6, False,
+         "NEVER fully admitted"),
+        ("cohort never reaches the requested size",
+         mk(10, 0, 10), 16, 6, False, "NEVER fully admitted"),
+        ("too few steady steps to be a step time",
+         mk(10, 5, 5), 16, 6, False, "too few"),
+        ("prefill leaked into the window",
+         mk(10, 126, 10, extra=2047), 16, 6, False, "prefill leaked"),
+        ("refused riders became residents",
+         mk(0, 126, 10, hbm=20, cpu=0), 16, 4, False, "NEVER fully admitted"),
+        ("rider count pinned below the request",
+         mk(0, 126, 10, hbm=16, cpu=2), 16, 4, False, "NEVER fully admitted"),
+        ("clean run with no riders at all",
+         mk(0, 130, 6, r=0), 16, 0, True, None),
+    ]
+
+    passed = 0
+    for label, win, b_res, riders, want_ok, want_sub in cases:
+        v = win.verdict(b_res, riders)
+        good = (v["ok"] == want_ok)
+        if want_sub is not None:
+            good = good and any(want_sub in x for x in v["violations"])
+        passed += good
+        print(f"  [{'ok ' if good else 'BAD'}] {label}")
+        if not good:
+            print(f"        got ok={v['ok']} violations={v['violations']}")
+    print(f"\nPURITY GATE SELFTEST {'PASS' if passed == len(cases) else 'FAIL'} "
+          f"({passed}/{len(cases)})")
+    return 0 if passed == len(cases) else 1
+
+
 def report(verdict: dict, label: str = "") -> bool:
     """Print a one-or-few-line verdict. Returns True if the point is usable."""
     tag = f"[{label}] " if label else ""
@@ -232,3 +349,10 @@ def report(verdict: dict, label: str = "") -> bool:
     for x in verdict["violations"]:
         print(f"{tag}  - {x}")
     return False
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
+    print(__doc__)
