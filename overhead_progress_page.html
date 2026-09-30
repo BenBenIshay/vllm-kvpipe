@@ -1,0 +1,350 @@
+<title>Host-Path Overhead Campaign</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ink:      #151a1f;
+    --ink-2:    #3c4854;
+    --muted:    #5d6b76;
+    --paper:    #f4f6f7;
+    --card:     #ffffff;
+    --rule:     #d6dde1;
+    --rule-2:   #e6ebee;
+    --signal:   #12657a;
+    --good:     #2c6b4f;
+    --warn:     #96600c;
+    --bad:      #9d322a;
+    --shadow:   0 1px 2px rgba(21,26,31,.06), 0 4px 14px rgba(21,26,31,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:    #e6ecef;
+      --ink-2:  #b4c1c9;
+      --muted:  #8b9aa4;
+      --paper:  #12161a;
+      --card:   #1a2025;
+      --rule:   #2c353c;
+      --rule-2: #232b31;
+      --signal: #5cb8cc;
+      --good:   #6cba92;
+      --warn:   #d79f42;
+      --bad:    #e0837a;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:    #e6ecef;
+    --ink-2:  #b4c1c9;
+    --muted:  #8b9aa4;
+    --paper:  #12161a;
+    --card:   #1a2025;
+    --rule:   #2c353c;
+    --rule-2: #232b31;
+    --signal: #5cb8cc;
+    --good:   #6cba92;
+    --warn:   #d79f42;
+    --bad:    #e0837a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding-inline: 20px; padding-block: 0 72px; }
+  code, .mono, td.num { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  code { font-size: .88em; background: var(--rule-2); padding: .1em .35em; border-radius: 3px; }
+
+  /* ---- masthead ---- */
+  header.mast { border-bottom: 1px solid var(--rule); padding-block: 40px 22px; margin-bottom: 30px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--signal); margin: 0 0 12px;
+  }
+  h1 { font-size: clamp(27px, 5vw, 38px); line-height: 1.12; font-weight: 600; margin: 0 0 12px; text-wrap: balance; letter-spacing: -.015em; }
+  .lede { font-size: 17px; color: var(--ink-2); margin: 0; max-width: 62ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 20px; font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); }
+  .meta b { font-weight: 500; color: var(--ink-2); }
+
+  /* ---- status strip ---- */
+  .status { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 34px; }
+  .pill {
+    display: inline-flex; align-items: baseline; gap: 7px;
+    border: 1px solid var(--rule); border-radius: 100px; background: var(--card);
+    padding: 5px 13px; font-size: 12.5px; box-shadow: var(--shadow);
+  }
+  .pill .k { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .pill .v { font-weight: 500; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; align-self: center; }
+  .dot.go { background: var(--good); } .dot.hold { background: var(--warn); } .dot.stop { background: var(--bad); }
+
+  h2 {
+    font-size: 13px; font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+    margin: 46px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--rule-2);
+  }
+  h3 { font-size: 16.5px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.005em; }
+  p { margin: 0 0 12px; max-width: 68ch; }
+  .sub { color: var(--ink-2); }
+  small.note { display: block; color: var(--muted); font-size: 12.5px; max-width: 68ch; }
+
+  /* ---- concerns: stripe encodes state ---- */
+  .concern { display: grid; grid-template-columns: 4px 1fr; gap: 0 16px; background: var(--card); border: 1px solid var(--rule); border-radius: 7px; box-shadow: var(--shadow); margin-bottom: 14px; overflow: hidden; }
+  .concern > .stripe { background: var(--muted); }
+  .concern.paper-level > .stripe { background: var(--bad); }
+  .concern.method > .stripe { background: var(--warn); }
+  .concern.checking > .stripe { background: var(--signal); }
+  .concern > .body { padding: 16px 18px 15px 2px; }
+  .ctag { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; }
+  .concern.paper-level .ctag { color: var(--bad); }
+  .concern.method .ctag { color: var(--warn); }
+  .concern.checking .ctag { color: var(--signal); }
+
+  /* ---- tables ---- */
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); border-radius: 7px; background: var(--card); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 620px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
+  thead th { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; background: var(--rule-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; white-space: nowrap; }
+  .tag { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; padding: 1.5px 6px; border-radius: 3px; white-space: nowrap; }
+  .tag.ok   { color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
+  .tag.junk { color: var(--bad);  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
+  .tag.part { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+
+  /* ---- milestones ---- */
+  ol.ms { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+  ol.ms > li { display: grid; grid-template-columns: 52px 1fr auto; gap: 4px 16px; align-items: start; background: var(--card); border: 1px solid var(--rule); border-radius: 7px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .msid { font-family: "IBM Plex Mono", monospace; font-weight: 500; font-size: 14px; color: var(--signal); }
+  .msbody h3 { font-size: 15px; margin-bottom: 4px; }
+  .msbody .gate { font-size: 12.5px; color: var(--muted); }
+  .msbody .gate b { font-weight: 500; color: var(--ink-2); }
+  .state { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; }
+  .state.done { color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
+  .state.part { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+  .state.wait { color: var(--muted); border: 1px solid var(--rule); }
+  @media (max-width: 560px) {
+    ol.ms > li { grid-template-columns: 40px 1fr; }
+    ol.ms > li .state { grid-column: 2; justify-self: start; margin-top: 6px; }
+  }
+
+  /* ---- law block ---- */
+  .law { background: var(--card); border: 1px solid var(--rule); border-left: 3px solid var(--signal); border-radius: 7px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .law table { min-width: 480px; font-size: 12.5px; }
+  .law .term { font-family: "IBM Plex Mono", monospace; font-weight: 500; white-space: nowrap; }
+  .inv { color: var(--bad); font-weight: 500; }
+  .bnd { color: var(--good); font-weight: 500; }
+
+  ul.plain { margin: 0 0 12px; padding-left: 20px; }
+  ul.plain li { margin-bottom: 7px; max-width: 66ch; }
+  .commit { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--signal); }
+  footer { margin-top: 54px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 12.5px; }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Live campaign log &middot; hybrid tiered KV</p>
+    <h1>Decomposing the host-path overhead</h1>
+    <p class="lede">The feature's whole value claim rests on one number: <code>F</code>, the extra latency a decode step
+      pays for using the host path. This campaign replaces it with a measured decomposition, then projects that onto
+      NVLink&#8209;C2C. Measurement only &mdash; no feature optimisation.</p>
+    <div class="meta">
+      <span><b>branch</b> overhead-characterisation</span>
+      <span><b>forked</b> 05b32de56</span>
+      <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
+      <span><b>snapshot</b> 2026-09-30 15:29</span>
+    </div>
+  </header>
+
+  <div class="status">
+    <span class="pill"><span class="dot hold"></span><span class="k">now</span><span class="v">Blocked on venv copy (250/381 pkgs)</span></span>
+    <span class="pill"><span class="k">gpu work</span><span class="v">not started</span></span>
+    <span class="pill"><span class="k">landed</span><span class="v">3 commits, CPU-side complete</span></span>
+    <span class="pill"><span class="dot stop"></span><span class="k">concerns</span><span class="v">1 paper-level</span></span>
+  </div>
+
+  <h2>Read this first &mdash; open concerns</h2>
+
+  <div class="concern paper-level">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C1 &middot; open &middot; paper-level, Ben's call</div>
+      <h3>The <code>F = 12.3 ms</code> anchor comes from a co-located run, and rests on about one usable rider point</h3>
+      <p class="sub">It is derived from <code>curve_32b_v2.json</code>, which ran <b>without</b> <code>--connector</code> &mdash;
+        co-located, not the P/D-emulated decode-node rig. That same file is the source of the <code>0.86&times;</code>
+        operating point quoted in the intro, &sect;6 and the EuroHPC application.</p>
+      <p class="sub">Its rider axis is not real above r=2: <code>stream_gb_per_step</code> <i>falls</i> from 1.115 to 0.543
+        between r=2 and r=4 &mdash; fewer bytes moved at a higher nominal rider count. The harness's own help text says why:
+        without the connector a rider cannot be created while HBM is full, so riders cap at 2 however many are offered.</p>
+      <small class="note">If the connector A/B confirms a material gap, the <code>0.86&times;</code> figure and Figure 1's
+        cost curve are both affected. That is a paper decision, not mine &mdash; flagged now rather than after the runs.</small>
+    </div>
+  </div>
+
+  <div class="concern method">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C2 &middot; open &middot; handled by the gate</div>
+      <h3>One archived curve measured resident-batch growth as &ldquo;rider cost&rdquo;</h3>
+      <p class="sub"><code>curve_marginal_eta.json</code> has r=4 and r=8 with <b>zero riders admitted</b>
+        (<code>stream_gb_per_step = 0.0</code>, <code>tiers = {hbm: 16}</code>) while the step rose
+        53.5 &rarr; 101.5 &rarr; 103.9&nbsp;ms.</p>
+      <p class="sub">Mechanism: <code>max_num_seqs = batch + max(riders)</code>, so a request the controller refuses as a
+        rider is still served <b>as a resident</b>. The batch grows, the step lengthens, and the harness charges it to riders
+        &mdash; exactly the contamination Ben warned about. The purity gate's <code>n_hbm == B_res</code> assertion catches it,
+        which is why it is not optional.</p>
+    </div>
+  </div>
+
+  <div class="concern checking">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C3 &middot; open &middot; low risk, cross-checked in M3</div>
+      <h3>Does the <code>minbytes</code> arm really preserve the launch cost?</h3>
+      <p class="sub">It issues the same <code>2&middot;L&middot;R</code> memcpys but moves one block row each, so the
+        per-byte term goes to ~0 while every launch is still made. That assumes launch overhead is size-independent &mdash;
+        true to first order, but very small transfers can be scheduled differently by the DMA engine.</p>
+      <small class="note">Hence M3's standalone launch-pattern microbenchmark is not optional: it measures per-launch cost
+        against transfer size directly, engine-free. If the two disagree, the microbenchmark wins and <code>minbytes</code>
+        is reported as a bound, not a measurement.</small>
+    </div>
+  </div>
+
+  <h2>The finding that needed no GPU</h2>
+  <p>Auditing the eight archived rider curves in <code>paper_runs/20260916</code> before booking time showed the P/D rule
+    was already broken &mdash; by the dataset the paper's headline overhead number comes from. Connector status had to be
+    recovered by grepping run logs, because the JSONs record neither the rig nor the forcing.</p>
+
+  <div class="scroller">
+    <table>
+      <thead><tr><th>archived curve</th><th>rig</th><th>rider axis</th><th>verdict</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">curve_a100_final</td><td>connector <b>on</b></td><td class="mono">cpu = 2/4/6</td><td><span class="tag ok">only clean axis</span></td></tr>
+        <tr><td class="mono">curve_32b_v2</td><td>connector off</td><td class="mono">pinned at 2</td><td><span class="tag part">source of F and 0.86&times;</span></td></tr>
+        <tr><td class="mono">curve_32b</td><td>connector off</td><td class="mono">broken ({hbm:1})</td><td><span class="tag junk">r=1 at 21.7 vs 54.2 base</span></td></tr>
+        <tr><td class="mono">curve_final_a100</td><td>connector on</td><td class="mono">cpu = 2/4/6</td><td><span class="tag junk">r=2 below baseline</span></td></tr>
+        <tr><td class="mono">curve_32b_stage12</td><td>connector on</td><td class="mono">pinned at 1&ndash;2</td><td><span class="tag junk">r=2 below baseline</span></td></tr>
+        <tr><td class="mono">curve_marginal</td><td>connector on</td><td class="mono">pinned at 1&ndash;2</td><td><span class="tag junk">axis not real</span></td></tr>
+        <tr><td class="mono">curve_marginal_eta</td><td>connector on</td><td class="mono"><b>zero riders</b></td><td><span class="tag junk">see C2</span></td></tr>
+        <tr><td class="mono">curve_32b_decode_node</td><td>connector on</td><td class="mono">pinned at 1&ndash;2</td><td><span class="tag junk">axis not real above 2</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="margin-top:16px">At r=2 &mdash; the one point both rigs share &mdash; co-located reads
+    <span class="mono">&Delta;T = 16.69&nbsp;ms</span> against <span class="mono">18.12</span> and
+    <span class="mono">17.80</span> for two connector-on runs. So <b>co-located understates rider cost by ~7.5%</b>,
+    larger than the 1.8% spread between the two on-runs, and in the direction that flatters the paper.</p>
+
+  <h2>What makes the campaign possible</h2>
+  <p>The paper gives up on the rider axis because the PCIe knee sits at r&asymp;2.4. But the knee is
+    <span class="mono">r* = T&#8320;&middot;X / (k&middot;S)</span> &mdash; shortening the context shrinks the bytes per
+    rider and pushes it up. Verified against <code>killer_v2.step_ms</code> on the A100 we already have:</p>
+
+  <div class="scroller">
+    <table>
+      <thead><tr><th>model</th><th class="num">S = 2048</th><th class="num">S = 512</th><th class="num">S = 256</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen-32B &middot; 64 layers</td><td class="num">2.4 <small>(matches paper)</small></td><td class="num"><b>8.7</b></td><td class="num"><b>17.1</b></td></tr>
+        <tr><td>Llama-8B &middot; 32 layers</td><td class="num">1.3</td><td class="num">4.4</td><td class="num">8.5</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="margin-top:16px">Below the knee the step is not transfer-bound, so &Delta;T is the <b>exposed critical-path
+    cost</b> &mdash; no DMA window for launch work to hide inside, which is precisely what a 17&times; faster link leaves
+    behind. Appendix H's own demand for &ldquo;ten host-tier counts or more&rdquo; is reachable today, for free.</p>
+
+  <h2>The law being identified</h2>
+  <div class="law">
+    <div class="scroller" style="border:0;box-shadow:none;background:transparent">
+      <table>
+        <thead><tr><th>term</th><th>what it is</th><th>under C2C</th></tr></thead>
+        <tbody>
+          <tr><td class="term">A &middot; L &middot; 1[r&gt;0]</td><td>switch-on: the ~11&middot;L per-layer ops once any rider exists</td><td class="inv">invariant</td></tr>
+          <tr><td class="term">B &middot; L &middot; r</td><td>per-rider per-layer launch &mdash; the 2&middot;L&middot;R memcpys</td><td class="inv">invariant &mdash; and grows with what C2C enables</td></tr>
+          <tr><td class="term">C &middot; link_ms</td><td>the transfer itself</td><td class="bnd">shrinks ~17&times;</td></tr>
+          <tr><td class="term">D &middot; blocks</td><td>per-block host work (largely a removable artifact)</td><td class="inv">invariant</td></tr>
+          <tr><td class="term">E &middot; L &middot; r&sup2;</td><td>queueing &mdash; a <i>candidate</i> only, never assumed</td><td>unknown</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <small class="note" style="margin-top:12px">No free intercept: &Delta;T(0) = 0 by construction, so every term carries a
+      factor that vanishes at r=0. A model needing a constant offset would be saying the baseline row is wrong, not that the
+      host path has a rider-free cost.</small>
+  </div>
+
+  <h2>Milestones</h2>
+  <ol class="ms">
+    <li><span class="msid">M0</span><div class="msbody"><h3>Pin the substrate, settle the connector A/B</h3>
+      <p class="gate"><b>Gate:</b> suite 9/9 &middot; published curve reproduced within 5% &middot; purity gate green &middot; A/B answered &middot; current fixed anchor written down</p></div>
+      <span class="state part">cpu done</span></li>
+    <li><span class="msid">M1</span><div class="msbody"><h3>Instrumentation</h3>
+      <p class="gate"><b>Gate:</b> flags-off regression &lt;2% &middot; timer perturbation quantified with a CI and the fitting mode chosen <i>in writing</i> &middot; phase shares &ge;90% of &Delta;T</p></div>
+      <span class="state part">built, unrun</span></li>
+    <li><span class="msid">M2</span><div class="msbody"><h3>Measure the overhead law</h3>
+      <p class="gate"><b>Gate:</b> held-out &Delta;T within 10% &middot; every coefficient with a CI &middot; unidentified terms named</p></div>
+      <span class="state wait">pending</span></li>
+    <li><span class="msid">M3</span><div class="msbody"><h3>Attribute terms to code sites; bound the CUDA-graph fraction</h3>
+      <p class="gate"><b>Gate:</b> every term has a named code site and a class, and the classified terms sum back to the fitted total</p></div>
+      <span class="state wait">pending</span></li>
+    <li><span class="msid">M4</span><div class="msbody"><h3>Characterise the superlinear regime</h3>
+      <p class="gate"><b>Gate:</b> a mechanism identified and <span class="mono">r_max(S,X)</span> quantified, or an explicit &ldquo;unresolved&rdquo; plus the bound it places on the projection</p></div>
+      <span class="state wait">pending</span></li>
+    <li><span class="msid">M5</span><div class="msbody"><h3>C2C projection with an uncertainty envelope</h3>
+      <p class="gate"><b>Gate:</b> projection as an interval with its dominating uncertainty named &middot; per-row verdict stated plainly, including a negative one</p></div>
+      <span class="state wait">pending</span></li>
+    <li><span class="msid">M6</span><div class="msbody"><h3>Final report, archive, checkpoint</h3>
+      <p class="gate"><b>Gate:</b> suite 9/9 &middot; every number traceable to an archived JSON by path &middot; paper prose and <code>check_tables</code> pins untouched</p></div>
+      <span class="state wait">pending</span></li>
+  </ol>
+
+  <h2>Landed</h2>
+  <ul class="plain">
+    <li><span class="commit">8fd0fbc34</span> &mdash; <b>decode-purity gate.</b> Asserts the four conditions per step by
+      wrapping <code>Scheduler.schedule()</code>, giving per-step truth instead of the tier sampler's 50&nbsp;ms gap.
+      Class&nbsp;A: one dict pass and two <code>len()</code> calls per step, no CUDA. Selftest 6/6, reproducing all three
+      real failure shapes above and tolerating legitimate ramp. Co-located now needs an explicit <code>--allow-colocated</code>.</li>
+    <li><span class="commit">9e3b8f3d3</span> &mdash; <b>instrumentation.</b> Three transfer arms instead of the plan's one:
+      <code>minbytes</code> keeps every launch but moves one block row, which <i>is</i> an infinitely fast link and so a hard
+      ceiling for any interconnect; <code>nobus</code> issues no copy at all. Phase timers cover the previously uninstrumented
+      rung-d path, with <code>write_token</code>'s 64 blocking D2H copies and <code>build_step</code>'s Python per-block loop
+      timed separately as named artifacts. Plus the <code>--block-size</code>, <code>--k-window</code> and layer-subset axes.</li>
+    <li><span class="commit">latest</span> &mdash; <b>fitter.</b> Model selection over all 31 subsets by BIC rather than
+      assuming the shape, bootstrap CIs, held-out error. Selftest recovers four planted coefficients to within 10%, selects
+      the superlinear term only when the data really is superlinear, and refuses to fit two points.</li>
+  </ul>
+
+  <h2>Decisions taken without asking</h2>
+  <ul class="plain">
+    <li>Branched the worktree from <code>hybrid-kv-tiers</code> HEAD, not the tooling default <code>origin/main</code>,
+      which would have silently dropped the entire fork.</li>
+    <li>Paid an 8.6&nbsp;GB venv copy rather than a <code>sys.meta_path</code> hack to redirect the <code>vllm</code> import.
+      The hack works but fails <i>silently</i>, and silent failure here means measuring the wrong code &mdash; the failure
+      that produced two wrong diagnoses on 2026-09-04.</li>
+    <li>Replaced the plan's single fake-transfer arm with three, because one arm conflates the byte cost and the launch cost,
+      which extrapolate in opposite directions. <code>real&minus;minbytes</code> is the byte cost,
+      <code>minbytes&minus;nobus</code> the launch cost &mdash; measured directly rather than fitted.</li>
+    <li>Audited the archived curves before booking GPU time, which is what turned up C1 and C2.</li>
+  </ul>
+
+  <h2>Next</h2>
+  <ul class="plain">
+    <li>Finish the venv, repoint the editable finder, pass the tree-identity gate
+      (<code>import vllm</code> must resolve inside this worktree, or the job aborts).</li>
+    <li>Allocate <code>nova07</code>; correctness suite to 9/9; confirm <code>ulimit -l</code> is unlimited.</li>
+    <li>Run the connector A/B at the 4.2b config with the gate live &mdash; the first real answer, and the one that
+      determines whether C1 escalates.</li>
+  </ul>
+
+  <footer>
+    Canonical copy: <code>.claude/worktrees/overhead-char/paper/OVERHEAD_PROGRESS.md</code> &middot;
+    mirror at <code>paper_runs/20260930/overhead/OVERHEAD_PROGRESS.md</code>.
+    This page is a snapshot, refreshed at each milestone.
+  </footer>
+
+</div>

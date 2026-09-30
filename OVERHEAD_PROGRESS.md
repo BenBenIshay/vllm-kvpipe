@@ -11,6 +11,13 @@ Ben's steer is parked, newest first. Everything else is append-only history.
 Branch `overhead-characterisation`, worktree `.claude/worktrees/overhead-char`,
 forked from `05b32de56` (`hybrid-kv-tiers`).
 
+**Where to read this.** The work happens in an isolated worktree, so the copy
+in git is at
+`.claude/worktrees/overhead-char/paper/OVERHEAD_PROGRESS.md` — not at
+`paper/OVERHEAD_PROGRESS.md` in the main checkout. A mirror is kept at
+`/mnt/beegfs/benishay/paper_runs/20260930/overhead/OVERHEAD_PROGRESS.md`,
+next to the campaign's run outputs, and updated whenever this file is.
+
 ---
 
 ## Open concerns
