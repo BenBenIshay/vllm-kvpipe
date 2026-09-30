@@ -17,10 +17,26 @@ WHAT CLASS OF INSTRUMENT THIS IS, which matters more than what it measures.
       pipeline. For a launch-bound cost this is the RIGHT primary metric: the
       thing we are trying to size IS host time spent issuing work.
 
-  Class B -- device time (`VLLM_KVPIPE_PHASE_TIMERS=2`).
-      Adds CUDA event pairs per phase. Events are recorded on the current
-      stream and read back LATER, never waited on inline. Still Class B,
-      because recording an event is itself a stream operation.
+  Class B -- device time. **NOT IMPLEMENTED, deliberately.**
+      `VLLM_KVPIPE_PHASE_TIMERS=2` sets a `dev` flag that nothing reads, so
+      level 2 executes exactly the level-1 path. That was originally an
+      oversight -- the docstring described CUDA event pairs that were never
+      written -- and it is left unimplemented on purpose, for two reasons.
+      Host issue time is the right primary metric for a launch-bound cost, and
+      the byte-versus-launch split that device timing would be used for is
+      already measured directly by the three XFER_MODE arms
+      (`real - minbytes` is the byte cost, `minbytes - nobus` the launch cost),
+      without any stream operation at all.
+
+      The oversight paid for itself: because level 2 is level 1, the t1/t2 arms
+      of M1 were an unintended PURE REPLICATE, which is how the run-to-run
+      noise floor got measured -- +/-0.47% per step, and +/-2.9% on a fitted
+      `F`, +/-8% on a fitted `c` at six rider points. Without it, the
+      instrumentation's 0.69% per-step effect would have been mistaken for a
+      coefficient shift larger than noise.
+
+      If device timing is ever needed, record events on the current stream and
+      drain them non-blocking via `Event.query()`; never wait inline.
 
 This distinction is not pedantry. This repo's existing profiler has misled the
 same investigation twice, in opposite directions:
@@ -67,6 +83,8 @@ class _PhaseTimers:
         except ValueError:
             self.level = 0
         self.on = self.level >= 1
+        # Set but intentionally unread: see the class-B note in the module
+        # docstring. Level 2 is level 1.
         self.dev = self.level >= 2
         self._acc: dict[str, list] = {}
         self._ev: list = []
@@ -80,9 +98,10 @@ class _PhaseTimers:
             self._every = 1
         self._n = 0
         if self.on:
-            print(f"*** hybrid phase timers ON, level={self.level} "
-                  f"({'host+device' if self.dev else 'host only'}), "
-                  f"every={self._every}", flush=True)
+            note = " (level 2 == level 1: device timing not implemented)" \
+                if self.dev else ""
+            print(f"*** hybrid phase timers ON, level={self.level}, host time "
+                  f"only{note}, every={self._every}", flush=True)
 
     # -- hot path ---------------------------------------------------------
     def now(self):
