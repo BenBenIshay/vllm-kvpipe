@@ -339,6 +339,13 @@ def main() -> int:
                         "the unreachable floor. real-minbytes is the byte cost, "
                         "minbytes-nobus the launch cost. Non-real modes are "
                         "NUMERICALLY INVALID -- timing only.")
+    p.add_argument("--skip-d2h", action="store_true",
+                   help="skip write_token's host-mirror write, so the blocking "
+                        "pageable D2H is priced by DIFFERENCING against a real "
+                        "run rather than by timing the host around it. Timing "
+                        "the host does not work here: it reads 21.4 ms per step "
+                        "for two copies of one token's KV, which is the host "
+                        "blocked on the GPU, not a cost. NUMERICALLY INVALID.")
     p.add_argument("--rungd-layers", type=int, default=0,
                    help="restrict the rider host path to the first N layers so "
                         "the per-layer slope can be measured inside one model "
@@ -393,10 +400,12 @@ def main() -> int:
     if a.rungd_async:
         os.environ["VLLM_KVPIPE_RUNGD_ASYNC"] = "1"
     os.environ["VLLM_KVPIPE_RUNGD_XFER_MODE"] = a.xfer_mode
+    if a.skip_d2h:
+        os.environ["VLLM_KVPIPE_RUNGD_SKIP_D2H"] = "1"
     if a.rungd_layers > 0:
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS"] = str(a.rungd_layers)
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS_UNSAFE"] = "1"
-    if a.xfer_mode != "real" or a.rungd_layers > 0:
+    if a.xfer_mode != "real" or a.rungd_layers > 0 or a.skip_d2h:
         print("!" * 66)
         print("! NUMERICALLY INVALID ARM: "
               f"xfer_mode={a.xfer_mode} layers={a.rungd_layers or 'all'}")
@@ -700,9 +709,11 @@ def main() -> int:
            "block_size": a.block_size or 16,
            "k_window": a.k_window or 4,
            "xfer_mode": a.xfer_mode,
+           "skip_d2h": bool(a.skip_d2h),
            "rungd_layers": a.rungd_layers or 0,
            "numerically_valid": (a.xfer_mode == "real"
-                                 and a.rungd_layers == 0),
+                                 and a.rungd_layers == 0
+                                 and not a.skip_d2h),
            "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
            # CODE PROVENANCE. Each arm of a sweep is a fresh process, so editing
            # the harness while a job runs means later arms pick up the change and

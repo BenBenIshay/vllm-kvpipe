@@ -143,6 +143,29 @@ class RungdHostPool:
             print(f"*** RungdHostPool: XFER_MODE={self._xfer_mode} -- bus "
                   f"copies altered, OUTPUT IS NUMERICALLY INVALID. "
                   f"Timing measurement only.", flush=True)
+        # PRICE THE BLOCKING D2H BY DIFFERENCING, not by a stopwatch.
+        #
+        # write_token does two PAGEABLE (hence blocking) `.to("cpu")` copies per
+        # layer -- 64 host/device serialisation points per step. Timing the host
+        # around them does NOT price them: measured 21.4 ms per step, 0.335 ms
+        # per layer, for two copies of one token's KV. At ~4 KB that would be
+        # 12 MB/s, which is not a bandwidth -- it is the host blocked on the
+        # GPU. The repo had already documented that exact trap ("charged
+        # write_token the model's own compute, producing a 21 ms blocking D2H
+        # worth ~4 ms at a realistic queue depth") and the phase timers
+        # reproduced it anyway, to the same 21 ms.
+        #
+        # So this skips the host-mirror write entirely and lets the SAME
+        # differencing that priced the bus copies price it too. The mirror then
+        # goes stale, so subsequent refreshes read wrong KV: numerically invalid
+        # by construction, timing only.
+        self._skip_d2h = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_SKIP_D2H", "0") == "1"
+        )
+        if self._skip_d2h:
+            print("*** RungdHostPool: SKIP_D2H=1 -- host mirror not updated, "
+                  "OUTPUT IS NUMERICALLY INVALID. Timing measurement only.",
+                  flush=True)
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
@@ -710,9 +733,14 @@ class RungdHostPool:
         # one, and a faster link does not remove it. Timed on its own because
         # the earlier profiler charged this call the model's own compute and
         # produced a "21 ms" figure that was worth ~4 ms.
-        _td = PT.now()
-        k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
-        PT.add("write_token_d2h_blocking", _td)
-        hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(0, host_pos, k_cpu)
-        hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(0, host_pos, v_cpu)
+        if not self._skip_d2h:
+            _td = PT.now()
+            k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
+            PT.add("write_token_d2h_blocking", _td)
+            hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(
+                0, host_pos, k_cpu)
+            hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(
+                0, host_pos, v_cpu)
+        else:
+            PT.count("write_token_d2h_skipped")
         PT.add("write_token", _t)
