@@ -43,6 +43,52 @@ if the connector A/B shows a material gap then **the `0.86x` figure and
 Figure 1's cost curve are both affected**, and that is a paper-level decision,
 not mine.
 
+### C4 — OPEN. **The most consequential finding so far. Paper-level.**
+
+**The paper's "not affine" result may be an admission-ramp artifact, not a
+superlinear mechanism.**
+
+Arm A reproduced the published decode-node curve to within **0.35%**
+(53.45 / 71.36 / 97.35 / 146.38 ms against 53.512 / 71.632 / 97.546 / 146.886),
+so the substrate is pinned and what follows applies to the published data too.
+
+But the purity gate failed every rider row on one condition: **requests were
+queued**, `max_waiting = r - 1`.
+
+| r | running min/mode/max | tiers | max_waiting | steps | prefill |
+|---|---|---|---|---|---|
+| 0 | 16/16/16 | hbm 16 | 0 | 136 | 0 |
+| 2 | 18/18/18 | hbm 16, cpu 2 | 1 | 138 | 0 |
+| 4 | 3/20/20 | hbm 16, cpu 4 | 3 | 142 | 0 |
+| 6 | 3/22/22 | hbm 16, cpu 6 | 5 | 146 | 0 |
+
+The tier composition is *correct* — riders are created as requested, and the
+modal batch is exactly `B_res + r`. The problem is the ramp: admission staggers,
+so the step count grows 136 -> 146, about `2(r-1)` extra steps.
+
+**Why that breaks the estimator.** Step time is
+`(wall_long - wall_short) / (136 - 8)`, which assumes prefill, ramp and teardown
+are identical in both runs and cancel. At r=6 the ramp needs ~10 steps while the
+**short run is only 8 tokens long** — so the short run never reaches steady
+state, its ramp is truncated relative to the long run's, and the residue
+`R_long - R_short` lands in the numerator. The step is therefore
+**overestimated, by an amount that grows with r**.
+
+That is precisely the shape §6.5 reports as the paper's "not affine" evidence:
+per-rider cost rising 9.06 -> 11.01 -> 15.56 ms at r = 2, 4, 6, from which it
+concludes `dT = F + cr` "fits a negative fixed cost and the fixed-versus-slope
+split is not a meaningful decomposition". If the rise is ramp residue, that
+conclusion is an artifact — and so is the `F = -23.4 ms` the affine fit returns.
+
+**It is directly testable and cheap:** raise `--short-len` until the short run
+clears the ramp (48 instead of 8) and see whether the rise survives. Queued at
+the top of the next job. I am NOT assuming the artifact explanation is right —
+the rise may be real, and the test is what decides it.
+
+**Consequence if it is an artifact.** The "not affine" claim, Figure 1's cost
+curve, the negative-`F` argument, and the choice to model a kink rather than an
+affine law would all need revisiting. That is a paper decision, not mine.
+
 ### C3 — OPEN, low risk, will be cross-checked in M3.
 
 **Does the `minbytes` arm really keep the launch cost intact?** It issues the
