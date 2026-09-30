@@ -22,7 +22,35 @@ next to the campaign's run outputs, and updated whenever this file is.
 
 ## Open concerns
 
-### C1 — OPEN. Needs a decision eventually; not blocking M0.
+### C1 — ANSWERED 2026-09-30. Measured: the rigs differ 5-8%, with inconsistent sign.
+
+Arm A (`--connector`) vs arm B (co-located), same config, same session:
+
+| r | arm A dT | arm B dT | B vs A | A GB/step | B GB/step |
+|---|---|---|---|---|---|
+| 2 | 17.91 | 16.95 | **-5.4%** | 1.115 | 1.115 |
+| 4 | 43.90 | 47.20 | **+7.5%** | 2.230 | 2.290 |
+| 6 | 92.93 | 98.35 | **+5.8%** | 3.379 | 3.464 |
+
+Arm B is heavily contaminated, as expected — 32,749 to 45,031 prefill tokens over
+5 to 10 steps, `max_waiting` 12 to 18, and even its r=0 baseline impure. Yet the
+differencing estimator cancels most of that: what survives is 5-8%, **and the
+sign is not consistent**, so it is bias rather than a correctable offset.
+
+Verdict: material for a paper whose headline margin is "a few milliseconds", but
+it does not by itself flip a conclusion. The bigger threat is C4.
+
+**A correction to my own earlier claim.** I wrote that co-located "structurally
+cannot exceed 2 riders", citing the harness's `--connector` help text ("riders
+cap at 2 however many are offered") and the archived `curve_32b_v2.json`. This
+fresh co-located run created 4 and 6 riders without difficulty — `cpu: 4` and
+`cpu: 6` with GB/step rising 1.115 -> 2.290 -> 3.464. So the cap is
+configuration-dependent, not structural, and whatever pinned the archived run at
+2 was something else. The substantive point stands unchanged: that archived
+dataset's r>=4 rows are still invalid, because its GB/step *fell* from 1.115 to
+0.543 while this run shows it need not.
+
+### C1-orig — the original concern, for the record
 
 **The paper's `F = 12.3 ms` anchor comes from a co-located run, and rests on
 about one usable rider point.**
