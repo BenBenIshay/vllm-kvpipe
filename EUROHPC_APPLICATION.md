@@ -1,4 +1,4 @@
-# EuroHPC **Development Access** application — JUPITER Booster (FZJ)
+# EuroHPC **Development Access** application — JUPITER Booster, JSC
 
 Drafted 2026-09-21 against the official call documents. Supersedes the earlier
 Benchmark-call draft: this one covers the **whole evaluation the paper needs**,
@@ -28,7 +28,7 @@ which Benchmark Access (3 months, explicitly a stepping stone) cannot carry.
 | Contract validity | `[FILL]` |
 | Co-investigators | `[FILL, if any]` |
 | Field | Computer Science — machine-learning systems |
-| AI application? | **Yes** (LLM inference serving) |
+| AI application? | **Yes** (LLM inference serving) — the call waives the scalability-challenges requirement for AI applications, which §3 invokes |
 | System | **JUPITER Booster, JSC (DE)** |
 | Request | **110 node hours**, 12-month allocation |
 
@@ -58,98 +58,127 @@ hardware landscape host-memory KV tiering is worth doing.
 
 ## 3. Technical case
 
-### 3.1 The quantity that decides everything
+The assessment criteria for this call are *pertinence and feasibility of the
+request for the targeted system*, a *plan for code development*, and *quantified
+human resources and expertise*. §3 addresses pertinence, §4 the plan, §5 and §6
+feasibility and people. The call waives the scalability-challenges requirement
+for AI applications, and this is one: the request is deliberately **single-GPU**,
+because tensor parallelism would introduce all-reduce traffic into the very step
+time under measurement. There is therefore no scaling story to tell, and that is
+a property of the experiment rather than a gap in it.
 
-At the capacity-limited operating point a decode step reads essentially all of
-HBM once. Weights take most of it, leaving a KV budget `C` that fixes the batch.
-Offloading a request frees `S·b_tok` of HBM and costs `S·b_tok` of link traffic
-**per step** — so the question is whether that traffic hides behind compute.
+### 3.1 The use case, and the quantity that decides it
 
-### 3.2 What we have already measured (A100-80, PCIe, exclusive node)
+A large-language-model decode server is limited by memory, not arithmetic. Each
+generated token requires reading every model weight and every resident KV cache
+byte, at almost no arithmetic per byte, so the GPU's arithmetic units idle while
+the memory system saturates — and what caps the number of concurrent requests is
+the KV cache exhausting device memory.
 
-Using a decode-node emulation — KV delivered as from a remote prefill node, so
-no prefill contaminates the measurement — Qwen2.5-32B at 2048 context, a fixed
-resident cohort of 16, step time taken by differencing two generation lengths so
-prefill cancels exactly, and the pool's own byte counters read alongside.
+Writing `HBM` for device memory, `W` for the weights and `C = HBM − W` for what
+is left, the resident request count is `C / (S · b_tok)` for context length `S`
+and KV bytes per token `b_tok`. Relocating a request's KV to host memory frees
+`S · b_tok` of HBM and costs `S · b_tok` of link traffic **once per decoded
+token**. Two consequences set up the whole request:
 
-**At its own budget the controller admits two host-tier requests and refuses
-more.** The budget is `B_off = T_compute · X / (S · b_tok)`, which at the
-measured `X = 25.1 GB/s` is 2.53, and it holds whatever the offered load:
+* **The sustainable number of host-memory requests is fixed by the interconnect,
+  not by how much host memory exists.** It is `B_off = T_step · X / (S · b_tok)`
+  for achieved link bandwidth `X` — a quantity an engine can measure at runtime
+  and admit against.
+* **The value of a second tier scales with `HBM/C`** — how much of device memory
+  the weights consumed — and not with model size or context length, which cancel.
+  So the technique is worth most exactly where weights fill the device.
 
-| offered | admitted | decode step | link traffic | decode, `B`/ITL |
+### 3.2 What the model predicts, and what A100 confirms
+
+The step-time model `ITL(B) = W/BW_w + B·S·b_tok/BW_kv` is **validated on
+A100-80 across 41 configurations on two models**: inter-token latency is linear
+in `B·S` within each model (`R² = 0.975` and `0.92`), and the intercept — which
+the equation predicts rather than fits — is recovered exactly for Qwen2.5-32B and
+20% high for Llama-3.1-8B. The parameters it needs are measured on the same
+hardware, including the finding that paged-KV read bandwidth is **not** constant
+but degrades by 1.6× as the working set grows, worst at precisely the
+capacity-bound operating point the technique targets.
+
+Fed with GH200-96 parameters, the model then says the technique is **marginal and
+positive** for weight-heavy configurations and **negative** otherwise:
+
+| model, GH200-96 | `HBM/C` | capacity | throughput | affordable fixed cost `F*` |
 |---|---|---|---|---|
-| 0 | 0 | 54.1 ms | 0.000 GB/step | 296 tok/s |
-| 2 | 2 | 70.8 ms | 1.115 GB/step | 254 tok/s |
-| 4 | **2** | — | — | — |
-| 8 | **2** | — | — | — |
+| Llama-3.1-8B fp16 | 1.26 | ×1.22 | **×0.98** | 4.8 ms vs 6.2 paid |
+| Qwen2.5-32B fp8 | 1.60 | ×1.28 | **×0.91** | 6.9 ms vs 12.3 paid |
+| Qwen2.5-32B fp16 | 3.63 | ×1.50 | **×1.01** | 12.8 ms vs 12.3 paid |
+| Llama-3.1-70B fp8 | 4.97 | ×1.67 | **×1.05** | 18.2 ms vs 15.4 paid |
 
-So the operating point is two host-tier requests: batch `1.13×` against a step
-`1.31×` longer, a product of **0.86×** — the tok/s column being `B`/ITL from those
-step times rather than an end-to-end rate, which this closed-loop workload does
-not give cleanly. That is a measured loss, and the same arithmetic puts break-even
-at `X* = 60 GB/s` against PCIe's 25.1, so the loss is predicted rather than
-surprising and it fixes one end of the bandwidth axis.
+Here `C = HBM − W − 4 GB`, a flat device reserve for activations and
+fragmentation; §4 quotes `HBM/C ≈ 7` for the 70B because it uses the 0.90 memory
+utilisation the runs will actually be configured with, which is the operational
+figure rather than the model's.
 
-These are development-run numbers: the runs are reproducible from scripted
-harnesses but their machine-readable output was not archived, which is one reason
-WP1 re-measures the curve rather than assuming it.
+Two configurations clear break-even, by **0.5 ms and 2.8 ms** of a single measured
+quantity: `F`, the fixed per-step cost of using the host path at all. That is the
+number this request is about.
 
-**Past the budget the step becomes the transfer.** To see the shape beyond the
-knee we re-ran with the controller disabled (`--force-riders`), which is a
-diagnostic and not a configuration the system will enter:
+**On PCIe the model predicts a loss, and A100 measures one.** At its own budget
+the controller admits two host-memory requests on top of sixteen resident
+(`B_off = 2.5` at a measured `X = 25.1 GB/s`) and refuses more at any offered
+load. That yields a batch `1.13×` against a step `1.31×` longer — **0.86×**, a
+loss — and the same arithmetic puts break-even at `X* = 60 GB/s`, against PCIe's
+25.1. The negative is therefore predicted rather than surprising, and it fixes
+one end of the bandwidth axis. These are development-run numbers, reproducible
+from scripted harnesses; WP1 re-measures the curve properly on the target system.
 
-| forced host-tier requests | decode step | transfer at 25.1 GB/s |
-|---|---|---|
-| 0 | 53.5 ms | — |
-| 2 | 71.6 ms | 44.4 ms — hides inside the step |
-| 4 | 97.6 ms | 88.8 ms — binding |
-| 6 | 146.9 ms | 134.6 ms — binding |
+### 3.3 The solution, at a high level
 
-The knee is where predicted, `r = T_compute·X/(S·b_tok) = 2.4`, and above it the
-measured step tracks the transfer term to within 9%. That is what these two rows
-establish: the cost is not affine, and the link-bound branch of the model is
-right.
+We manage HBM and host DRAM as **one KV store** and assign each request a tier.
 
-**We draw no overhead figure from them, for two reasons.** Above the knee the
-residual is a difference of numbers ten times its own size — a 10% error in `X`
-moves the r=4 residual across `−1 … +17 ms` — and more fundamentally, once the
-DMA is the binding resource the launch and compaction work can proceed
-concurrently with it, so the residual there is not the same quantity as the
-residual below the knee. Read naively it would suggest the per-request cost
-falls with cohort size, which we do not believe. **The per-step overhead is
-therefore quoted only at r=2, where it is 18.1 ms and `X` cancels out of the
-arithmetic entirely.**
+* A **device-tier** request behaves exactly as in unmodified vLLM.
+* A **host-tier** request holds **no device blocks at all**. Its KV lives in
+  pinned host memory and each layer's bytes are streamed across the link just
+  before that layer's attention consumes them, into a small rolling buffer reused
+  across all layers — four slots for a 64-layer model, so such a request occupies
+  about 6% of the device memory a resident one needs. Layer `ℓ+1`'s transfer is
+  issued while layer `ℓ` computes, which is the window the whole design depends on.
+* **Both tiers are rows of the same batch in a single forward pass**, so the
+  weights are read once however the batch is split. Attention is the only
+  operation that distinguishes the tiers, and only in where it reads keys and
+  values from.
+* The host mirror has its **own block-id space**, held until a request finishes,
+  so device block ids may be freed and reissued underneath it. One compaction per
+  step maps the active cohort onto the rolling buffer.
+* An **admission controller** sizes the host cohort at runtime from the measured
+  link bandwidth and the measured rider-free step time — not from a configured
+  offload fraction — and a placement policy chooses *which* requests, ranked by
+  remaining generation rather than by context length.
 
-### 3.3 The one quantity we cannot measure here
+Implemented in vLLM v1 in roughly 3,900 lines across 22 files. Every path is off
+by default and selected at runtime, so a build with the feature disabled
+exercises the stock engine — verified to match unmodified vLLM within 0.08%
+across six interleaved runs. Exactness is checked in-process: a host-tier
+request's attention output is bitwise identical to the same request served
+resident, over 576 mixed decode layer-steps.
 
-That 18.1 ms is **≈12.3 ms fixed** plus **≈2.9 ms per request** of transfer that
-fails to hide behind the previous layer's compute. The fixed term is measured
-separately — it is what four rounds of optimisation brought down from 37.0 ms —
-and an operator trace reconstructs it independently at 12.2 ms: no dominant
-component, just ~640 extra kernel launches per step, about ten per layer across
-64 layers at 0.19 ms each — so it is the per-layer issue structure itself.
+### 3.4 Why Grace-Hopper, and why the 96 GB part
 
-The split is the whole question, because the two terms extrapolate in opposite
-ways: the per-request term shrinks in proportion to link bandwidth, and **the
-launch term does not shrink with the link at all.**
+`F` is **launch-bound, not bandwidth-bound**: on our hardware it is ~640 extra
+kernel launches per step, about ten per layer across 64 layers. A faster
+interconnect therefore does not shrink it, while the per-request transfer cost
+shrinks in proportion. The two terms extrapolate in opposite directions, and
+which one dominates on a coherent link decides whether the technique pays. `F`
+depends on the host CPU and on issuing across 64 layers, so an x86 host behind
+PCIe cannot predict what a Grace host will do.
 
-On NVLink-C2C the knee moves from 2.4 to ~6.6 requests at 8K context, which is
-what makes the technique arithmetically possible at all. Whether it is
-*profitable* turns on whether the 12.3 ms survives, and that depends on the Grace
-host's launch cost and on issuing 640 launches across 64 layers from an aarch64
-CPU — neither extrapolable from an x86 host behind PCIe.
+**The measurement is also only possible there.** Separating a fixed per-step term
+from a per-request term needs several cohort sizes *below* the knee
+`r = T_step·X/(S·b_tok)`. On PCIe that knee is 2.4, so there is exactly one
+usable point — which is why our own data cannot do it. At 2048 context on
+NVLink-C2C it sits near 26, leaving room for ten or more.
 
-**And the measurement itself is only possible there.** Separating a fixed term
-from a per-request term needs several cohort sizes *below* the knee: on PCIe the
-knee is 2.4, so there is exactly one usable point, which is why our own data
-cannot do it. At 2048 context on C2C the knee sits near 26 requests, leaving room
-for ten or more. One number, a few node-hours, and it decides the outcome.
+JUPITER's Booster carries **GH200 with 96 GB HBM3**, which is the configuration
+the model requires. The 144 GB variant enlarges `C` and *weakens* the effect, so
+this is not a case where larger hardware would substitute.
 
-JUPITER's Booster carries **GH200 with 96 GB HBM3**, which is also the
-configuration our model requires: the 144 GB variant enlarges `C` and *weakens*
-the effect, so this is not a case where bigger hardware would do.
-
-### 3.4 Competing mechanisms
+### 3.5 Competing mechanisms
 
 Three answers exist to "how do you serve attention over host-resident KV", and
 they trade differently. We will measure all three on identical hardware:
@@ -168,7 +197,7 @@ orthogonal: a bounce buffer costs HBM but buys the only opportunity to overlap.
 | WP | experiment | GPU-h |
 |---|---|---|
 | WP0 | port and validate: aarch64 + SM90a build, 9-test correctness suite, bring-up gate | (see §5) |
-| WP1 | **request cost curve** — Δstep vs host-tier count, reported against riders *admitted*, not offered. Run at 2048 context, where the C2C knee sits near 26 requests and so leaves room for ten or more points below it — on PCIe the knee is 2.4 and there is room for one. That is what separates the fixed per-step term from the per-request term (§3.3). Sizes every later WP | 8 |
+| WP1 | **request cost curve** — Δstep vs host-tier count, reported against riders *admitted*, not offered. Run at 2048 context, where the C2C knee sits near 26 requests and so leaves room for ten or more points below it — on PCIe the knee is 2.4 and there is room for one. That is what separates the fixed per-step term from the per-request term (§3.4). Sizes every later WP | 8 |
 | WP2 | crossover figure — our PCIe points plus throttled C2C points, spanning ~5→350 GB/s | 6 |
 | WP3 | re-parameterisation under FlashAttention-3 / Hopper kernels | 8 |
 | WP4 | **ours vs unmodified vLLM** at matched latency target, 3 context lengths | 12 |
@@ -211,13 +240,36 @@ GPU, so we run **2–4 independent configurations per node** — four where the
 pinned host mirrors are small, two at 70B where they are not (4 × 70B would
 exceed a comfortable share of the node's 480 GB). That puts the measurement at
 roughly 30 node-hours. Adding **WP0** (build, correctness suite and bring-up,
-hard-capped at 8 node-hours) and contingency for the risks in §6 gives 110.
+hard-capped at 8 node-hours) and contingency for the risks in §7 gives 110.
 System availability is assumed at ~80% per the technical guidelines.
 
 Every script is written and has been dry-run on A100 hardware, so the allocation
 is spent measuring rather than developing.
 
-## 6. Risks and mitigations
+## 6. Human resources and expertise
+
+> The call requires that *"the available human resources and expertise (available
+> and/or required) to execute this planning must be quantified"*. This is a
+> scored part of the technical assessment, so it needs numbers, not adjectives.
+
+| role | person | commitment over the 12 months | responsible for |
+|---|---|---|---|
+| PI, lead developer | `[FILL: name]` | `[FILL: e.g. 0.5 FTE, ~6 person-months]` | WP0–WP7, WP9–WP10 |
+| `[FILL: co-investigator or advisor role]` | `[FILL: name]` | `[FILL: e.g. 0.1 FTE, advisory]` | `[FILL: which WPs]` |
+| `[FILL: student / collaborator, if any]` | `[FILL]` | `[FILL]` | `[FILL: e.g. WP8 DirectKV triage]` |
+
+**Expertise already available.** `[FILL — see the note below]`
+
+**Expertise required from the hosting entity.** `[FILL: state a need or write
+"none required" — see the note below]`
+
+**Evidence of readiness.** The system is already implemented and working: ~3,900
+lines across 22 files in a vLLM v1 fork, a 9-test correctness suite, and every
+measurement script in §4 written and dry-run on A100 hardware. The allocation is
+spent measuring, not developing. WP0 is time-boxed at 8 node-hours precisely so
+that a build problem cannot consume the allocation.
+
+## 7. Risks and mitigations
 
 | risk | mitigation |
 |---|---|
@@ -227,10 +279,11 @@ is spent measuring rather than developing.
 | **aarch64 + SM90a build time is unmeasured** | Scripted, resumable and time-boxed at 8 hours; overrun means stopping and fixing offline |
 | Pinned-page limits on the host | Checked in the first minutes; the failure mode is silent otherwise |
 
-## 7. Obligations
+## 8. Obligations
 
-* Acknowledgement: *"We acknowledge the EuroHPC Joint Undertaking for awarding
-  us access to Jupiter at FZJ, Germany."*
+* Acknowledgement, in the call's prescribed wording and using its own example
+  for this machine: *"We acknowledge EuroHPC Joint Undertaking for awarding us
+  access to Jupiter at JSC, Germany."*
 * Final Report to `access@eurohpc-ju.europa.eu` within 3 months of the
   allocation ending.
 * Open research; no military use. No personal data — all workloads are synthetic
@@ -241,12 +294,17 @@ is spent measuring rather than developing.
 
 ## Before submitting
 
-1. `[FILL]` administrative fields; confirm the **contract-validity rule**
-   (≥3 months past a 1-year allocation).
-2. Confirm whether Bar-Ilan requires institutional endorsement.
-3. **Re-check the DirectKV artifact is still reachable** at
-   `github.com/shutianluo/DirectKV` — §6 and the 12 hours in WP8a/WP8b assume it
+1. `[FILL]` administrative fields; confirm the **contract-validity rule** — the
+   call requires the project leader's employment contract to be valid *"for at
+   least 3 months after the end of the allocation period"*, so ~15 months from
+   start for a 1-year allocation.
+2. **Fill §6 in full.** Quantified human resources are a scored part of the
+   technical assessment, not a formality — the guidance note in that section says
+   what each field wants.
+3. Confirm whether Bar-Ilan requires institutional endorsement.
+4. **Re-check the DirectKV artifact is still reachable** at
+   `github.com/shutianluo/DirectKV` — §7 and the 12 hours in WP8a/WP8b assume it
    is. If it has gone, WP8 becomes a paragraph and those hours move to WP4/WP7.
-4. Submit **just after a cut-off**, not just before: awards are
+5. Submit **just after a cut-off**, not just before: awards are
    first-come-first-served against each month's quota, so you want a full
    month's runway.
