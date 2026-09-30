@@ -373,6 +373,42 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F6 — about half the exposed per-rider cost survives an infinitely fast link
+
+The `minbytes` arm at ctx 512 — same `2*L*R` launches, one block row per copy, so
+the bytes collapse (0.034 GB/step at r=8 against 1.239 real, 97% removed).
+
+| arm | `F` | `c` |
+|---|---|---|
+| real | 11.67 | **1.129** |
+| minbytes (infinite link) | 12.95 | **0.597** |
+
+`c` falls 1.129 -> 0.597, so **0.532 ms/rider is byte-bound and 0.597 ms/rider
+(53%) is link-invariant**. And only **8.6%** of the nominal per-rider transfer
+time (0.532 of 6.17 ms) is on the critical path as bytes at all.
+
+**If the 53% holds, the C2C implication is direct:** a 17x faster link removes
+only the byte half of `c` and leaves `F = 11.67 ms` entirely untouched.
+
+Three caveats, two of them about numbers that misbehave:
+
+1. **`F` rose 1.28 ms, which it cannot.** `F` is the switch-on cost, not bytes;
+   removing bytes cannot add to it. The cause is visible: minbytes reads *higher*
+   than real at r=1 and r=2 (+0.49, +0.51) and lower from r=3, so the two lines
+   cross near r~2.5 — and the low-r points are the ones that set an intercept.
+   **Treated as a fit artifact, not a finding.** I am not claiming minbytes
+   changes `F`.
+2. **Two methods disagree at ~2 sigma on the link-invariant per-rider term.**
+   The context-scaling solve (F4) gave `B*L ~= 0.32 ms/rider`; minbytes gives
+   0.597. Propagating the +/-8% coefficient noise, the two-context solve is
+   `0.32 +/- 0.12` — it is exactly determined, so errors amplify — against
+   `0.597 +/- 0.05`. Same ballpark, not agreeing within errors. M2's extra
+   contexts resolve it, and this is exactly why the plan wanted the arms *and*
+   the regression rather than either alone.
+3. At r=1-2 the real-minus-minbytes difference is **below the +/-0.5% noise
+   floor** and comes out the wrong sign, which is why these are fits rather than
+   point differences.
+
 ### F5 — the timers exceed the 2% gate at ctx 256, and the estimator gap is systematic
 
 **Timer cost, ctx 256:** mean **+1.66%**, max **+2.22%** — over the gate, where ctx
