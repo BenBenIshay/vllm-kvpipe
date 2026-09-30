@@ -86,11 +86,27 @@ A)  # rider x context, Qwen-32B. Rider lists stop below each context's knee.
     run A_c2048 "$Q32" 2048 16 0,1,2
     ;;
 
-B)  # per-block vs per-byte. Same ctx and riders, block size doubled.
+B)  # per-block vs per-byte. Same ctx and riders, block size varied.
     run B_bs16_c512 "$Q32" 512 16 0,1,2,4,6,8 --block-size 16
     run B_bs32_c512 "$Q32" 512 16 0,1,2,4,6,8 --block-size 32
     run B_bs16_c256 "$Q32" 256 16 0,2,4,8,12  --block-size 16
     run B_bs32_c256 "$Q32" 256 16 0,2,4,8,12  --block-size 32
+    ;;
+
+B2) # A BIGGER LEVER, because the 2x one is underpowered. Four runs of the
+    # identical ctx-512 configuration gave c = 1.129 / 1.166 / 1.074 / 1.032,
+    # a 12% range -- that is the honest error bar on a 5-6 point fit. A 2x
+    # block-size change predicts c to move by the per-block share, roughly
+    # 0.18 of 1.13 = ~16%, which does not clear 12% cleanly.
+    #
+    # 16 -> 64 is a 4x block-count change at fixed bytes, predicting ~48%.
+    # Run adjacent in time and interleaved, because F drifted monotonically
+    # 11.67 -> 12.39 across an hour of GPU work in chronological order
+    # (thermal or clock), so arms separated by 20 minutes are not comparable.
+    run B2_bs16_a "$Q32" 512 16 0,1,2,4,6,8 --block-size 16
+    run B2_bs64_a "$Q32" 512 16 0,1,2,4,6,8 --block-size 64
+    run B2_bs16_b "$Q32" 512 16 0,1,2,4,6,8 --block-size 16
+    run B2_bs64_b "$Q32" 512 16 0,1,2,4,6,8 --block-size 64
     ;;
 
 C)  # layer slope inside one model. NUMERICALLY INVALID arms, timing only.
@@ -118,7 +134,7 @@ F)  # rolling slots: the mechanism "batching across layers" would use.
     # k=4 is the engine default, i.e. slice A's A_c512.
     ;;
 
-*)  echo "FATAL: unknown SLICE=$SLICE (expected A..F)"; exit 2 ;;
+*)  echo "FATAL: unknown SLICE=$SLICE (expected A, B, B2, C..F)"; exit 2 ;;
 esac
 
 # ---- refit over everything gathered so far ---------------------------------
