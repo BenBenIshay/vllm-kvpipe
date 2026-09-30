@@ -373,6 +373,48 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F9 — PRE-REGISTERED, written before the bs=32 arm reported
+
+Also: **a correction to a claim I made minutes earlier.** I said slice B was
+underpowered, using 0.18 — the S-dependent part of the NOBUS arm — where the
+relevant quantity is the **0.851** the degenerate fit attributes to `r*S`, which
+at ctx 512 / bs 16 is **75% of `c` = 1.129**.
+
+Changing block size at fixed context changes the block COUNT and leaves the bytes
+alone, so the hypotheses separate sharply:
+
+| bs | blocks/rider | `c` if per-BLOCK | `c` if per-BYTE |
+|---|---|---|---|
+| 16 | 32 | 1.129 | 1.129 |
+| 32 | 16 | **0.704 (-37.7%)** | 1.129 (0%) |
+| 64 | 8 | **0.491 (-56.5%)** | 1.129 (0%) |
+
+**-37.7% against a 12% replicate noise floor.** The running 2x lever is already
+decisive; I was wrong to doubt it.
+
+As detection thresholds on `p`, the per-block share of `c`: the 2x lever resolves
+`p > 24%`, the 4x resolves `p > 16%`. Neither can rule out a *small* per-block
+term; both separate the hypotheses cleanly if the `r*S` part is mostly blocks,
+which is the case that matters for the projection.
+
+**The replicate noise floor itself**, from four runs of the identical ctx-512
+configuration across two code versions and two jobs:
+
+| run | `F` | `c` |
+|---|---|---|
+| t0_c512 | 11.67 | 1.129 |
+| t1_c512 | 11.91 | 1.166 |
+| t2_c512 | 12.25 | 1.074 |
+| B_bs16_c512 | 12.39 | 1.032 |
+
+`F` mean 12.05, range 6.0%; `c` mean 1.100, range 12.2%. So a single 5-6 point
+fit carries **`F` +/-3%, `c` +/-6%**.
+
+**And `F` drifts monotonically upward in chronological order** — 11.67, 11.91,
+12.25, 12.39 across an hour of GPU work. Thermal or clock, most likely. The
+consequence is methodological: **arms separated by twenty minutes are not safely
+comparable**, so A/B pairs must run adjacent, which is why B2 interleaves them.
+
 ### F8 — M1 COMPLETE. The law, and a failed instrument of my own.
 
 **The law, from the three-arm decomposition (2 contexts x 3 arms):**
