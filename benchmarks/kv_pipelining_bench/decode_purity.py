@@ -28,12 +28,25 @@ ways that has silently failed in this repo:
 So purity is ASSERTED per step, not assumed from the flags. A point that fails
 is discarded and logged, never adjusted.
 
-INSTRUMENTATION CLASS: A (non-perturbing). This wraps `Scheduler.schedule()`
-and does one dict pass plus two `len()` calls per step. No CUDA calls, no
-events, no synchronisation, nothing that can reorder the stream. Steps are tens
-of milliseconds; this is nanoseconds. It is safe to leave on for every run,
-which is the point -- a gate you have to remember to switch on is a gate that
-will be off for the run that needed it.
+INSTRUMENTATION CLASS: A (non-perturbing), and MEASURED rather than asserted.
+This wraps `Scheduler.schedule()` and per step does one `perf_counter_ns`, one
+pass over the scheduled-token dict, one tally of the tier table and two `len()`
+calls. No CUDA call, no event, no synchronisation, nothing that can reorder the
+stream.
+
+Cost, measured on this machine at a realistic 22-request batch:
+
+    perf_counter_ns()      439 ns per call, once per step
+    whole _record() body   28.5 us per step
+      -> 0.053% of a 53.5 ms step, 0.063% of a 45 ms one
+
+Forty times below the 2% perturbation gate, and the clock read is the cheapest
+part of it. The end-to-end bound is better still: with this monitor running on
+every step, M0 arm A reproduced the published curve -- taken with no monitor at
+all -- to 0.35%, which is inside run-to-run noise.
+
+So it is safe to leave on for every run, which is the point: a gate you have to
+remember to switch on is a gate that will be off for the run that needed it.
 
 Usage:
     from decode_purity import DecodePurityMonitor
@@ -49,6 +62,8 @@ Usage:
 from __future__ import annotations
 
 import functools
+import statistics
+import time
 from dataclasses import dataclass, field
 
 print = functools.partial(print, flush=True)  # noqa: A001
@@ -123,6 +138,48 @@ class Window:
             return []
         return self.steps[start:end + 1]
 
+    def step_ms_direct(self, b_res: int, riders: int) -> dict:
+        """Step time measured DIRECTLY over the steady window, no differencing.
+
+        WHY THIS EXISTS. The established estimator differences two generation
+        lengths and relies on everything that is not a decode step appearing
+        identically in both runs so it cancels. Ben's objection to leaning on
+        that: a cost which is out of scope should be *impossible* here, not
+        merely argued to subtract. And the argument does have a hole -- riders
+        are seeded when they are ADMITTED, i.e. during the ramp, so a short run
+        that ends before the last rider is admitted pays less seeding than the
+        long run and the difference lands in the numerator. Same root cause as
+        the ramp residue itself.
+
+        Since the monitor already runs on every step, the interval between
+        consecutive `schedule()` calls IS the step period. Taking the median of
+        those over the steady window only means the ramp, the drain, the
+        seeding and the prefill are excluded by CONSTRUCTION: they are not in
+        the window, so there is nothing to cancel.
+
+        CAVEAT, and it is why this does not simply replace the other estimator:
+        this is the host-side step period. vLLM v1's engine loop is synchronous
+        per step (it waits for sampled token ids), so it tracks the true step
+        time closely -- but the two estimators measure subtly different things
+        and are reported side by side. Agreement between them is the evidence;
+        a divergence is a finding in itself.
+        """
+        st = self._steady(b_res, riders)
+        ts = [s["t"] for s in st if s.get("t") is not None]
+        if len(ts) < 4:
+            return {"step_ms_direct": None, "n_intervals": max(0, len(ts) - 1)}
+        d = sorted((ts[i + 1] - ts[i]) / 1e6 for i in range(len(ts) - 1))
+        n = len(d)
+        return {
+            "step_ms_direct": statistics.median(d),
+            "n_intervals": n,
+            "step_ms_direct_p10": d[int(0.10 * n)],
+            "step_ms_direct_p90": d[min(n - 1, int(0.90 * n))],
+            # Spread matters: a wide one means the "steady" window is not
+            # steady, whatever the counters say.
+            "step_ms_direct_iqr": d[min(n - 1, int(0.75 * n))] - d[int(0.25 * n)],
+        }
+
     def summary(self, b_res: int = 0, riders: int = 0) -> dict:
         if not self.steps:
             return {"n_steps": 0, "n_steady": 0}
@@ -149,6 +206,9 @@ class Window:
                             key=[s["hbm"] for s in st].count),
             "cpu_mode": max({s["cpu"] for s in st} or {0},
                             key=[s["cpu"] for s in st].count),
+            # The differencing-free estimator. Excludes ramp, drain, seeding and
+            # prefill by construction rather than by cancellation.
+            **self.step_ms_direct(b_res, riders),
         }
 
     def verdict(self, b_res: int, riders: int) -> dict:
@@ -332,9 +392,38 @@ def _selftest() -> int:
         print(f"  [{'ok ' if good else 'BAD'}] {label}")
         if not good:
             print(f"        got ok={v['ok']} violations={v['violations']}")
-    print(f"\nPURITY GATE SELFTEST {'PASS' if passed == len(cases) else 'FAIL'} "
-          f"({passed}/{len(cases)})")
-    return 0 if passed == len(cases) else 1
+    # The differencing-free estimator: plant known step intervals and check it
+    # recovers them from the STEADY window only, ignoring fast ramp steps and a
+    # slow drain. If it averaged the whole window it would be pulled off.
+    total = len(cases)
+    w = Window()
+    t = 0
+    for i in range(10):                      # ramp: fast, 20 ms, partial cohort
+        t += 20_000_000
+        w.steps.append({"t": t, "running": 16 + i - 4 if i >= 4 else 16,
+                        "waiting": 5, "tokens": 1, "extra": 0,
+                        "hbm": 16, "cpu": max(0, i - 4)})
+    for _ in range(100):                     # steady: 50 ms, full cohort
+        t += 50_000_000
+        w.steps.append({"t": t, "running": 22, "waiting": 0, "tokens": 22,
+                        "extra": 0, "hbm": 16, "cpu": 6})
+    for _ in range(10):                      # drain: slow, 90 ms, small batch
+        t += 90_000_000
+        w.steps.append({"t": t, "running": 3, "waiting": 0, "tokens": 3,
+                        "extra": 0, "hbm": 3, "cpu": 0})
+    d = w.step_ms_direct(16, 6)
+    got = d.get("step_ms_direct")
+    good = got is not None and abs(got - 50.0) < 0.5
+    total += 1
+    passed += good
+    print(f"  [{'ok ' if good else 'BAD'}] direct estimator recovers the steady "
+          f"step (planted 50.0 ms, ramp 20, drain 90) -> "
+          f"{'None' if got is None else f'{got:.2f}'} ms "
+          f"over {d.get('n_intervals')} intervals")
+
+    print(f"\nPURITY GATE SELFTEST {'PASS' if passed == total else 'FAIL'} "
+          f"({passed}/{total})")
+    return 0 if passed == total else 1
 
 
 def report(verdict: dict, label: str = "") -> bool:

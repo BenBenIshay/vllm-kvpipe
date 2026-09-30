@@ -495,9 +495,25 @@ def main() -> int:
                       f"sample(s) below the {floor:.1f} ms baseline")
             cand = kept or cand
         step = statistics.median(cand)
+        # SECOND, INDEPENDENT ESTIMATOR: the median inter-step interval over the
+        # steady window, from the purity monitor's own per-step timestamps. It
+        # needs no short run, so ramp, drain, rider seeding and prefill are
+        # excluded by construction instead of by an argument that they cancel --
+        # and that argument has a hole, since riders are seeded when ADMITTED
+        # and a short run can end before the last one is. Agreement between the
+        # two estimators is the evidence; a divergence is itself a finding.
+        direct = [(m["purity"]["long"] or {}).get("step_ms_direct")
+                  for m in est if m.get("purity")]
+        direct = [x for x in direct if x is not None]
+        step_direct = statistics.median(direct) if direct else None
+
         gbs = statistics.median([m["stream_bytes_per_step"] for m in est])
         gbw = statistics.median([m["writeback_bytes_per_step"] for m in est])
         rows.append({"riders": r, "step_ms": step,
+                     "step_ms_direct": step_direct,
+                     "step_ms_delta_pct": (
+                         (step_direct - step) / step * 100.0
+                         if step_direct and step else None),
                      "stream_gb_per_step": gbs / 1e9,
                      "writeback_gb_per_step": gbw / 1e9,
                      "nominal_gb_per_step": statistics.median(
@@ -524,9 +540,13 @@ def main() -> int:
         row.update(dT_ms=dt, dT_per_rider_ms=(dt / r if r else 0.0),
                    link_ms=link_ms, eta=eta)
         mark = "" if row.get("usable", True) else "  <-- IMPURE, not a rider cost"
+        sd = row.get("step_ms_direct")
+        dpct = row.get("step_ms_delta_pct")
+        two = (f" | direct {sd:7.2f} ({dpct:+.1f}%)"
+               if sd is not None and dpct is not None else "")
         print(f"{r:>7} {row['step_ms']:>9.2f} {dt:>8.2f} "
               f"{(dt / r if r else 0):>9.2f} {row['stream_gb_per_step']:>9.3f} "
-              f"{link_ms:>9.2f} {eta:>6.2f}{mark}")
+              f"{link_ms:>9.2f} {eta:>6.2f}{two}{mark}")
 
     # ------------------------------------------------------------------ fit
     # THE DELIVERABLE, and it must be on screen in hour one rather than fitted
