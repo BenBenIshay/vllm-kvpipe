@@ -290,6 +290,63 @@ optional. No action needed beyond keeping the gate.
 
 ## History
 
+### 2026-09-30 — FIRST BELOW-KNEE SWEEP. The law is affine, and it decomposes.
+
+M1 arm `t0_c512` (ctx 512, batch 16, timers off, xfer real, 5 repeats), the first
+measurement taken in the regime this campaign was designed around. Knee is
+`r* = 49.29 / 5.35 = 9.2`, so r = 1..8 are all below it.
+
+| r | dT | dT/rider | marginal | link_ms |
+|---|---|---|---|---|
+| 1 | 12.39 | 12.39 | 12.39 | 6.17 |
+| 2 | 14.06 | 7.03 | 1.67 | 12.34 |
+| 3 | 15.29 | 5.10 | 1.23 | 18.52 |
+| 4 | 16.46 | 4.12 | 1.17 | 24.69 |
+| 6 | 18.35 | 3.06 | 0.95 | 37.03 |
+| 8 | 20.57 | 2.57 | 1.11 | 49.38 |
+
+**`dT/rider` FALLS monotonically** — 12.39 down to 2.57 — which *is* the affine
+signature, since `F/r` shrinks. Above the knee it rose. So the convexity at ctx
+2048 was the knee crossing and nothing else, confirming C4 from the other
+direction, and there is no superlinear term hiding here.
+
+Least squares over the six points:
+
+    dT = 11.67 + 1.129 * r      max residual 0.41 ms (3.3% of dT at r=1)
+
+**Three structural claims tested, all passing:**
+
+| quantity | ctx 512, measured | ctx 2048, paper | what the model requires |
+|---|---|---|---|
+| `F` | **11.67 ms** | 12.29 ms | context-INdependent if launch-bound — **agrees to 5%** |
+| `c` | **1.13 ms/rider** | 4.45 ms/rider | proportional to S — **ratio 3.94 for a 4x context change** |
+| hidden fraction | **82%** | 79% claimed | — |
+
+This is the first direct test of the model's central structural claim — that `F`
+is launch-bound and therefore does not follow the link or the context, while `c`
+is a transfer term and does. It passes. It also resolves the earlier 9.93-vs-12.29
+worry: at ctx 512 the intercept is 11.67, not 9.93.
+
+Caveat on scope: one context, one model, timers off, six points. The factorial is
+still required to separate per-block from per-byte and to test the per-layer
+claim. But the shape is established and the two coefficients the C2C projection
+needs are now measured rather than assumed.
+
+### F2 — a controller defect, visible in the same data
+
+The `eta` column reads **-1.01 at r=1**, -0.14 at r=2, and only turns positive
+from r=3. A negative hiding efficiency is not a physical quantity; it is `F`
+leaking into a per-byte one, because the controller computes
+`eta = 1 - dT/link_ms` and so charges the fixed cost to the bytes. The honest
+value is `1 - c/link_per_rider = 1 - 1.13/6.17 = 0.82`.
+
+This confirms empirically what the code review only suggested about
+`overlap_efficiency()` in `transfer_aware_admission.py`. Because
+`VLLM_KVPIPE_ADMIT_MARGINAL` gates on that eta, **the marginal-admission
+criterion is broken at exactly the low rider counts where the decision matters**,
+and would refuse riders it should admit. Recorded as a finding; not fixed, since
+this campaign characterises rather than optimises.
+
 ### 2026-09-30 — M0 + M0b COMPLETE. Gate satisfied.
 
 | gate | result |
