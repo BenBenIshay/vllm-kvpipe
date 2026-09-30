@@ -373,6 +373,26 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F5 — the timers exceed the 2% gate at ctx 256, and the estimator gap is systematic
+
+**Timer cost, ctx 256:** mean **+1.66%**, max **+2.22%** — over the gate, where ctx
+512 was +0.69% / +1.10%. In absolute terms 1.0-1.4 ms per step for r>=1 and
+**0.07 ms at r=0**, which is a clean internal check: the cost appears only when
+the instrumented rider path actually runs. So shares-only is no longer marginal,
+it is mandatory.
+
+**Estimator gap (differenced minus direct), knee at r\* = 13.9:**
+
+| r | 0 | 1 | 2 | 4 | 6 | 8 | 12 | **16** |
+|---|---|---|---|---|---|---|---|---|
+| arm t0 | -0.02 | -0.03 | -0.05 | -0.14 | +0.02 | -0.17 | -0.14 | **-2.74%** |
+| arm t1 | -0.04 | +0.02 | 0.00 | -0.09 | -0.21 | -0.21 | -0.50 | **-2.46%** |
+
+Below the knee the two independent estimators agree to **<=0.5%**; at the single
+point above it, differencing inflates ~**2.6%**, reproduced in both arms. That
+isolates the C4 ramp effect cleanly and makes the below-knee regime an empirical
+requirement rather than an argument.
+
 ### F3b — a methodological error of mine: editing the harness mid-job
 
 I edited the harness while job 2179687 was running. Each arm of a sweep is a
