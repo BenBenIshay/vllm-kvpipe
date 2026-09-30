@@ -222,6 +222,32 @@ per-layer costs.
 Every numerically-invalid arm prints a banner and sets `numerically_valid:
 false` in the output JSON, so none can be quoted for correctness or tokens/s.
 
+### 2026-09-30 — a worktree trap caught before it cost an allocation
+
+A fresh `git worktree` cannot run this engine, and it fails in a way that looks
+like a code bug rather than a setup one. An editable install keeps its compiled
+extensions in the **source tree**, and `git worktree add` only materialises
+tracked files — build outputs are gitignored. So the new tree had **zero** `.so`
+files against the main tree's five, and `import vllm` would have failed outright.
+
+Checked before submitting, not after. `paper_runs` would have shown a job that
+died in the first minute with an import error.
+
+Fixed the way `WORKTREE_SETUP.md` describes for `vllm-kvpipeline-66`: symlink the
+build outputs, which are products identical for both trees (`_vllm_fa3_C` alone
+is 1.1 GB, so copying them is not sensible). But rather than replicate that
+tree's list, I computed the set actually missing here — **56 files, against the
+22 symlinks `-66` carries**, because several `third_party/triton_kernels`
+subdirectories postdate that setup. Copying the older list would have left
+`matmul_ogs_details`, `numerics_details`, `tensor_details`, `topk_details` and
+the `vllm_flash_attn` triton ops unresolved.
+
+`git status` stays clean afterwards, confirming all 56 are gitignored.
+
+**Consequence to remember:** rebuilding the C extensions in the main tree now
+changes this tree too. Usually desirable; worth knowing before debugging a
+mystery.
+
 **Status:** all instrumented files compile; gate selftest 6/6; layer-knob gating
 verified standalone (off / ignored-without-unsafe / active / no-op when the
 limit exceeds depth). **Nothing has run on a GPU yet** — the worktree's venv
