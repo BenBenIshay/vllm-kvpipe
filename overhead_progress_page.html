@@ -156,18 +156,55 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-09-30 15:29</span>
+      <span><b>snapshot</b> 2026-09-30 16:10</span>
     </div>
   </header>
 
   <div class="status">
-    <span class="pill"><span class="dot hold"></span><span class="k">now</span><span class="v">Blocked on venv copy (250/381 pkgs)</span></span>
-    <span class="pill"><span class="k">gpu work</span><span class="v">not started</span></span>
-    <span class="pill"><span class="k">landed</span><span class="v">3 commits, CPU-side complete</span></span>
-    <span class="pill"><span class="dot stop"></span><span class="k">concerns</span><span class="v">1 paper-level</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M0 running on nova07 (job 2179684), arm B</span></span>
+    <span class="pill"><span class="k">suite</span><span class="v">9/9 with instrumentation</span></span>
+    <span class="pill"><span class="k">arm A</span><span class="v">reproduced published curve to 0.35%</span></span>
+    <span class="pill"><span class="dot stop"></span><span class="k">concerns</span><span class="v">2 paper-level</span></span>
   </div>
 
   <h2>Read this first &mdash; open concerns</h2>
+
+  <div class="concern paper-level">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C4 &middot; open &middot; most consequential so far, paper-level</div>
+      <h3>The &ldquo;not affine&rdquo; result may be an admission-ramp artifact</h3>
+      <p class="sub">Arm A reproduced the published decode-node curve to <b>0.35%</b>
+        (<span class="mono">53.45 / 71.36 / 97.35 / 146.38</span> vs
+        <span class="mono">53.512 / 71.632 / 97.546 / 146.886</span> ms), so the substrate is pinned and this applies
+        to the published data. The purity gate then failed every rider row on one condition: <b>requests were
+        queued</b>, <span class="mono">max_waiting = r&minus;1</span>.</p>
+      <div class="scroller" style="margin:12px 0">
+        <table>
+          <thead><tr><th class="num">r</th><th>running min/mode/max</th><th>tiers</th><th class="num">max_waiting</th><th class="num">steps</th><th class="num">prefill</th></tr></thead>
+          <tbody>
+            <tr><td class="num">0</td><td class="mono">16/16/16</td><td class="mono">hbm 16</td><td class="num">0</td><td class="num">136</td><td class="num">0</td></tr>
+            <tr><td class="num">2</td><td class="mono">18/18/18</td><td class="mono">hbm 16, cpu 2</td><td class="num">1</td><td class="num">138</td><td class="num">0</td></tr>
+            <tr><td class="num">4</td><td class="mono">3/20/20</td><td class="mono">hbm 16, cpu 4</td><td class="num">3</td><td class="num">142</td><td class="num">0</td></tr>
+            <tr><td class="num">6</td><td class="mono">3/22/22</td><td class="mono">hbm 16, cpu 6</td><td class="num">5</td><td class="num">146</td><td class="num">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub">The tiers are <i>correct</i> &mdash; riders are created as asked, modal batch exactly
+        <span class="mono">B_res + r</span>. The issue is the ramp: admission staggers, so the step count grows
+        136&nbsp;&rarr;&nbsp;146, about <span class="mono">2(r&minus;1)</span> extra steps.</p>
+      <p class="sub"><b>Why that breaks the estimator.</b> Step time is
+        <span class="mono">(wall_long &minus; wall_short)/(136&minus;8)</span>, which assumes the ramp is identical in
+        both runs and cancels. At r=6 the ramp needs ~10 steps but the short run is only <b>8 tokens</b> long &mdash; it
+        never reaches steady state, its ramp is truncated, and the residue lands in the numerator. The step is
+        <b>overestimated by an amount that grows with r</b>.</p>
+      <small class="note">That is exactly the shape &sect;6.5 reads as &ldquo;not affine&rdquo; (per-rider cost rising
+        9.06 &rarr; 11.01 &rarr; 15.56&nbsp;ms), and from which it concludes an affine fit returns a negative fixed
+        cost. <b>Being tested, not assumed</b> &mdash; M0b raises <code>--short-len</code> to 48 and 96 at fixed
+        token difference. If dT/rider flattens, the rise was residue; if it persists at 96, the kink model stands.
+        If it is an artifact, Figure 1's cost curve and the negative-F argument both need revisiting.</small>
+    </div>
+  </div>
 
   <div class="concern paper-level">
     <div class="stripe"></div>
@@ -281,10 +318,16 @@
   <h2>Milestones</h2>
   <ol class="ms">
     <li><span class="msid">M0</span><div class="msbody"><h3>Pin the substrate, settle the connector A/B</h3>
-      <p class="gate"><b>Gate:</b> suite 9/9 &middot; published curve reproduced within 5% &middot; purity gate green &middot; A/B answered &middot; current fixed anchor written down</p></div>
-      <span class="state part">cpu done</span></li>
+      <p class="gate"><b>Gate:</b> suite 9/9 <b>&check;</b> &middot; published curve reproduced within 5% <b>&check; (0.35%)</b>
+        &middot; purity gate green <b>&mdash; failed, and that is finding C4</b> &middot; A/B answered &middot; fixed anchor re-measured</p></div>
+      <span class="state part">running</span></li>
+    <li><span class="msid">M0b</span><div class="msbody"><h3>Is the &ldquo;not affine&rdquo; rise real? (new, from C4)</h3>
+      <p class="gate"><b>Gate:</b> dT/rider measured at short_len 8 / 48 / 96 with the token difference held fixed &mdash;
+        converges, or does not</p></div>
+      <span class="state wait">queued</span></li>
     <li><span class="msid">M1</span><div class="msbody"><h3>Instrumentation</h3>
-      <p class="gate"><b>Gate:</b> flags-off regression &lt;2% &middot; timer perturbation quantified with a CI and the fitting mode chosen <i>in writing</i> &middot; phase shares &ge;90% of &Delta;T</p></div>
+      <p class="gate"><b>Gate:</b> flags-off regression <b>&check; (suite 9/9 with instrumentation in place)</b> &middot;
+        timer perturbation quantified with a CI and the fitting mode chosen <i>in writing</i> &middot; phase shares &ge;90% of &Delta;T</p></div>
       <span class="state part">built, unrun</span></li>
     <li><span class="msid">M2</span><div class="msbody"><h3>Measure the overhead law</h3>
       <p class="gate"><b>Gate:</b> held-out &Delta;T within 10% &middot; every coefficient with a CI &middot; unidentified terms named</p></div>
@@ -314,9 +357,34 @@
       ceiling for any interconnect; <code>nobus</code> issues no copy at all. Phase timers cover the previously uninstrumented
       rung-d path, with <code>write_token</code>'s 64 blocking D2H copies and <code>build_step</code>'s Python per-block loop
       timed separately as named artifacts. Plus the <code>--block-size</code>, <code>--k-window</code> and layer-subset axes.</li>
-    <li><span class="commit">latest</span> &mdash; <b>fitter.</b> Model selection over all 31 subsets by BIC rather than
+    <li><b>fitter.</b> Model selection over all 31 subsets by BIC rather than
       assuming the shape, bootstrap CIs, held-out error. Selftest recovers four planted coefficients to within 10%, selects
       the superlinear term only when the data really is superlinear, and refuses to fit two points.</li>
+    <li><b>launch-pattern microbenchmark.</b> Engine-free replay of the
+      <span class="mono">2&middot;L&middot;R</span> H2D pattern, eager vs CUDA-graph. Settles C3 independently, bounds the
+      graph-removable fraction of F (never measured before &mdash; everything in this repo ran
+      <span class="mono">enforce_eager=True</span>), and tests the model's own claim that F is fixed whatever the rider
+      count. Needs no vLLM or checkpoint, so it is also the one artifact worth handing to anyone with a GH200.</li>
+    <li><span class="commit">349ea8501</span> &mdash; <b>gate v2.</b> As written it was both too strict and not strict
+      enough. Queueing is now judged on the steady window, found from the data rather than by trimming a fixed number of
+      steps &mdash; a constant trim cannot work when ramp length depends on rider count. And it now checks the condition
+      that actually threatens the estimator, which is <i>cross-run</i>: the short run must itself clear the ramp, and the
+      two ramps must match. Selftest 9/9.</li>
+  </ul>
+
+  <h2>Setup traps caught before they cost an allocation</h2>
+  <ul class="plain">
+    <li><b>A fresh worktree cannot import vllm.</b> Editable installs keep compiled extensions in the <i>source</i> tree
+      and <code>git worktree add</code> only materialises tracked files, so the new tree had <b>zero</b>
+      <span class="mono">.so</span> files against the main tree's five. Fixed by symlinking &mdash; but computing the
+      missing set, which is <b>56 files against the 22</b> the older <code>-66</code> worktree carries, because several
+      <code>third_party/triton_kernels</code> subdirectories postdate it.</li>
+    <li><b>This cluster rejects any batch script containing a delay command.</b>
+      <span class="mono">The 'sleep' command is prohibited on this cluster</span> &mdash; and the filter looks textual,
+      since the rejection persisted while the word survived only in a comment. Nothing in the repo recorded this.</li>
+    <li><b>Piping a run through <code>tail</code> discards the evidence.</b> M0 sent arm A through
+      <code>tail -45</code> and threw away every purity verdict but the last, which had to be recovered from the JSON.
+      Later jobs write full logs to files.</li>
   </ul>
 
   <h2>Decisions taken without asking</h2>
