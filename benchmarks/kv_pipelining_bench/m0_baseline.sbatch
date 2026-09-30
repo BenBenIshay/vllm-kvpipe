@@ -123,7 +123,10 @@ try:
 except Exception as e:
     print('  teardown helper unavailable:', e)
 " 2>&1 | tail -5
-sleep 5
+# NB: this cluster's submit filter rejects any batch script containing a delay
+# command ("the ... command is prohibited on this cluster"), so there is none
+# here -- not even in a comment, since the filter appears to be textual. The
+# teardown helper is synchronous, so the check below needs no settle delay.
 ps -u "$USER" -o args= | grep -E "[.]venv/bin/python.*kv_pipelining_bench|^VLLM::EngineCore" | head -5
 
 echo "================ M0 done $(date -Is) ================"

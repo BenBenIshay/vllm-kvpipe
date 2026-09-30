@@ -112,6 +112,8 @@ try:
     from bench_teardown import terminate_engine; terminate_engine(); print('ok')
 except Exception as e: print('teardown helper unavailable:', e)
 " 2>&1 | tail -3
-sleep 5
+# No delay command anywhere: this cluster's submit filter rejects any batch
+# script containing one, apparently textually. The teardown helper is
+# synchronous, so none is needed.
 ps -u "$USER" -o args= | grep -E "[.]venv/bin/python.*kv_pipelining_bench|^VLLM::EngineCore" | head -5
 echo "================ M1 done $(date -Is) ================"
