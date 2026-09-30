@@ -68,33 +68,84 @@ Offloading a request frees `S·b_tok` of HBM and costs `S·b_tok` of link traffi
 ### 3.2 What we have already measured (A100-80, PCIe, exclusive node)
 
 Using a decode-node emulation — KV delivered as from a remote prefill node, so
-no prefill contaminates the measurement — with riders added on top of a full
-HBM, Qwen2.5-32B at 2048 context, 3 repeats, spread under 1%:
+no prefill contaminates the measurement — Qwen2.5-32B at 2048 context, a fixed
+resident cohort of 16, step time taken by differencing two generation lengths so
+prefill cancels exactly, and the pool's own byte counters read alongside.
 
-| host-tier requests | decode step | Δ per request | link traffic |
-|---|---|---|---|
-| 0 | 53.5 ms | — | 0.000 GB/step |
-| 2 | 71.6 ms | 9.1 ms | 1.115 GB/step |
-| 4 | 97.6 ms | 11.0 ms | 2.230 GB/step |
-| 6 | 146.9 ms | 15.6 ms | 3.379 GB/step |
+**At its own budget the controller admits two host-tier requests and refuses
+more.** The budget is `B_off = T_compute · X / (S · b_tok)`, which at the
+measured `X = 25.1 GB/s` is 2.53, and it holds whatever the offered load:
 
-The cost is **not linear**. It fits a kink:
+| offered | admitted | decode step | link traffic | decode, `B`/ITL |
+|---|---|---|---|---|
+| 0 | 0 | 54.1 ms | 0.000 GB/step | 296 tok/s |
+| 2 | 2 | 70.8 ms | 1.115 GB/step | 254 tok/s |
+| 4 | **2** | — | — | — |
+| 8 | **2** | — | — | — |
 
-```
-step  ≈  max(T_compute,  r · S · b_tok / X)  +  overhead
-```
+So the operating point is two host-tier requests: batch `1.13×` against a step
+`1.31×` longer, a product of **0.86×** — the tok/s column being `B`/ITL from those
+step times rather than an end-to-end rate, which this closed-loop workload does
+not give cleanly. That is a measured loss, and the same arithmetic puts break-even
+at `X* = 60 GB/s` against PCIe's 25.1, so the loss is predicted rather than
+surprising and it fixes one end of the bandwidth axis.
 
-Below the knee `r = T_compute·X/(S·b_tok)` the transfer hides; above it the step
-*is* the transfer. Measured here: knee **2.41** requests, residual overhead
-**8.6–18 ms**, so the best attainable gain is **0.86–0.99×** — just below
-break-even, exactly as a 25 GB/s link predicts.
+These are development-run numbers: the runs are reproducible from scripted
+harnesses but their machine-readable output was not archived, which is one reason
+WP1 re-measures the curve rather than assuming it.
 
-### 3.3 Why this needs Grace-Hopper specifically
+**Past the budget the step becomes the transfer.** To see the shape beyond the
+knee we re-ran with the controller disabled (`--force-riders`), which is a
+diagnostic and not a configuration the system will enter:
 
-The knee scales with link bandwidth and should reach **5–6** at 8K context on
-NVLink-C2C. The *overhead* is software and does **not** scale with the link —
-and it is the term that decides the outcome. It cannot be extrapolated from
-PCIe hardware. JUPITER's Booster carries **GH200 with 96 GB HBM3**, which is the
+| forced host-tier requests | decode step | transfer at 25.1 GB/s |
+|---|---|---|
+| 0 | 53.5 ms | — |
+| 2 | 71.6 ms | 44.4 ms — hides inside the step |
+| 4 | 97.6 ms | 88.8 ms — binding |
+| 6 | 146.9 ms | 134.6 ms — binding |
+
+The knee is where predicted, `r = T_compute·X/(S·b_tok) = 2.4`, and above it the
+measured step tracks the transfer term to within 9%. That is what these two rows
+establish: the cost is not affine, and the link-bound branch of the model is
+right.
+
+**We draw no overhead figure from them, for two reasons.** Above the knee the
+residual is a difference of numbers ten times its own size — a 10% error in `X`
+moves the r=4 residual across `−1 … +17 ms` — and more fundamentally, once the
+DMA is the binding resource the launch and compaction work can proceed
+concurrently with it, so the residual there is not the same quantity as the
+residual below the knee. Read naively it would suggest the per-request cost
+falls with cohort size, which we do not believe. **The per-step overhead is
+therefore quoted only at r=2, where it is 18.1 ms and `X` cancels out of the
+arithmetic entirely.**
+
+### 3.3 The one quantity we cannot measure here
+
+That 18.1 ms is **≈12.3 ms fixed** plus **≈2.9 ms per request** of transfer that
+fails to hide behind the previous layer's compute. The fixed term is measured
+separately — it is what four rounds of optimisation brought down from 37.0 ms —
+and an operator trace reconstructs it independently at 12.2 ms: no dominant
+component, just ~640 extra kernel launches per step, about ten per layer across
+64 layers at 0.19 ms each — so it is the per-layer issue structure itself.
+
+The split is the whole question, because the two terms extrapolate in opposite
+ways: the per-request term shrinks in proportion to link bandwidth, and **the
+launch term does not shrink with the link at all.**
+
+On NVLink-C2C the knee moves from 2.4 to ~6.6 requests at 8K context, which is
+what makes the technique arithmetically possible at all. Whether it is
+*profitable* turns on whether the 12.3 ms survives, and that depends on the Grace
+host's launch cost and on issuing 640 launches across 64 layers from an aarch64
+CPU — neither extrapolable from an x86 host behind PCIe.
+
+**And the measurement itself is only possible there.** Separating a fixed term
+from a per-request term needs several cohort sizes *below* the knee: on PCIe the
+knee is 2.4, so there is exactly one usable point, which is why our own data
+cannot do it. At 2048 context on C2C the knee sits near 26 requests, leaving room
+for ten or more. One number, a few node-hours, and it decides the outcome.
+
+JUPITER's Booster carries **GH200 with 96 GB HBM3**, which is also the
 configuration our model requires: the 144 GB variant enlarges `C` and *weakens*
 the effect, so this is not a case where bigger hardware would do.
 
@@ -117,7 +168,7 @@ orthogonal: a bounce buffer costs HBM but buys the only opportunity to overlap.
 | WP | experiment | GPU-h |
 |---|---|---|
 | WP0 | port and validate: aarch64 + SM90a build, 9-test correctness suite, bring-up gate | (see §5) |
-| WP1 | **request cost curve** — Δstep vs host-tier count, the knee, the overhead. Sizes every later WP | 8 |
+| WP1 | **request cost curve** — Δstep vs host-tier count, reported against riders *admitted*, not offered. Run at 2048 context, where the C2C knee sits near 26 requests and so leaves room for ten or more points below it — on PCIe the knee is 2.4 and there is room for one. That is what separates the fixed per-step term from the per-request term (§3.3). Sizes every later WP | 8 |
 | WP2 | crossover figure — our PCIe points plus throttled C2C points, spanning ~5→350 GB/s | 6 |
 | WP3 | re-parameterisation under FlashAttention-3 / Hopper kernels | 8 |
 | WP4 | **ours vs unmodified vLLM** at matched latency target, 3 context lengths | 12 |
@@ -193,8 +244,9 @@ is spent measuring rather than developing.
 1. `[FILL]` administrative fields; confirm the **contract-validity rule**
    (≥3 months past a 1-year allocation).
 2. Confirm whether Bar-Ilan requires institutional endorsement.
-3. **Check whether DirectKV released an artifact** — this decides whether WP8 is
-   12 hours or a paragraph.
+3. **Re-check the DirectKV artifact is still reachable** at
+   `github.com/shutianluo/DirectKV` — §6 and the 12 hours in WP8a/WP8b assume it
+   is. If it has gone, WP8 becomes a paragraph and those hours move to WP4/WP7.
 4. Submit **just after a cut-off**, not just before: awards are
    first-come-first-served against each month's quota, so you want a full
    month's runway.
