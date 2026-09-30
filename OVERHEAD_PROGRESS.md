@@ -36,6 +36,21 @@ if the connector A/B shows a material gap then **the `0.86x` figure and
 Figure 1's cost curve are both affected**, and that is a paper-level decision,
 not mine.
 
+### C3 — OPEN, low risk, will be cross-checked in M3.
+
+**Does the `minbytes` arm really keep the launch cost intact?** It issues the
+same `2*L*R` `cudaMemcpyAsync` calls but each moves one block row instead of
+`n`, so the per-byte term goes to ~0 while every launch is still made. The
+assumption is that a memcpy's launch overhead is independent of its size, which
+is true to first order but not exactly: very small transfers can be scheduled
+differently by the DMA engine.
+
+This is why M3's standalone launch-pattern microbenchmark is not optional — it
+measures per-launch cost against transfer size directly, engine-free, so the
+`minbytes` reading can be checked against it rather than trusted. If the two
+disagree, the microbenchmark wins and `minbytes` is reported as a bound rather
+than a measurement.
+
 ### C2 — OPEN. Methodological; already handled by the plan's gate.
 
 **At least one archived curve silently measured resident-batch growth as "rider
@@ -127,3 +142,82 @@ Consequences, stated plainly:
 * Allocate `nova07`; `run_suite.sh` -> 9/9; confirm `ulimit -l` is `unlimited`.
 * Build the decode-purity gate checker, then run the connector A/B at the 4.2b
   config with the gate live (concern C1).
+
+### 2026-09-30 — decode-purity gate landed (`8fd0fbc34`)
+
+Asserts the four conditions per step by wrapping `Scheduler.schedule()`, which
+gives per-step ground truth rather than the tier sampler's 50 ms sampling gap.
+Class A: one dict pass and two `len()` calls per step, no CUDA, nothing that can
+reorder the stream — cheap enough to leave on for every run, which is the point,
+since a gate you have to switch on will be off for the run that needed it.
+
+A rep failing the gate is dropped before the estimator sees it, not adjusted: it
+is not a noisy measurement of the right thing, it is a measurement of a
+different thing. Rows carry `usable`, which is what the fitter filters on.
+
+Selftest is 6/6 and covers all four conditions plus the three real failure
+shapes from F1 — and confirms that legitimate admission ramp at the window edges
+still passes, which matters because the estimator's short run is mostly ramp.
+The short run therefore gets only the contamination checks (prefill, queueing);
+the long run, which carries the decode steps the estimate is made of, gets all
+four.
+
+Also: `--connector` is now required unless `--allow-colocated` is passed, and
+the output JSON records rig, connector, force_riders, dtype, repeats, block
+size, k-window and the usable row count — so no future audit has to grep logs
+the way this one did.
+
+### 2026-09-30 — M1 instrumentation landed (`9e3b8f3d3`)
+
+**Design change I made without asking, and it is an improvement on the plan.**
+The plan said "extend `FAKE_TRANSFER` to rung-d", i.e. one arm that skips the
+bus copies. That arm conflates two costs which extrapolate in opposite
+directions, so `VLLM_KVPIPE_RUNGD_XFER_MODE` takes three values instead:
+
+| arm | what crosses the bus | what it is |
+|---|---|---|
+| `real` | everything | the design |
+| `minbytes` | same `2*L*R` launches, one block row each | **an infinitely fast link** |
+| `nobus` | nothing; loop and views still run | the unreachable floor |
+
+`real - minbytes` is the byte cost, `minbytes - nobus` is the launch cost, and
+`nobus - baseline` is everything else the host path costs. That is the entire
+decomposition the C2C projection turns on, **measured directly rather than
+fitted** — and `minbytes` is a hard ceiling for any interconnect, because no
+link removes a launch. See C3 for the one assumption it makes.
+
+The pool now also counts `stream_runs` (H2D launches issued) and
+`stream_bytes_nominal` (what `real` would have moved). Launch count is the
+link-invariant quantity, so it is counted rather than inferred from rider count.
+
+**Phase timers** (`VLLM_KVPIPE_PHASE_TIMERS=1`) cover the previously
+uninstrumented phases: `build_step`, `stream_layer`, `issue_runs`,
+`write_token`, `prepare_layer`, the rider gather/attend/scatter, and the
+runner's per-step split setup. Level 1 is host issue time only — no CUDA call,
+no event, no sync — which for a launch-bound cost is the right primary metric,
+since the quantity being sized *is* host time spent issuing work. Level 2 adds
+device time and is Class B.
+
+Two phases are timed separately because they are **named artifacts, not
+intrinsic costs**, and a projection carrying them understates the design:
+`write_token`'s two pageable (blocking) D2H copies per layer — 64
+host/device serialisation points per step for trivial bytes — and `build_step`'s
+Python per-block block-table build.
+
+**Sweep axes added:** `--block-size` (separates per-block from per-byte at fixed
+bytes — nothing in the current model distinguishes them), `--k-window`,
+`--xfer-mode`, `--rungd-layers`. The layer knob is double-gated behind
+`_UNSAFE=1`, resolved once and cached, and both measurement imports in
+`flash_attn.py` are hoisted to module level — an `os.environ` read per layer
+would be 64 dict lookups per step on a path whose whole subject is small
+per-layer costs.
+
+Every numerically-invalid arm prints a banner and sets `numerically_valid:
+false` in the output JSON, so none can be quoted for correctness or tokens/s.
+
+**Status:** all instrumented files compile; gate selftest 6/6; layer-knob gating
+verified standalone (off / ignored-without-unsafe / active / no-op when the
+limit exceeds depth). **Nothing has run on a GPU yet** — the worktree's venv
+copy (8.6 GB, needed so the editable finder resolves `vllm` to this tree rather
+than the main one) has been running ~70 minutes, currently inside `torch`. No
+measurement can start until it finishes and the tree-identity gate passes.
