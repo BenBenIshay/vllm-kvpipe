@@ -156,23 +156,57 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-09-30 16:10</span>
+      <span><b>snapshot</b> 2026-09-30 16:40</span>
     </div>
   </header>
 
   <div class="status">
-    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M0 running on nova07 (job 2179684), arm B</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M1 running on nova07 (job 2179687)</span></span>
+    <span class="pill"><span class="k">M0 + M0b</span><span class="v">complete, gate satisfied</span></span>
     <span class="pill"><span class="k">suite</span><span class="v">9/9 with instrumentation</span></span>
-    <span class="pill"><span class="k">arm A</span><span class="v">reproduced published curve to 0.35%</span></span>
-    <span class="pill"><span class="dot stop"></span><span class="k">concerns</span><span class="v">2 paper-level</span></span>
+    <span class="pill"><span class="k">reproduced</span><span class="v">published curve to 0.35%</span></span>
   </div>
 
   <h2>Read this first &mdash; open concerns</h2>
 
-  <div class="concern paper-level">
+  <div class="concern checking">
     <div class="stripe"></div>
     <div class="body">
-      <div class="ctag">C4 &middot; open &middot; most consequential so far, paper-level</div>
+      <div class="ctag">C4 &middot; REFUTED &middot; my hypothesis was wrong</div>
+      <h3>The &ldquo;not affine&rdquo; rise is real, and it is the kink</h3>
+      <p class="sub">Held <code>long_len</code> at 136 and raised <code>short_len</code> so the short run clears the ramp.
+        The gate passed 4/4 and <span class="mono">ramp_end</span> came out <b>identical in both runs</b> at every rider
+        count (0/2/6/10), so the ramp genuinely cancels. The rise survives:</p>
+      <div class="scroller" style="margin:12px 0">
+        <table>
+          <thead><tr><th>arm</th><th class="num">&Delta;T/rider r=2</th><th class="num">r=4</th><th class="num">r=6</th><th>kink residual</th><th class="num">usable</th></tr></thead>
+          <tbody>
+            <tr><td>s8 (published shape)</td><td class="num">8.96</td><td class="num">10.97</td><td class="num">15.49</td><td class="mono">17.91 / 8.49 / 11.75</td><td class="num">1/4</td></tr>
+            <tr><td>s24 (ramp cleared)</td><td class="num">8.67</td><td class="num">10.97</td><td class="num">15.11</td><td class="mono">17.35 / 8.25 / 10.44</td><td class="num">4/4</td></tr>
+            <tr><td>s48 (large margin)</td><td class="num">8.59</td><td class="num">11.07</td><td class="num">15.26</td><td class="mono">17.18 / 8.34 / 10.76</td><td class="num">4/4</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub">Converged: s24 and s48 agree within 1&ndash;3%, so the ramp was worth <b>2&ndash;3%</b>, not 70%.
+        The real cause is the paper's own kink. Per-rider link time is <span class="mono">u/X = 21.4 ms</span>, knee at
+        <span class="mono">r* = 2.50</span>, and the marginal cost of the <i>next</i> rider runs
+        <b>8.67 &rarr; 13.26 &rarr; 23.40 ms</b> &mdash; below the knee a rider's transfer still hides inside compute;
+        above it the rider costs its full link time. &Delta;T/rider rises because the marginal rider stops being hidden,
+        not from any superlinear overhead. <b>&sect;6.5 stands.</b></p>
+      <small class="note">The ramp mechanism I described was real and correctly characterised &mdash;
+        <span class="mono">ramp_end</span> is exactly the 2(r&minus;1) predicted from the step counts &mdash; just too
+        small to matter. <b>What this does settle:</b> the residual is stably non-monotone because it measures different
+        things across the knee (below it, overhead plus the unhidden transfer; above it, overhead plus unoverlapped
+        compute), since <span class="mono">max(compute, transfer)</span> is a crude stand-in for overlap. So the paper's
+        &ldquo;overhead 8.6&ndash;18.1 ms&rdquo; is not one physical quantity, and the overhead must be measured
+        <b>below</b> the knee where the interpretation is consistent.</small>
+    </div>
+  </div>
+
+  <div class="concern checking" hidden>
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C4-orig</div>
       <h3>The &ldquo;not affine&rdquo; result may be an admission-ramp artifact</h3>
       <p class="sub">Arm A reproduced the published decode-node curve to <b>0.35%</b>
         (<span class="mono">53.45 / 71.36 / 97.35 / 146.38</span> vs
@@ -209,7 +243,69 @@
   <div class="concern paper-level">
     <div class="stripe"></div>
     <div class="body">
-      <div class="ctag">C1 &middot; open &middot; paper-level, Ben's call</div>
+      <div class="ctag">C1 &middot; ANSWERED &middot; rigs differ 5-8%, inconsistent sign</div>
+      <h3>Co-located vs decode-node, measured</h3>
+      <div class="scroller" style="margin:0 0 12px">
+        <table>
+          <thead><tr><th class="num">r</th><th class="num">arm A &Delta;T (decode-node)</th><th class="num">arm B &Delta;T (co-located)</th><th class="num">B vs A</th></tr></thead>
+          <tbody>
+            <tr><td class="num">2</td><td class="num">17.91</td><td class="num">16.95</td><td class="num">&minus;5.4%</td></tr>
+            <tr><td class="num">4</td><td class="num">43.90</td><td class="num">47.20</td><td class="num"><b>+7.5%</b></td></tr>
+            <tr><td class="num">6</td><td class="num">92.93</td><td class="num">98.35</td><td class="num">+5.8%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub">Arm B is heavily contaminated &mdash; 32,749&ndash;45,031 prefill tokens over 5&ndash;10 steps,
+        <span class="mono">max_waiting</span> 12&ndash;18, even its r=0 baseline impure. But differencing cancels most
+        of it; what survives is 5&ndash;8% <b>with inconsistent sign</b>, so it is bias, not a correctable offset.
+        Material for a paper whose headline margin is a few milliseconds, but it does not flip a conclusion alone.</p>
+      <small class="note"><b>A correction to my own earlier claim:</b> I said co-located "structurally cannot exceed
+        2 riders", citing the harness's help text and the archived data. This fresh run created 4 and 6 riders without
+        difficulty. The cap is configuration-dependent, not structural. The substantive point stands &mdash; the archived
+        <code>curve_32b_v2</code> r&ge;4 rows are still invalid, because its GB/step <i>fell</i> &mdash; but my mechanism
+        was wrong.</small>
+    </div>
+  </div>
+
+  <div class="concern checking">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C5 &middot; CLOSED negatively &middot; the anchor holds</div>
+      <h3>The fixed-cost anchor is confirmed, not stale</h3>
+      <p class="sub">I flagged that the <code>37.0 ms</code> figure might be stale in our favour, since it was attributed
+        to residents losing their fused attention pass and <code>flash_attn.py:1034</code> now bypasses that. Re-measured:
+        the cost fell <b>2.46&times;</b> (38.34 &rarr; 15.56 mean), so 37.0 is history &mdash; which is how the paper uses
+        it.</p>
+      <p class="sub"><b>The trap, which I nearly fell into:</b> that column is <span class="mono">F + c</span>, not
+        <span class="mono">F</span>. Read correctly it <i>validates</i> the model:
+        <span class="mono">F = 12.29 + c = 4.45</span> predicts <span class="mono">F + c = 16.74</span> against
+        <b>15.56</b> measured &mdash; a ratio of 0.93, from an independent script and a different estimator entirely.</p>
+      <small class="note">Still flat across residents (3.6% spread), so it remains per-step/per-layer rather than a
+        batch-wide gather. Baselines reproduced to 0.7%.</small>
+    </div>
+  </div>
+
+  <div class="concern method">
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C6 &middot; open, for the record</div>
+      <h3>The published configuration runs at 98.5% of the KV pool</h3>
+      <p class="sub">My first attempt at the C4 test raised both lengths to hold the token difference fixed. The pool is
+        <span class="mono">35,472 tokens</span>; 16 residents at ctx 2048 + long_len 136 need <b>34,944</b> (fits, 1.5%
+        spare), but at long_len 176 they need <b>35,584</b> &mdash; and the engine evicted and recomputed.</p>
+      <p class="sub">The gate caught it instantly: <span class="mono">prefill leaked: 2208 tokens over 1 steps</span>,
+        15 extra steps at r=0, baseline moved 53.45 &rarr; 64.21 ms, reps spanning 45&ndash;90 ms. My error, caught by
+        the gate rather than by inventing a story for the numbers.</p>
+      <small class="note">Worth keeping: anything that lengthens a sequence tips that configuration into preemption, so
+        pool headroom belongs next to any step-time number. Corrected test holds <code>long_len</code> fixed and varies
+        only <code>short_len</code> &mdash; one variable, identical pool state.</small>
+    </div>
+  </div>
+
+  <div class="concern paper-level" hidden>
+    <div class="stripe"></div>
+    <div class="body">
+      <div class="ctag">C1-orig</div>
       <h3>The <code>F = 12.3 ms</code> anchor comes from a co-located run, and rests on about one usable rider point</h3>
       <p class="sub">It is derived from <code>curve_32b_v2.json</code>, which ran <b>without</b> <code>--connector</code> &mdash;
         co-located, not the P/D-emulated decode-node rig. That same file is the source of the <code>0.86&times;</code>
@@ -318,17 +414,18 @@
   <h2>Milestones</h2>
   <ol class="ms">
     <li><span class="msid">M0</span><div class="msbody"><h3>Pin the substrate, settle the connector A/B</h3>
-      <p class="gate"><b>Gate:</b> suite 9/9 <b>&check;</b> &middot; published curve reproduced within 5% <b>&check; (0.35%)</b>
-        &middot; purity gate green <b>&mdash; failed, and that is finding C4</b> &middot; A/B answered &middot; fixed anchor re-measured</p></div>
-      <span class="state part">running</span></li>
-    <li><span class="msid">M0b</span><div class="msbody"><h3>Is the &ldquo;not affine&rdquo; rise real? (new, from C4)</h3>
-      <p class="gate"><b>Gate:</b> dT/rider measured at short_len 8 / 48 / 96 with the token difference held fixed &mdash;
-        converges, or does not</p></div>
-      <span class="state wait">queued</span></li>
+      <p class="gate"><b>Gate:</b> suite 9/9 <b>&check;</b> &middot; curve reproduced <b>&check; 0.35%</b> &middot;
+        purity green <b>&check; 4/4 at short_len&ge;24</b> &middot; A/B answered <b>&check;</b> &middot;
+        anchor re-measured <b>&check;</b></p></div>
+      <span class="state done">done</span></li>
+    <li><span class="msid">M0b</span><div class="msbody"><h3>Is the &ldquo;not affine&rdquo; rise real? (added from C4)</h3>
+      <p class="gate"><b>Gate:</b> &Delta;T/rider across short_len 8 / 24 / 48 &mdash; <b>converged, rise survives.
+        Hypothesis refuted, &sect;6.5 stands.</b></p></div>
+      <span class="state done">done</span></li>
     <li><span class="msid">M1</span><div class="msbody"><h3>Instrumentation</h3>
-      <p class="gate"><b>Gate:</b> flags-off regression <b>&check; (suite 9/9 with instrumentation in place)</b> &middot;
+      <p class="gate"><b>Gate:</b> flags-off regression <b>&check; (suite 9/9, and 0.35% vs uninstrumented)</b> &middot;
         timer perturbation quantified with a CI and the fitting mode chosen <i>in writing</i> &middot; phase shares &ge;90% of &Delta;T</p></div>
-      <span class="state part">built, unrun</span></li>
+      <span class="state part">running</span></li>
     <li><span class="msid">M2</span><div class="msbody"><h3>Measure the overhead law</h3>
       <p class="gate"><b>Gate:</b> held-out &Delta;T within 10% &middot; every coefficient with a CI &middot; unidentified terms named</p></div>
       <span class="state wait">pending</span></li>
@@ -371,6 +468,26 @@
       that actually threatens the estimator, which is <i>cross-run</i>: the short run must itself clear the ramp, and the
       two ramps must match. Selftest 9/9.</li>
   </ul>
+
+  <h2>Scope: what counts as the feature's cost</h2>
+  <p><b>Seeding a rider does not.</b> Ben, 2026-09-30: <i>&ldquo;this is an artifact of the emulation itself, if we are
+    focusing on the decode node we assume the P nodes put the data in the DDR, it's not part of the cost of our
+    feature/riders.&rdquo;</i> In a real P/D deployment the prefill node has already put that KV in host memory, so
+    <code>seed_req</code>'s <span class="mono">2&middot;L</span> copies are a cost of emulating prefill locally.</p>
+  <p>I had claimed the differencing estimator cancels it. <b>That argument was wrong</b> &mdash; riders are seeded when
+    <i>admitted</i>, during the ramp, so a short run ending before the last admission pays less seeding than the long run.
+    Rather than patch the argument, the monitor now measures the steady step <b>directly</b>, as the median interval
+    between consecutive <code>schedule()</code> calls over the steady window. Ramp, drain, seeding and prefill are then
+    excluded by construction, with nothing to cancel. Both estimators are reported side by side.</p>
+  <p><b>Instrumentation cost, measured not asserted:</b> 439 ns for the clock read, <b>28.5 &micro;s</b> for the whole
+    per-step record at a 22-request batch &mdash; <b>0.053%</b> of a 53.5 ms step, forty times under the 2% gate. The
+    end-to-end bound is stronger: 0.35% against uninstrumented published numbers.</p>
+  <p>Also not a cost of anything: the <b>admission ramp</b>. The scheduler admits the cohort over
+    <span class="mono">~2(r&minus;1)</span> steps, so the batch climbs to target and drains at the end; only the steady
+    phase between is &ldquo;a decode step with r riders&rdquo;.</p>
+  <p><b>Knock-on worth flagging:</b> by the same argument, the paper's &ldquo;prefill handover: 0.22 ms per decode
+    step&rdquo; (&sect;5) is the same operation amortised, so it is emulation cost too and should not be charged to the
+    feature. Paper-side.</p>
 
   <h2>Setup traps caught before they cost an allocation</h2>
   <ul class="plain">
