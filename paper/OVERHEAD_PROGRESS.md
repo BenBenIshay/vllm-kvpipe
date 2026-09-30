@@ -373,6 +373,91 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F8 — M1 COMPLETE. The law, and a failed instrument of my own.
+
+**The law, from the three-arm decomposition (2 contexts x 3 arms):**
+
+    dT = F + c*r,  F = 11.77 ms  (0.184 ms/layer; paper's trace: 0.19)
+
+`F` across six fits: 11.67, 11.68, 11.73, 11.77, 11.97, and one 12.95 artifact.
+Excluding it: **mean 11.77, range 0.30 ms (2.5%)**.
+
+Per-rider `c`, split three ways (ms/rider):
+
+| ctx | bytes | launches | rest | total |
+|---|---|---|---|---|
+| 256 | 0.200 | 0.103 | 0.419 | 0.722 |
+| 512 | 0.532 | 0.088 | 0.509 | 1.129 |
+
+The launch term self-validates across contexts: 0.103/128 = **0.81 us** and
+0.088/128 = **0.69 us** per memcpy, and the launch *count* is 2*L per rider
+regardless of S, so these must agree — they do, to 15%.
+
+**53% of `c` is link-invariant, and `F` is entirely so.** Substituting a 17x
+link: `c` falls 1.129 -> ~0.63 at ctx 512, and `F` does not move.
+
+**The `rest` term is a removable artifact, not an intrinsic cost.** The
+engine-free microbenchmark puts a Python loop iteration at ~8 us, and
+`_issue_runs` runs 64 of them per rider per step: 64 x 8 us = **0.512 ms/rider**
+against **0.509 measured**. It is `narrow()`/`copy_` called from Python 64 times
+per rider, not memcpy cost.
+
+**The CUDA-graph question is closed, negatively.** Graph-removable fraction is
+38.4% at 8 KB copies and **-6% to -0.4% at every larger size**. The engine's real
+copies are ~1.2 MB, where a graph buys nothing — with `non_blocking=True` the
+Python issue already overlaps the DMA at large sizes. The eager-only substrate
+hides no opportunity.
+
+**Automated fit, with the knee filter, 11 points:**
+
+    A_switch_per_layer  0.18183 ms/layer  [0.1752, 0.1899]  -> F = 11.64
+    B_per_rider_layer   0.00473           [0.0031, 0.0065]
+    D_per_block         0.02660           [0.0216, 0.0354]
+    held out 2.2% mean, 4.1% max, R2 0.988
+
+Three independent routes to `F`: 11.77 (arm fits), 11.64 (regression), 0.19
+ms/layer (the paper's operator trace). But **three models tie exactly at BIC
+-21.96** — with block size fixed at 16, `blocks = r*S/16` and
+`bytes = b_tok*r*S` are exactly proportional, so per-block and per-byte are
+mathematically indistinguishable here. M2 slice B breaks it; more contexts
+cannot.
+
+### F7 — my phase timers cannot price a blocking call, exactly as the repo warned
+
+M1's last gate asked for phase shares accounting for >=90% of `dT`. They account
+for **214-304%** — not a pass, but evidence the instrument measures something
+other than additive cost.
+
+| r | dT | top-level phases | naive sum | top/dT |
+|---|---|---|---|---|
+| 1 | 12.62 | 38.41 | 103.73 | **304%** |
+| 4 | 17.06 | 41.82 | 116.67 | 245% |
+| 8 | 20.98 | 44.91 | 130.05 | 214% |
+
+The phases are **nested** (`pool_cpu_override` wraps `prepare_layer` ->
+`stream_layer` -> `issue_runs`, `write_token` -> `write_token_d2h_blocking`, and
+the gather/attend/scatter), so `host_total_ms` double-counts. And the culprit
+behind the remaining overshoot is unmistakable:
+
+    write_token_d2h_blocking: 21.4 ms/step, 0.335 ms/layer,
+    for two pageable D2H copies of ONE token's KV -- a few KB.
+    At ~4 KB that is 12 MB/s, which is not a bandwidth.
+
+It is the host **blocked on the GPU**. And the repo documents this precise trap:
+the old profiler *"charged `write_token` the model's own compute, producing a
+'21 ms' blocking D2H that was worth ~4 ms at a realistic queue depth."* I quoted
+that warning in my own docstring and then built an instrument that reproduces it,
+**to the same 21 ms**.
+
+1. The gate was the wrong **shape**, not merely unmet — host wall time around a
+   blocking sync cannot be additive, and I should have seen that when writing it.
+2. The phase timers are unusable for cost attribution, which is what M3's plan
+   relied on. Method replaced: `VLLM_KVPIPE_RUNGD_SKIP_D2H` prices the D2H by the
+   same differencing that priced the bus copies.
+3. **The xfer arms are unaffected** — they difference step times between
+   configurations, so blocking behaviour is in both arms and cancels. Every
+   number above stands.
+
 ### F6 — about half the exposed per-rider cost survives an infinitely fast link
 
 The `minbytes` arm at ctx 512 — same `2*L*R` launches, one block row per copy, so
