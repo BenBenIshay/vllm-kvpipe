@@ -373,6 +373,50 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F10 — **DEGENERACY BROKEN: the `r*S` term is per-BYTE, not per-block**
+
+ctx 512, batch 16, the two arms adjacent in time within one job:
+
+| | `F` | `c` | max resid |
+|---|---|---|---|
+| bs 16 | 12.39 | 1.032 | 0.76 |
+| bs 32 | 11.60 | 0.994 | 0.47 |
+
+Bytes moved unchanged by design (1.3% mean difference); block count halved.
+
+    pre-registered, per-BLOCK :  -37.7%
+    pre-registered, per-BYTE  :    0.0%
+    MEASURED                  :   -3.7%
+    noise floor               :    12%
+
+**3.7 pp from the per-byte prediction, 34.0 pp from per-block.** Halving the
+block count barely moved `c`. The `dT` differences are also flat in r (+1.02,
++0.41, +1.25, +1.08, +0.98 ms), so what little moved sits in `F` — and the
+-0.79 ms shift there is inside the 0.72 ms drift range measured across an hour,
+between arms 12 minutes apart. Having measured drift first (F9) is what permits
+that statement rather than a guess.
+
+**This is the better outcome for the feature.** A per-byte term is link-bound and
+shrinks on C2C; a per-block term would have been host work no interconnect
+touches. The fitter should now select `C_link` over `D_per_block`.
+
+**But it opens a quantitative tension.** Two measurements of the byte-bound share
+of `c` at ctx 512 disagree:
+
+* the fit's `r*S` coefficient contributes **0.851 ms/rider**
+* the `minbytes` arm removes only **0.532 ms/rider**
+
+leaving ~0.32 ms/rider proportional to `r*S` yet not recovered by collapsing the
+bytes. The plausible reading is that in `real` mode part of the transfer overlaps
+compute, so removing bytes does not recover their full serial time — but that is
+not assertable on two contexts. **Slice A's ctx 1024 and 2048 arms tighten it**,
+since the separation of the r-proportional from the `r*S`-proportional term
+currently rests on exactly two points.
+
+Status of the law: shape settled (affine below the knee, per-byte), `F` = 11.77
++/- 3%, and the open number is the link-bound share of `c` — **47% by the arms,
+up to 75% by the fit**.
+
 ### F9 — PRE-REGISTERED, written before the bs=32 arm reported
 
 Also: **a correction to a claim I made minutes earlier.** I said slice B was
