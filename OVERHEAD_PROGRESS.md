@@ -51,6 +51,56 @@ two generation lengths; C4 is about the case where it fails to.
 
 ---
 
+## M4 COMPLETE — the >60x stall does NOT reproduce, and `r_max` does not exist in range
+
+At the documented stall point the model's prediction is **exact**.
+
+| r | GB/step | step | link_ms | residual |
+|---|---|---|---|---|
+| 6 | 1.747 | 78.71 | 69.62 | 9.09 |
+| 8 | 2.330 | 103.53 | 92.83 | 10.70 |
+| 12 | 3.495 | 153.45 | 139.24 | 14.21 |
+| 16 | 4.660 | 203.38 | 185.65 | 17.73 |
+| **20** | **5.825** | **254.02** | 232.07 | **21.95** |
+
+    kink model: 232.07 + 21.95 = 254.02      measured 254.02
+
+`byte_volume_stall.py` recorded 5.37 GB/step, predicted ~216 ms, *not finishing
+in 900 s at ~0% GPU*. I measured **more bytes** (5.825 GB/step) and got a clean,
+exactly-predicted step. Residual slope runs 0.805 -> 1.055 across the sweep, with
+r=20 landing 4% above the low-r extrapolation — inside noise. No blowup, no
+acceleration. Also clean to **r=24 at ctx 512** (3.77 GB/step).
+
+**The model holds across the knee**, which is a stronger validation than either
+regime alone. Above the knee the exposed transfer is already inside
+`max(T0, link)`, so the residual should be `F` plus only the *link-invariant*
+share of `c` — and the fitted above-knee slopes are **0.706** (ctx 512) and
+**0.853** (ctx 1024) against the arms' invariant share of 0.43-0.60, rising with
+context as a per-block component requires. Same decomposition, both regimes: the
+knee is a transition in which term dominates, not a change of mechanism.
+
+**What the stall actually was.** `hybrid_rungd_pool.py:51-67` records a layout
+fix — the host mirror used to be one `[2,H,bs,nkv,hd]` tensor per layer, forcing
+a CPU staging copy every layer, measured at **22 ms/layer, 98% of `stream_layer`
+and 72% of the engine's wall**. And `:115-121` records scattered block ids
+needing an `index_select` at **6.4 GB/s**. Either reproduces the symptom:
+
+* at 6.4 GB/s, 5.37 GB/step = **839 ms/step** against ~216 predicted
+* at 22 ms/layer x 64 layers = **1408 ms/step**
+
+Both give multi-hundred-ms to 1.4 s steps and a 900 s non-completion over a full
+generation. **The stall belonged to the old gather path; the extent-allocation
+and block-major layout fix removed it.**
+
+**Two consequences.** It *removes* a risk from the projection — the plan worried
+C2C's much larger `B_off` might land in a blowup regime, and there is none. And
+the paper's unmodelled-superlinearity concern is **stale**: it describes code that
+no longer exists.
+
+Also worth recording: the stall is not driven by rider count. 24 riders at ctx
+512 is entirely well-behaved. Had it reproduced, it would have been bytes in
+flight, not concurrency.
+
 ## THE HEADLINE RESULT (M3, 2026-10-01)
 
 **85% of `F` is 128 pageable `.to("cpu")` copies per step, and they cost
