@@ -156,15 +156,15 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-09-30 18:00</span>
+      <span><b>snapshot</b> 2026-10-01 00:05</span>
     </div>
   </header>
 
   <div class="status">
-    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M2 slice B on nova07, slice A queued</span></span>
-    <span class="pill"><span class="k">M0 M1</span><span class="v">complete</span></span>
-    <span class="pill"><span class="k">F</span><span class="v">11.77 ms &plusmn;3%, 0.184 ms/layer</span></span>
-    <span class="pill"><span class="dot go"></span><span class="k">r&middot;S term</span><span class="v">per-BYTE, not per-block</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M2 slices A B C done; D E F queued</span></span>
+    <span class="pill"><span class="k">F</span><span class="v">11.99 ms, &prop; layers, R&sup2; 0.997</span></span>
+    <span class="pill"><span class="k">c at ctx 512</span><span class="v">46% byte / 29% block / 25% per-layer</span></span>
+    <span class="pill"><span class="dot hold"></span><span class="k">C2C crux</span><span class="v">per-block = 77% of c at ctx 2048</span></span>
   </div>
 
   <h2>Notation</h2>
@@ -232,6 +232,83 @@
       drift measured separately across an hour of GPU work (thermal or clock) for arms 12 minutes apart. So it is drift,
       not block size &mdash; a statement only possible because the drift was measured first.</p>
   </div>
+
+  <h2>Final answer: both costs are real, and the split matters most where it is hardest to measure</h2>
+  <p>&ldquo;Per-byte, not per-block&rdquo; was too absolute. What the block-size experiment established was narrower:
+    per-block is not the <i>dominant</i> cause. <b>Both terms are statistically significant</b> in the pooled 45-point
+    fit. At ctx 512, bs 16:</p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>component</th><th class="num">ms/rider</th><th class="num">share</th><th>under a 17&times; link</th></tr></thead>
+      <tbody>
+        <tr><td>per-byte</td><td class="num">0.514</td><td class="num">46%</td><td class="bnd">shrinks ~17&times;</td></tr>
+        <tr><td>per-block</td><td class="num">0.324</td><td class="num">29%</td><td class="inv">invariant</td></tr>
+        <tr><td>per-rider-per-layer</td><td class="num">0.283</td><td class="num">25%</td><td class="inv">invariant</td></tr>
+        <tr><td><b>total c</b></td><td class="num"><b>1.121</b></td><td class="num"></td><td><b>54% link-invariant</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:14px"><b>Three independent cross-checks.</b> The fitted per-block coefficient <i>predicts</i> the
+    block-size experiments (ctx 256: &minus;11.0% predicted vs <b>&minus;12.4% measured</b>; ctx 512: &minus;14.4% vs
+    &minus;3.7%, inside the 12% noise but low). The fit says 54% link-invariant where the <i>fit-free</i>
+    <code>minbytes</code> arm says <b>53%</b>. And the layer axis recovers the per-block term independently &mdash; see
+    below. Honest uncertainty: per-block's CI spans 2.7&times;, so <b>0.18&ndash;0.49 ms/rider, 19&ndash;38% of c</b>.</p>
+
+  <p><b>And the split matters far more at realistic context than at the one measured.</b> Per-block scales with context
+    and is link-invariant, while the byte term gets divided by the link:</p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th></th><th class="num">per-rider</th><th class="num">per-block</th><th class="num">per-byte</th><th class="num">c</th><th class="num">invariant</th></tr></thead>
+      <tbody>
+        <tr><td>ctx 512, PCIe</td><td class="num">0.283</td><td class="num">0.324</td><td class="num">0.446</td><td class="num">1.053</td><td class="num">58%</td></tr>
+        <tr><td>ctx 512, C2C</td><td class="num">0.283</td><td class="num">0.324</td><td class="num">0.026</td><td class="num">0.633</td><td class="num">96%</td></tr>
+        <tr><td>ctx 2048, PCIe</td><td class="num">0.283</td><td class="num">1.295</td><td class="num">1.783</td><td class="num">3.361</td><td class="num">47%</td></tr>
+        <tr><td><b>ctx 2048, C2C</b></td><td class="num">0.283</td><td class="num"><b>1.295</b></td><td class="num">0.105</td><td class="num"><b>1.683</b></td><td class="num"><b>94%</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:14px"><b>At ctx 2048 on C2C the per-block term is 77% of the per-rider cost.</b> A faster link
+    evaporates the byte term and leaves per-block standing as the dominant per-rider cost at exactly the context that
+    matters &mdash; so this is not a detail, it is most of what remains after C2C. It is also the term the
+    engine-free microbenchmark attributed to host bookkeeping (Python loops at ~8&nbsp;&micro;s per iteration), i.e.
+    <b>removable engineering rather than a floor</b>.</p>
+  <p>Break-even with these coefficients, 16 residents:</p>
+  <pre class="mono" style="background:var(--rule-2);padding:12px;border-radius:6px;overflow-x:auto;font-size:12.5px">ctx 512   PCIe  r &gt; 5.9   knee   9.2   reachable
+ctx 512   C2C   r &gt; 4.9   knee 157     reachable
+ctx 2048  PCIe  c = 3.36 &gt;= T0/B = 3.36  -&gt;  NEVER pays
+ctx 2048  C2C   r &gt; 7.2   knee  42.7   reachable</pre>
+  <p>That is the paper's thesis with measured coefficients: at realistic context PCIe cannot pay at any rider count,
+    and C2C can.</p>
+
+  <h2>F is proportional to layer depth &mdash; and it confirms per-block a second time</h2>
+  <p>The layer-subset knob streams rider KV for only the first N layers, making depth a free variable inside
+    <i>one</i> model at fixed head geometry. The paper rests its extrapolation of F from 64 layers to the 70B model's 80
+    on a single trace at one depth; this is the first direct test.</p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th class="num">layers</th><th class="num">F</th><th class="num">c</th><th class="num">F/layer</th></tr></thead>
+      <tbody>
+        <tr><td class="num">8</td><td class="num">1.12</td><td class="num">0.358</td><td class="num">0.140</td></tr>
+        <tr><td class="num">16</td><td class="num">2.61</td><td class="num">0.456</td><td class="num">0.163</td></tr>
+        <tr><td class="num">32</td><td class="num">5.54</td><td class="num">0.659</td><td class="num">0.173</td></tr>
+        <tr><td class="num">48</td><td class="num">8.08</td><td class="num">0.908</td><td class="num">0.168</td></tr>
+        <tr><td class="num">64</td><td class="num">11.71</td><td class="num">1.097</td><td class="num">0.183</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:14px"><span class="mono">F = &minus;0.412 + 0.18519&middot;L</span>, R&sup2; <b>0.9967</b>, max
+    residual 0.40&nbsp;ms. The intercept is &minus;0.41&nbsp;ms where proportionality requires ~0, and the per-layer
+    slope <b>0.18519</b> sits against the pooled fit's 0.18736 and the paper's 0.19 &mdash; <b>three independent routes
+    within 2.5%</b>. Extrapolated to 80 layers: 14.40&nbsp;ms fitted against 14.63 by strict proportionality, 1.6%
+    apart. So the structure is sound; the paper's 15.4 (from a 12.3 base) runs about 5% high.</p>
+  <p><b>The unplanned part.</b> <span class="mono">c</span> scales with depth but <i>not</i> proportionally &mdash;
+    <span class="mono">c/L</span> falls 0.0447 &rarr; 0.0171 &mdash; and fitting <span class="mono">c = p + q&middot;L</span>
+    gives <b>0.252 ms/rider layer-independent</b>. Of the three per-rider terms, only per-block is layer-independent:
+    <span class="mono">blocks = S/bs</span> contains no L, while bytes scale with
+    <span class="mono">b_tok &prop; L</span> and the per-rider-per-layer term does by construction. So the layer axis,
+    which never varies block size, measures the per-block term at <b>0.252</b> against the block-size experiment's
+    <b>0.324</b> &mdash; inside its CI of [0.18, 0.49]. <b>Two experimental axes sharing no machinery agree it is
+    real.</b></p>
 
   <h2>The tension this opened, and how it closed</h2>
   <p>Immediately after the block-size result, two ways of measuring the link-bound share of
