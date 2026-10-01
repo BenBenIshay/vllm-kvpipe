@@ -373,6 +373,94 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F12 — `F` IS proportional to layer depth, and the layer axis confirms the per-block term
+
+Slice C, the layer-subset knob: rider KV streamed for only the first N layers, so
+depth is a free variable inside ONE model at fixed head geometry. ctx 512,
+batch 16.
+
+| layers | `F` | `c` | `F`/layer |
+|---|---|---|---|
+| 8 | 1.12 | 0.358 | 0.140 |
+| 16 | 2.61 | 0.456 | 0.163 |
+| 32 | 5.54 | 0.659 | 0.173 |
+| 48 | 8.08 | 0.908 | 0.168 |
+| 64 | 11.71 | 1.097 | 0.183 |
+
+    F = -0.412 + 0.18519 * L      R2 0.9967, max residual 0.40 ms
+
+**Proportional.** The intercept is -0.41 ms where proportionality requires ~0,
+and the per-layer slope **0.18519** sits against the pooled 45-point fit's
+0.18736 and the paper's operator trace at 0.19 — **three independent routes
+within 2.5%**. This is the first direct test of a claim the paper rests on a
+single trace at one depth, and it passes.
+
+Extrapolating to the 70B row's 80 layers: **14.40 ms** fitted against 14.63 by
+strict proportionality, 1.6% apart. So the structure is sound; the paper's 15.4
+(from a 12.3 base at 64 layers) runs about 5% high.
+
+**An unplanned cross-validation of the per-block term.** `c` scales with depth
+but *not* proportionally — `c/L` falls 0.0447 -> 0.0171 — and fitting
+`c = p + q*L` gives **0.252 ms/rider layer-independent** plus `0.0132*L`.
+
+Of the three per-rider terms, only **per-block is layer-independent**:
+`blocks = S/bs` contains no `L`, while bytes scale with `b_tok` which is
+proportional to `L`, and the per-rider-per-layer term is proportional by
+construction. So the layer-subset experiment — which never varies block size —
+independently measures the per-block term at **0.252 ms/rider** against the
+block-size experiment's **0.324**, comfortably inside its CI of [0.18, 0.49].
+
+Two experimental axes sharing no machinery now agree the per-block term is real
+and about **0.25-0.32 ms/rider**.
+
+### F11 — FINAL per-block vs per-byte, and why the split matters more at long context
+
+**Both terms are real and significant**; my earlier "per-byte, not per-block" was
+too absolute. What the block-size experiment established was narrower: per-block
+is not the *dominant* cause of the `r*S`-proportional cost. At ctx 512, bs 16:
+
+| component | ms/rider | share | link behaviour |
+|---|---|---|---|
+| per-byte | 0.514 | 46% | **shrinks ~17x on C2C** |
+| per-block | 0.324 | 29% | invariant |
+| per-rider-per-layer | 0.283 | 25% | invariant |
+| **total `c`** | **1.121** | | **54% link-invariant** |
+
+Three cross-checks: the fitted per-block coefficient *predicts* the block-size
+experiments (ctx 256 predicted -11.0% against **-12.4% measured**; ctx 512
+predicted -14.4% against -3.7%, inside the 12% noise but low); the fit says 54%
+link-invariant where the fit-free `minbytes` arm says **53%**; and the layer axis
+independently recovers the per-block term (F12). Per-block's CI spans 2.7x, so
+honestly **0.18-0.49 ms/rider, 19-38% of `c`**.
+
+**And the split matters far more at realistic context than at the one measured.**
+Per-block scales with `S` and is link-invariant, while the byte term gets divided
+by the link:
+
+| | per-rider | per-block | per-byte | `c` | invariant |
+|---|---|---|---|---|---|
+| ctx 512, PCIe | 0.283 | 0.324 | 0.446 | 1.053 | 58% |
+| ctx 512, C2C | 0.283 | 0.324 | 0.026 | 0.633 | 96% |
+| ctx 2048, PCIe | 0.283 | 1.295 | 1.783 | 3.361 | 47% |
+| **ctx 2048, C2C** | 0.283 | **1.295** | 0.105 | **1.683** | **94%** |
+
+**At ctx 2048 on C2C the per-block term is 77% of the per-rider cost.** A faster
+link evaporates the byte term and leaves per-block standing as the dominant
+per-rider cost at exactly the context that matters. So this is not a detail — it
+is most of what remains after C2C. And it is the term the microbenchmark
+attributed to host bookkeeping (Python loops at ~8 us per iteration), i.e.
+**removable engineering, not a floor**.
+
+Break-even with these coefficients, 16 residents:
+
+    ctx 512   PCIe  r > 5.9   knee   9.2   reachable
+    ctx 512   C2C   r > 4.9   knee 157     reachable
+    ctx 2048  PCIe  c = 3.36 >= T0/B = 3.36  ->  NEVER pays
+    ctx 2048  C2C   r > 7.2   knee  42.7   reachable
+
+That is the paper's thesis with measured coefficients: at realistic context PCIe
+cannot pay at any rider count, and C2C can.
+
 ### F10 — **DEGENERACY BROKEN: the `r*S` term is per-BYTE, not per-block**
 
 ctx 512, batch 16, the two arms adjacent in time within one job:
