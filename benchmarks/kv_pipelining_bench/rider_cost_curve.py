@@ -723,6 +723,16 @@ def main() -> int:
            # had to be inferred. Now every artifact states the code that made it.
            "git_commit": _git_sha(),
            "git_dirty": _git_dirty(),
+           # JOB IDENTITY. F carries a between-job offset of 1.78 ms (14%),
+           # larger than its within-job spread of 0.58 ms (5%) -- one job read
+           # 1.2 ms high on every arm it contained. So only within-job contrasts
+           # are trustworthy, and a pooled fit must model the job as a variance
+           # component rather than launder it into the coefficients. Recorded
+           # here so that never has to be reconstructed from log filenames
+           # again, which is how it had to be done for the runs before this.
+           "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+           "hostname": os.environ.get("SLURMD_NODENAME",
+                                      os.uname().nodename),
            "n_rows_usable": sum(1 for x in rows if x.get("usable")),
            "n_rows": len(rows),
            "rows": rows}
