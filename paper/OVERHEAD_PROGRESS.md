@@ -373,6 +373,74 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F16 — M2 COMPLETE. More rolling slots do not help.
+
+Slice F, both arms in **one** job, 4x more rolling slots:
+
+| k_window | `F` | `c` |
+|---|---|---|
+| 2 | 11.13 | 1.110 |
+| 8 | 11.70 | 1.108 |
+
+`F` moves **+5.1%** — at the edge of the 5% within-job spread and in the *wrong*
+direction. `c` is unchanged (-0.2%).
+
+The repo named batching **across** layers as the route past the per-layer issue
+structure, and noted "the `k_window` slots already exist for it". This measures
+the slots alone: having four times as many changes nothing, because the code
+still issues one layer at a time. **The slots are a necessary condition, not the
+mechanism** — the prefetch depth would have to change too, and that is a design
+change nobody has built. So the one cheap lever the repo hoped for is not a
+lever.
+
+**M2 is complete.** All six slices: rider x context (A), block size (B), layer
+depth (C), resident cohort (D), three models (E), rolling slots (F).
+
+### F15 — **`F` per layer is NOT model-independent. It is host work that partly hides behind compute.**
+
+Slice E, three models, all arms in **one** job so the comparisons are within-job:
+
+| model | L | T0 | `F` | `c` | `F`/layer | T0/layer |
+|---|---|---|---|---|---|---|
+| Qwen-0.5B ctx512 | 24 | 8.85 | 10.06 | 0.610 | **0.4191** | 0.3687 |
+| Llama-8B ctx256 | 32 | 13.23 | 7.88 | 0.948 | **0.2461** | 0.4134 |
+| Llama-8B ctx512 | 32 | 13.56 | 8.42 | 1.218 | **0.2631** | 0.4238 |
+| Qwen-32B ctx512 | 64 | 49.44 | 11.71 | 1.097 | **0.1829** | 0.7725 |
+
+`F`/layer varies **2.3x** and **falls as GPU work per layer rises** — the
+signature of an overlap mechanism: roughly fixed host work per layer, more of
+which hides when the layer has more compute to hide behind.
+
+Taking the 0.5B as the no-hiding limit, host work is **~0.42 ms per layer**, of
+which 0% hides on the 0.5B, 37-41% on the 8B, and **56% on the 32B**.
+
+Two controls make the interpretation stick. Llama-8B at ctx 256 vs 512 gives
+`F`/layer 0.246 vs 0.263 — 7% apart, same job — so it is not a context artifact.
+And the layer-subset experiment (F12) breaks the `L`-versus-compute confound: at
+**fixed** compute per layer, `F` is proportional to `L` at R2 0.997. So the
+cross-model variation must come from the model difference, with compute per layer
+as the mechanism.
+
+**Three consequences.**
+
+1. The paper's `F = 12.3 * L/64` is right in **shape** but its **rate is
+   model-specific**. Extrapolating the 32B's rate to the 70B errs in a
+   *favourable* direction — more compute per layer means more hiding, so
+   **`F`(70B) < 15.4 ms**.
+2. `F` is much larger than it looks. ~0.42 ms/layer x 64 = **~27 ms of host work
+   per step** against a 49 ms step; over half hides and what remains is
+   `F` ~= 11.7.
+3. **This makes the blocking D2H the main event.** The phase timers put
+   `write_token`'s two pageable D2H copies at 0.335 ms/layer — about **80% of
+   that 0.42**. If one sync per layer is most of `F`, the dominant cost in the
+   whole system is a pageable copy, and removing it attacks `F` directly rather
+   than nibbling at `c`. The phase timers cannot settle it (F7), so M3 prices it
+   by differencing, as the bus copies were priced. **Job 2179720.**
+
+Caveat: three models, and `L` is collinear with compute-per-layer across them.
+The within-model layer result is what licenses the reading; a fourth model would
+strengthen it, and the 70B is not on disk.
+
 ### F14 — **`F` has a BETWEEN-JOB offset of 14%, larger than its within-job spread.**
 ### Two of my own claims corrected.
 
