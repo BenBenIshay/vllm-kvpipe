@@ -51,6 +51,74 @@ two generation lengths; C4 is about the case where it fails to.
 
 ---
 
+## THE HEADLINE RESULT (M3, 2026-10-01)
+
+**85% of `F` is 128 pageable `.to("cpu")` copies per step, and they cost
+synchronisation rather than bandwidth — so a faster interconnect cannot touch the
+dominant cost of this feature, while a code change removes it.**
+
+Qwen-32B, ctx 512, batch 16, four arms **adjacent in one job**, brackets
+straddling the test arm so drift is bounded inside the comparison:
+
+| arm | `F` | `c` |
+|---|---|---|
+| real_a (before) | 10.76 | 1.251 |
+| **skip_d2h** | **1.66** | 1.143 |
+| real_b (after) | 11.88 | 1.052 |
+| skip_d2h + nobus | 2.46 | 0.434 |
+
+    bracket drift on F   1.12 ms (9.9%)
+    D2H effect on F      9.66 ms (85%)      ratio 9x
+
+**`F` attribution:** blocking D2H **9.10 ms (85%)**, H2D bus -0.80 (none, within
+noise — as expected, since `write_token` runs per *layer*), everything else 2.46.
+
+**`c` attribution (ms/rider):** H2D bytes 0.709 (57%, link-bound), D2H per-rider
+0.109 (9%), host per-rider 0.434 (35%).
+
+**Why the link cannot help it.** 9.10 ms over 128 copies is **71 us per copy**,
+for a transfer of one token's KV — a few KB, which at 25 GB/s takes **0.16 us**.
+So 71 us is **446x** the transfer time. It is a stream synchronisation. A 17x
+faster link shortens the 0.16 us and leaves the 71 us.
+
+### TWO WALLS, binding at different contexts
+
+| | `c` | `T0/B` | verdict |
+|---|---|---|---|
+| ctx 512, as built, PCIe | 1.25 | 3.09 | break-even r > 5.9, knee 7.9 — pays narrowly |
+| ctx 512, D2H fixed, PCIe | 1.14 | 3.09 | break-even r > 0.85 — **pays from rider 1** |
+| ctx 2048, as built, PCIe | 4.11 | 3.36 | **never pays at any r** |
+| ctx 2048, D2H fixed, PCIe | 4.01 | 3.36 | **never pays at any r** |
+| ctx 2048, D2H fixed, C2C | 1.34 | 3.36 | break-even r > 0.82 — pays |
+
+* **Short context: the sync binds.** A code change fixes it; the interconnect is
+  irrelevant.
+* **Long context: the bandwidth wall binds.** `c` exceeds `T0/B`, so each rider
+  costs more throughput than it adds, and no code change helps. **This is what
+  C2C is for**, and it remains true.
+
+**The risk to pre-empt.** A reviewer can ask why the D2H was not fixed before
+requesting a machine. The honest answer is good — fixing it does **not** make the
+long-context case work, because the bandwidth wall is still there at ctx 2048
+either way — but the paper attributes to `F` what is mostly one removable sync,
+and `F` is what its "margin of a few milliseconds" rests on.
+
+**The earlier attempt.** Commit `c609d93c7` tried an async `write_token` D2H and
+reverted it, measuring 1.6 ms against a 24 ms extrapolation. The prize is
+**9.1-9.7 ms, about 6x what that patch captured.** It failed for implementation
+reasons — it kept three explicit sync guards on CPU-read paths and added a
+per-row Python loop measured at 1.48 -> 3.28 ms from 1 to 3 riders — not because
+the prize was small. "Reverted on cost" was right about the patch and wrong about
+the opportunity.
+
+**Caveats held firmly.** `skip_d2h` writes no host mirror, so 9.1 ms is an
+**upper bound** on a correct async fix; the mirror write itself (`index_copy_` on
+pinned host memory) is cheap, it is the sync that costs. The ctx-2048 rows use
+M2's scaling rules, not direct measurement, since the knee there permits two
+rider points. And the phase timers put this at 0.335 ms/layer where differencing
+says 0.142 — 42% apart, in the direction F7 established: timing the host around a
+blocking call overstates it.
+
 ## Open concerns
 
 ### C1 — ANSWERED 2026-09-30. Measured: the rigs differ 5-8%, with inconsistent sign.
