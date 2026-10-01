@@ -373,6 +373,67 @@ the direct estimator is immune. That is the C4 mechanism appearing as a
 disagreement between two independent estimators, and it confirms the direct one
 is the more robust.
 
+### F14 — **`F` has a BETWEEN-JOB offset of 14%, larger than its within-job spread.**
+### Two of my own claims corrected.
+
+Slice D varied the resident cohort. Within **one** job, a 4x change moves `F` by
+0.2%:
+
+    batch  8: F = 13.50  c = 1.070
+    batch 32: F = 13.48  c = 0.975
+
+**`F` is flat in the resident cohort** — agreeing with the original
+`fixed_cost_locator`'s "flat, slightly decreasing" across residents 2/4/8.
+
+**Correction 1.** I had just reported `F` 15.3% higher at batch 8, from comparing
+against batch-16 numbers measured in *other jobs*. Grouping every ctx-512
+measurement by job:
+
+| job | F values | mean |
+|---|---|---|
+| 2179687 (M1) | 11.67, 11.91, 12.25 | 11.94 |
+| 2179714 (slice B) | 12.39 | 12.39 |
+| 2179715 (slice A) | 11.71 | 11.71 |
+| 2179717 (slice D) | 13.50, 13.48 | **13.49** |
+
+One whole job reads ~1.2 ms high on **every** arm it contains.
+**Between-job spread 1.78 ms (14%); within-job spread 0.58 ms (5%).**
+
+Consequences, and they are not small:
+
+* My "`F` = 11.77 +/- 3%" was a *within-job* error bar presented as absolute.
+  The honest figure is **+/-14% across jobs**.
+* Only **within-job contrasts** are trustworthy. The ones that survive: the
+  block-size test, the layer axis (all five depths in job 2179716), the batch
+  test above. The one that is weaker than I presented: `F`'s
+  context-independence, since ctx 256 and 512 came from different jobs — they
+  agreed to 0.1%, which against a 14% job offset is partly luck.
+
+**Correction 2, from the 66-point pooled fit** (4 contexts, 5 depths, 2 block
+sizes):
+
+    A_switch_per_layer  0.18850  [0.18140, 0.19531]  -> F = 12.06 ms
+    B_per_rider_layer   0.00469  [0.00346, 0.00593]  -> 0.300 ms/rider
+    C_link              0.10046  [0.08171, 0.12540]  -> 10.0% exposed
+    D_per_block         0.00464  [0.00306, 0.00572]  -> 0.149 ms/rider @ctx512
+    held out: 4.5% mean, 11.0% max
+
+`D_per_block` **halved** (0.01012 -> 0.00464) once the layer axis entered, with a
+tighter CI sitting at the bottom edge of the old one. With the layer axis's own
+0.252 estimate, per-block is **0.15-0.32 ms/rider at ctx 512 (14-29% of `c`)** —
+the least determined term, and I should stop quoting one value for it.
+
+**And the held-out max error is 11.0%, failing the plan's 10% gate** — which is
+diagnostic rather than merely a failure. 11% of a ~15 ms `dT` is ~1.5 ms,
+essentially the 1.78 ms between-job spread. The 66 points are pooled across five
+jobs with no job indicator, so **the residual is dominated by job offset, not by
+the law being wrong**.
+
+M5 must therefore either fit within-job with the job offset as its own variance
+component, or carry +/-14% on `F` through the projection. A pooled fit launders
+that variance into the coefficients. Adding job clustering by file mtime, since
+the JSONs do not record the SLURM id (worth adding too).
+
 ### F12 — `F` IS proportional to layer depth, and the layer axis confirms the per-block term
 
 Slice C, the layer-subset knob: rider KV streamed for only the first N layers, so
