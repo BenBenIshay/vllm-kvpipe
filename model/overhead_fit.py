@@ -92,7 +92,8 @@ TERMS = {
 
 
 def load_points(paths: list[str], link_gbps: float | None,
-                require_valid: bool = True) -> list[dict]:
+                require_valid: bool = True,
+                model_filter: str = "") -> list[dict]:
     """Flatten sweep JSONs into fittable points, dropping what is not usable."""
     pts: list[dict] = []
     dropped: dict[str, int] = {}
@@ -103,6 +104,19 @@ def load_points(paths: list[str], link_gbps: float | None,
     for path in paths:
         with open(path) as fh:
             d = json.load(fh)
+
+        # ONE MODEL AT A TIME, unless explicitly pooled. `A` -- the per-layer
+        # switch-on cost -- is NOT model-independent: measured 0.419 ms/layer on
+        # Qwen-0.5B, 0.246-0.263 on Llama-8B, 0.183 on Qwen-32B, because it is
+        # host work that partly hides behind compute and the models differ 2x in
+        # compute per layer. Pooling them forces one compromise `A` and the
+        # other terms absorb the error -- it produced a NEGATIVE `C_link`, i.e.
+        # "more bytes makes the step faster", which is the model telling you it
+        # is misspecified rather than a noisy estimate.
+        if model_filter and model_filter.lower() not in str(
+                d.get("model", "")).lower():
+            drop(f"model does not match filter {model_filter!r}")
+            continue
 
         # GROUND RULE 1: only the P/D-emulated decode-node rig is a measurement
         # of this feature. A co-located run cannot even create more than two
@@ -170,6 +184,12 @@ def load_points(paths: list[str], link_gbps: float | None,
                 continue
             pts.append({
                 "src": os.path.basename(path),
+                # Job identity, for the per-job offset (see fit_with_jobs).
+                # Runs before 2026-10-01 do not carry slurm_job_id, so fall
+                # back to clustering by file mtime: arms of one job are written
+                # minutes apart, jobs are separated by much more.
+                "job": str(d.get("slurm_job_id") or "")
+                or ("mtime%d" % int(os.path.getmtime(path) // 1800)),
                 "r": r, "S": S, "bs": bs,
                 "layers": eff_layers, "layers_model": layers,
                 "b_res": int(d.get("batch", 0)),
@@ -219,6 +239,52 @@ def fit(pts: list[dict], names: list[str]) -> dict:
     tss = float(((y - y.mean()) @ (y - y.mean())))
     return {
         "names": names, "coef": coef, "rss": rss, "bic": bic, "n": n,
+        "r2": (1 - rss / tss) if tss > 0 else float("nan"),
+        "rmse": math.sqrt(rss / n) if n else float("nan"),
+        "max_abs_resid": float(np.max(np.abs(resid))) if n else float("nan"),
+    }
+
+
+def fit_with_jobs(pts: list[dict], names: list[str]) -> dict:
+    """Fit the law with a PER-JOB additive offset alongside the coefficients.
+
+    WHY. `F` carries a between-job offset of 1.78 ms (14%), bigger than its
+    within-job spread of 0.58 ms (5%): one job read ~1.2 ms high on every arm it
+    contained. A pooled fit cannot see which job a point came from, so that
+    variance ends up in the residual -- the 66-point fit's held-out max error was
+    11.0%, and 11% of a 15 ms `dT` is ~1.5 ms, essentially the between-job
+    spread. The law was not wrong; the fit was absorbing an unmodelled nuisance.
+
+    Adding one indicator per job (the first dropped for identifiability) lets the
+    offsets take it, so the reported coefficients are within-job quantities. The
+    offsets are reported, not hidden: their spread IS the reproducibility of the
+    apparatus and belongs in the projection's envelope.
+    """
+    jobs = sorted({p["job"] for p in pts})
+    if len(jobs) < 2:
+        f = fit(pts, names)
+        f["job_offsets"] = {}
+        return f
+    extra = jobs[1:]                      # drop the first as the reference
+    A = np.hstack([
+        design(pts, names),
+        np.array([[1.0 if p["job"] == j else 0.0 for j in extra]
+                  for p in pts], float),
+    ])
+    y = np.array([p["dT"] for p in pts], float)
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    resid = y - A @ coef
+    n, k = len(y), A.shape[1]
+    rss = float(resid @ resid)
+    tss = float((y - y.mean()) @ (y - y.mean()))
+    return {
+        "names": names,
+        "coef": coef[:len(names)],
+        "job_offsets": dict(zip(extra, coef[len(names):])),
+        "job_ref": jobs[0],
+        "rss": rss, "n": n, "k": k,
+        "bic": (n * math.log(rss / n) + k * math.log(n)
+                if n > k and rss > 0 else float("inf")),
         "r2": (1 - rss / tss) if tss > 0 else float("nan"),
         "rmse": math.sqrt(rss / n) if n else float("nan"),
         "max_abs_resid": float(np.max(np.abs(resid))) if n else float("nan"),
@@ -342,6 +408,29 @@ def report(pts: list[dict], pts_all: list[dict], top: int = 6) -> dict:
     ho = holdout(pts, best["names"])
     print(f"\nHELD OUT: {ho}")
 
+    # The same model with a per-job offset. If RMSE drops sharply, the pooled
+    # residual was job offset rather than model error -- which is the finding,
+    # not a fix applied to flatter the numbers.
+    wj = fit_with_jobs(pts, best["names"])
+    if wj.get("job_offsets"):
+        print(f"\nWITH PER-JOB OFFSETS ({len(wj['job_offsets']) + 1} jobs, "
+              f"reference {wj['job_ref']}):")
+        print(f"  RMSE {best['rmse']:.3f} -> {wj['rmse']:.3f} "
+              f"({(1 - wj['rmse'] / best['rmse']) * 100:+.0f}%), "
+              f"R2 {best['r2']:.4f} -> {wj['r2']:.4f}")
+        print(f"{'term':>22} {'pooled':>12} {'within-job':>12} {'shift':>8}")
+        for j, nm in enumerate(best["names"]):
+            a, b = best["coef"][j], wj["coef"][j]
+            print(f"{nm:>22} {a:>12.5f} {b:>12.5f} "
+                  f"{(b - a) / a * 100 if a else float('nan'):>7.1f}%")
+        offs = sorted(wj["job_offsets"].items(), key=lambda kv: kv[1])
+        print("  job offsets on dT (ms), relative to the reference job:")
+        for j, v in offs:
+            print(f"    {j:>14} {v:+8.3f}")
+        span = max([0.0] + [v for _, v in offs]) - min([0.0] + [v for _, v in offs])
+        print(f"  spread {span:.2f} ms -- this IS the apparatus's "
+              f"reproducibility, and belongs in the projection envelope")
+
     full = fit(pts, cands) if len(pts) > len(cands) else None
     if full is not None:
         print(f"\nFULL MODEL for comparison (all {len(cands)} terms): "
@@ -427,6 +516,11 @@ def main() -> int:
     p.add_argument("paths", nargs="*", help="sweep JSONs (globs ok)")
     p.add_argument("--link-gbps", type=float, default=0.0,
                    help="override the link speed recorded in the JSONs")
+    p.add_argument("--model-filter", default="",
+                   help="substring of the model name; keep only matching runs. "
+                        "Use it: `A` is model-specific (host work that hides "
+                        "behind compute, and models differ in compute per "
+                        "layer), so pooling models misspecifies the fit.")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--out", default="")
     a = p.parse_args()
@@ -440,7 +534,8 @@ def main() -> int:
     if not paths:
         p.error("no input JSONs")
 
-    pts_all = load_points(paths, a.link_gbps or None, require_valid=False)
+    pts_all = load_points(paths, a.link_gbps or None, require_valid=False,
+                          model_filter=a.model_filter)
     pts = [q for q in pts_all if q["xfer_mode"] == "real"]
     res = report(pts, pts_all)
     if a.out and res:
