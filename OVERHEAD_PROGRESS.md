@@ -81,7 +81,46 @@ for a transfer of one token's KV — a few KB, which at 25 GB/s takes **0.16 us*
 So 71 us is **446x** the transfer time. It is a stream synchronisation. A 17x
 faster link shortens the 0.16 us and leaves the 71 us.
 
-### The D2H cost is QUEUE DRAIN, so fixing it is a large-model fix
+### M3 COMPLETE — `F` has TWO components that behave oppositely
+
+**This supersedes the queue-drain explanation below, which the 8B falsified.**
+
+All three models, D2H arms adjacent to their own `real` brackets:
+
+| model | L | compute/L | kv geom | `F` | `F_skip` | D2H share | D2H/layer | rest/layer |
+|---|---|---|---|---|---|---|---|---|
+| Qwen-0.5B | 24 | 0.369 | 2x64 | 9.88 | 7.82 | 21% | 0.086 | 0.326 |
+| Llama-8B | 32 | 0.426 | 8x128 | 8.99 | 4.56 | **49%** | 0.138 | 0.143 |
+| Qwen-32B | 64 | 0.772 | 8x128 | 10.76 | 1.66 | 85% | 0.142 | 0.026 |
+
+**What falsified queue drain.** The 8B and 32B have **identical D2H cost per
+layer** (0.138 vs 0.142) despite **1.8x different compute per layer** (0.426 vs
+0.772). If the 71 us per copy were the host waiting for queued GPU work, the 32B
+would wait nearly twice as long. It does not. What the 8B and 32B share is **KV
+geometry** — both 8 kv-heads x 128 head-dim — while the 0.5B is 2x64 and reads
+0.086. So the D2H tracks **KV geometry, not compute**. My 33% prediction for the
+8B was right in direction (measured 49%) by wrong reasoning.
+
+**The replacement model, and it is mechanically obvious in hindsight:**
+
+* **The blocking D2H** — per layer, set by KV bytes, and it **cannot hide at
+  all**, precisely *because* it blocks. A synchronous call has nothing to overlap
+  with by construction.
+* **Everything else** — async host work per layer, which **hides in proportion to
+  compute**: 0.326 -> 0.143 -> 0.026 ms/layer as compute/layer rises
+  0.369 -> 0.426 -> 0.772.
+
+**So the 85% share on the 32B is not because the D2H is worse there — it is
+because the other half hides so well.** The sync is roughly constant across the
+two large models; its *share* varies because its companion vanishes.
+
+**Which sharpens the practical conclusion rather than weakening it:** fixing the
+blocking D2H is worth most on exactly the large models the paper cares about —
+85% of `F` on the 32B, 49% on the 8B, 21% on the 0.5B — not because of queue
+depth but because large models already hide everything else. That is a better
+argument than the one I had, and it is the one for the write-up.
+
+### SUPERSEDED — the queue-drain reading, kept for the record
 
 Pre-registered before the arm reported: the D2H share of `F` should be *lower* on
 Qwen-0.5B than the 32B's 85%, because if the 71 us per copy is the host waiting
