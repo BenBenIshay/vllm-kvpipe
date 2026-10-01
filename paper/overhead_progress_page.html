@@ -167,12 +167,47 @@
     <span class="pill"><span class="dot go"></span><span class="k">r&middot;S term</span><span class="v">per-BYTE, not per-block</span></span>
   </div>
 
+  <h2>Notation</h2>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>symbol</th><th>meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">r</td><td>number of riders &mdash; requests whose KV lives in host memory</td></tr>
+        <tr><td class="mono">S</td><td>context length in tokens (also written &ldquo;ctx&rdquo;)</td></tr>
+        <tr><td class="mono">&Delta;T</td><td>how much longer a decode step takes with r riders than with none</td></tr>
+        <tr><td class="mono">F</td><td>the <b>fixed</b> part of that: paid once any rider exists, the same for 1 rider or 8</td></tr>
+        <tr><td class="mono">c</td><td>the <b>per-rider</b> part, in ms per rider. The law is <span class="mono">&Delta;T = F + c&middot;r</span></td></tr>
+        <tr><td class="mono">bs</td><td>KV <b>block size</b> in tokens &mdash; the paging granularity, 16 by default</td></tr>
+        <tr><td class="mono">knee</td><td>the rider count above which the step <i>is</i> the transfer. Below it a rider's transfer still hides inside compute; the law only holds below it</td></tr>
+        <tr><td>BIC</td><td>a model-comparison score; lower is better for the complexity used</td></tr>
+        <tr><td>pp</td><td>percentage <b>points</b> &mdash; a gap between two percentages, not a ratio</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <h2>The decisive result: per-byte, not per-block</h2>
   <div class="law">
-    <p style="margin-top:0">The regression could not tell a per-<b>block</b> cost from a per-<b>byte</b> one: with block
-      size fixed at 16, <span class="mono">blocks = r&middot;S/16</span> and <span class="mono">bytes &prop; r&middot;S</span>
-      are exactly proportional, and three models tied at BIC &minus;21.96. Halving the block count at fixed bytes is the
-      only thing that separates them. <b>Prediction registered before the arm reported:</b></p>
+    <p style="margin-top:0"><b>The question.</b> Each rider costs about 1 ms per step. But <i>why</i>? Two candidate
+      causes, which matter very differently:</p>
+    <ul class="plain">
+      <li><b>per-byte</b> &mdash; the cost is moving KV across the link. Scales with
+        <span class="mono">bytes = 262144 &times; S</span> per rider.</li>
+      <li><b>per-block</b> &mdash; the cost is host bookkeeping per KV block: loops, index tables. Scales with
+        <span class="mono">blocks = S / bs</span> per rider.</li>
+    </ul>
+    <p>A per-byte cost gets ~17&times; cheaper on C2C. A per-block cost is CPU work the interconnect never touches. The
+      same <span class="mono">c</span> today, opposite futures &mdash; so this had to be settled before any projection.</p>
+    <p><b>Why fitting alone could not settle it.</b> At the default <span class="mono">bs = 16</span> both candidates
+      scale identically with context:</p>
+    <pre class="mono" style="background:var(--rule-2);padding:12px;border-radius:6px;overflow-x:auto;font-size:12.5px">ctx 512, bs 16:   blocks/rider = 512/16 = 32
+                  bytes/rider  = 262144 x 512 = 134 MB</pre>
+    <p>Double the context and blocks double <i>and</i> bytes double. The two hypotheses are the same shape in the data,
+      so no amount of fitting separates them &mdash; which is why three different models scored exactly the same BIC
+      (&minus;21.96). That is not a weak fitter; the data contained no information on the question.</p>
+    <p><b>The experiment.</b> Change the block size instead, which moves one and not the other:</p>
+    <pre class="mono" style="background:var(--rule-2);padding:12px;border-radius:6px;overflow-x:auto;font-size:12.5px">ctx 512, bs 32:   blocks/rider = 512/32 = 16   &lt;- HALVED
+                  bytes/rider  = 134 MB        &lt;- UNCHANGED</pre>
+    <p><b>Prediction registered before the arm reported:</b></p>
     <div class="scroller" style="border:0;box-shadow:none;background:transparent;margin:14px 0">
       <table>
         <thead><tr><th>hypothesis</th><th class="num">predicted &Delta;c</th><th class="num">distance from measured</th></tr></thead>
@@ -190,13 +225,32 @@
       statement instead of a guess.</p>
     <p><b>This is the better outcome for the feature.</b> A per-byte term is link-bound and shrinks on C2C; a per-block
       term would have been host work no interconnect touches.</p>
-    <small class="note"><b>Open tension, named rather than smoothed:</b> the fit's <span class="mono">r&middot;S</span>
-      coefficient contributes 0.851 ms/rider at ctx 512, but the <code>minbytes</code> arm removes only 0.532 &mdash;
-      leaving ~0.32 ms/rider proportional to <span class="mono">r&middot;S</span> yet not recovered by collapsing the
-      bytes. Probably partial overlap of transfer with compute in the real arm, but not assertable on two contexts.
-      Slice A's ctx 1024 and 2048 arms tighten it. So the link-bound share of <span class="mono">c</span> is
-      <b>47% by the arms, up to 75% by the fit</b> &mdash; that interval is the main thing still open.</small>
+    <p><b>Two side remarks from that table.</b> The bs16 and bs32 runs differed by about +1 ms at <i>every</i> rider
+      count rather than by an amount growing with r &mdash; and a cost that grows with riders lives in
+      <span class="mono">c</span> while a constant offset lives in <span class="mono">F</span>, so the little that moved
+      was in <span class="mono">F</span>. That <span class="mono">F</span> difference was 0.79 ms, against 0.72 ms of
+      drift measured separately across an hour of GPU work (thermal or clock) for arms 12 minutes apart. So it is drift,
+      not block size &mdash; a statement only possible because the drift was measured first.</p>
   </div>
+
+  <h2>The tension this opened, and how it closed</h2>
+  <p>Immediately after the block-size result, two ways of measuring the link-bound share of
+    <span class="mono">c</span> at ctx 512 disagreed badly:</p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>method</th><th class="num">link-bound part of c</th><th class="num">share</th></tr></thead>
+      <tbody>
+        <tr><td>the regression's <span class="mono">r&middot;S</span> coefficient</td><td class="num">0.851 ms/rider</td><td class="num">75%</td></tr>
+        <tr><td>the <code>minbytes</code> arm (collapse the bytes, keep everything else)</td><td class="num">0.532 ms/rider</td><td class="num">47%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:14px"><b>Resolved.</b> The 75% was an artifact of the degenerate fit lumping everything
+    proportional to <span class="mono">r&middot;S</span> into one coefficient. With all 45 points pooled and the
+    block-size axis in place, the fit separates the terms and gives <b>45.8%</b> against the arms' <b>47.1%</b> &mdash;
+    two methods sharing no machinery, one a regression over 45 step-time measurements and the other a differencing
+    between three engine configurations, agreeing to about one percentage point on the number the whole C2C projection
+    turns on.</p>
 
   <h2>Read this first &mdash; open concerns</h2>
 
