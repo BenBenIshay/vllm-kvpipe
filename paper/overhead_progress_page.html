@@ -156,15 +156,15 @@
       <span><b>branch</b> overhead-characterisation</span>
       <span><b>forked</b> 05b32de56</span>
       <span><b>hardware</b> 1&times;A100-80 PCIe, nova07</span>
-      <span><b>snapshot</b> 2026-10-01 00:05</span>
+      <span><b>snapshot</b> 2026-10-01 10:40</span>
     </div>
   </header>
 
   <div class="status">
-    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M2 slices A B C done; D E F queued</span></span>
-    <span class="pill"><span class="k">F</span><span class="v">11.99 ms, &prop; layers, R&sup2; 0.997</span></span>
-    <span class="pill"><span class="k">c at ctx 512</span><span class="v">46% byte / 29% block / 25% per-layer</span></span>
-    <span class="pill"><span class="dot hold"></span><span class="k">C2C crux</span><span class="v">per-block = 77% of c at ctx 2048</span></span>
+    <span class="pill"><span class="dot go"></span><span class="k">now</span><span class="v">M0&ndash;M2 done, M3 running on nova07</span></span>
+    <span class="pill"><span class="dot stop"></span><span class="k">headline</span><span class="v">85% of F is one blocking copy per layer</span></span>
+    <span class="pill"><span class="k">F</span><span class="v">11.3 &rarr; 1.66 ms with that sync gone</span></span>
+    <span class="pill"><span class="k">two walls</span><span class="v">sync at short ctx, bandwidth at long</span></span>
   </div>
 
   <h2>Notation</h2>
@@ -328,6 +328,68 @@ ctx 2048  C2C   r &gt; 7.2   knee  42.7   reachable</pre>
     two methods sharing no machinery, one a regression over 45 step-time measurements and the other a differencing
     between three engine configurations, agreeing to about one percentage point on the number the whole C2C projection
     turns on.</p>
+
+  <h2>The headline result</h2>
+  <div class="law" style="border-left-color:var(--bad)">
+    <p style="margin-top:0;font-size:17px"><b>85% of <span class="mono">F</span> is 128 pageable
+      <code>.to("cpu")</code> copies per step, and they cost <i>synchronisation</i> rather than bandwidth &mdash; so a
+      faster interconnect cannot touch the dominant cost of this feature, while a code change removes it.</b></p>
+    <p>Qwen-32B, ctx 512, four arms <b>adjacent in one job</b>, with <code>real</code> brackets straddling the test arm
+      so drift is bounded <i>inside</i> the comparison rather than by appeal to a separate measurement:</p>
+    <div class="scroller" style="border:0;box-shadow:none;background:transparent;margin:14px 0">
+      <table>
+        <thead><tr><th>arm</th><th class="num">F</th><th class="num">c</th></tr></thead>
+        <tbody>
+          <tr><td>real_a (before)</td><td class="num">10.76</td><td class="num">1.251</td></tr>
+          <tr><td><b>skip_d2h</b></td><td class="num"><b>1.66</b></td><td class="num">1.143</td></tr>
+          <tr><td>real_b (after)</td><td class="num">11.88</td><td class="num">1.052</td></tr>
+          <tr><td>skip_d2h + nobus</td><td class="num">2.46</td><td class="num">0.434</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><b>Bracket drift 1.12 ms against a 9.66 ms effect &mdash; a ratio of 9&times;.</b> Not drift.</p>
+    <p><b>Why the link cannot help it.</b> 9.10 ms over 128 copies is <b>71 &micro;s per copy</b>, for one token's KV
+      &mdash; a few kilobytes, which at 25 GB/s takes <b>0.16 &micro;s</b>. So 71 &micro;s is <b>446&times; the transfer
+      time</b>: it is a stream synchronisation. A 17&times; faster link shortens the 0.16 and leaves the 71.</p>
+    <p>The shape corroborates it: <code>write_token</code> runs once per <i>layer</i>, so its sync lands in
+      <span class="mono">F</span> and not in <span class="mono">c</span> &mdash; and <span class="mono">c</span> indeed
+      barely moves.</p>
+  </div>
+
+  <h2>Two walls, binding at different contexts</h2>
+  <div class="scroller">
+    <table>
+      <thead><tr><th></th><th class="num">c</th><th class="num">T0/B</th><th>verdict</th></tr></thead>
+      <tbody>
+        <tr><td>ctx 512, as built, PCIe</td><td class="num">1.25</td><td class="num">3.09</td><td>break-even r &gt; 5.9, knee 7.9 &mdash; pays narrowly</td></tr>
+        <tr><td>ctx 512, D2H fixed, PCIe</td><td class="num">1.14</td><td class="num">3.09</td><td class="bnd">break-even r &gt; 0.85 &mdash; <b>pays from rider 1</b></td></tr>
+        <tr><td>ctx 2048, as built, PCIe</td><td class="num">4.11</td><td class="num">3.36</td><td class="inv"><b>never pays at any r</b></td></tr>
+        <tr><td>ctx 2048, D2H fixed, PCIe</td><td class="num">4.01</td><td class="num">3.36</td><td class="inv"><b>never pays at any r</b></td></tr>
+        <tr><td>ctx 2048, D2H fixed, C2C</td><td class="num">1.34</td><td class="num">3.36</td><td class="bnd">break-even r &gt; 0.82 &mdash; pays</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain" style="margin-top:14px">
+    <li><b>Short context: the sync binds.</b> A code change fixes it; the interconnect is irrelevant.</li>
+    <li><b>Long context: the bandwidth wall binds.</b> <span class="mono">c</span> exceeds
+      <span class="mono">T0/B</span>, so each rider costs more throughput than it adds and no code change helps.
+      <b>This is what C2C is for, and it remains true.</b></li>
+  </ul>
+  <p><b>The risk to pre-empt.</b> A reviewer can ask why the D2H was not fixed before requesting a machine. The answer is
+    a good one &mdash; fixing it does <i>not</i> make the long-context case work, because the bandwidth wall is there at
+    ctx 2048 either way &mdash; but the paper attributes to <span class="mono">F</span> what is mostly one removable
+    sync, and <span class="mono">F</span> is what its &ldquo;margin of a few milliseconds&rdquo; rests on.</p>
+  <p><b>The earlier attempt.</b> Commit <span class="commit">c609d93c7</span> tried an async
+    <code>write_token</code> D2H and reverted it, measuring 1.6 ms against a 24 ms extrapolation. The prize is
+    <b>9.1&ndash;9.7 ms, about 6&times; what that patch captured</b>. It failed for implementation reasons &mdash; three
+    explicit sync guards kept on CPU-read paths, plus a per-row Python loop measured at 1.48 &rarr; 3.28 ms from 1 to 3
+    riders &mdash; not because the prize was small. &ldquo;Reverted on cost&rdquo; was right about the patch and wrong
+    about the opportunity.</p>
+  <small class="note"><b>Caveats held firmly.</b> <code>skip_d2h</code> writes no host mirror, so 9.1 ms is an
+    <b>upper bound</b> on a correct async fix &mdash; the <code>index_copy_</code> on pinned host memory is cheap, the
+    sync is what costs. The ctx-2048 rows use M2's scaling rules, not direct measurement, since the knee there permits
+    only two rider points. And the phase timers put this at 0.335 ms/layer where differencing says 0.142 &mdash; 42%
+    apart, in the direction already established: timing the host around a blocking call overstates it.</small>
 
   <h2>Read this first &mdash; open concerns</h2>
 
