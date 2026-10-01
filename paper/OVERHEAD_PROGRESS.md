@@ -81,6 +81,36 @@ for a transfer of one token's KV — a few KB, which at 25 GB/s takes **0.16 us*
 So 71 us is **446x** the transfer time. It is a stream synchronisation. A 17x
 faster link shortens the 0.16 us and leaves the 71 us.
 
+### The D2H cost is QUEUE DRAIN, so fixing it is a large-model fix
+
+Pre-registered before the arm reported: the D2H share of `F` should be *lower* on
+Qwen-0.5B than the 32B's 85%, because if the 71 us per copy is the host waiting
+for queued GPU work, a model with little compute per layer has little to wait
+for. Predicted ~35%.
+
+| model | L | `F` | D2H share | D2H ms/layer | compute/layer |
+|---|---|---|---|---|---|
+| Qwen-32B | 64 | 10.76 | **85%** | 0.142 | 0.772 |
+| Qwen-0.5B | 24 | 9.88 | **21%** | 0.086 | 0.369 |
+
+**Measured 21%.** Directionally right, quantitatively close, and the mechanism is
+confirmed: halve the compute per layer and the per-copy cost nearly halves
+(0.142 -> 0.086 ms/layer). It is not a fixed sync overhead; it is queue drain.
+
+**So "fix the D2H" is a large-model fix, not a universal one** — and I had been
+framing it as universal. On the 32B it removes 85% of `F`; on the 0.5B it removes
+21%, leaving `F` = 7.82 ms against an 8.85 ms step. On small models `F` is
+dominated by the remaining ~0.33 ms/layer of host work instead.
+
+**A third wall, visible in the same arm.** At ctx 512 the 0.5B's knee is **29.7
+riders** — bandwidth nowhere near binding — yet the controller's own criterion
+says STOP at every r from 1 to 16, with throughput **0.55-0.67x** baseline.
+`F` = 9.88 ms on an 8.85 ms step means riders more than double the step before any
+transfer cost is paid. **For small models the feature is hopeless on overhead
+alone, independent of the interconnect.** That is a cleaner and better-evidenced
+version of the paper's "8B should lose on any implementation" claim, and it now
+extends down to 0.5B with a measured reason.
+
 ### TWO WALLS, binding at different contexts
 
 | | `c` | `T0/B` | verdict |
