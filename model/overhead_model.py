@@ -91,9 +91,22 @@ COEFF = {
     # per-block cost would have held ms/block constant. 87x less per rider at
     # ctx 512, and because the coefficient no longer carries S, 1234x at the
     # ctx-8192 target.
-    "t1_per_rider": (0.00317, "ms/rider",
-                     "M8 T1_c512_bs16, 5 rider points, fit residual 0.00055; "
-                     "replaces d_per_block and is INDEPENDENT of block count"),
+    # CONFIRMED on a second, independent axis. bs 16 -> 64 cuts the block
+    # count 4x at fixed context and cohort, and the timer moves 2-6%:
+    #
+    #   riders   bs16 ms  bs64 ms   bs16 blk  bs64 blk  ratio
+    #        1    0.0243   0.0234         36         9   0.96x
+    #        4    0.0341   0.0333        144        36   0.98x
+    #       12    0.0593   0.0574        432       108   0.97x
+    #
+    # Pre-T1 that column would read ~0.25x. The two arms' per-rider slopes
+    # agree to 3% (0.00317 vs 0.00308) while differing 4x in block count
+    # throughout, which is what per-RIDER means.
+    "t1_per_rider": (0.00313, "ms/rider",
+                     "M8, mean of T1_c512_bs16 (0.00317, resid 0.00055) and "
+                     "T1_c512_bs64 (0.00308, resid 0.00045), 5 rider points "
+                     "each; replaces d_per_block and is INDEPENDENT of block "
+                     "count -- a 4x block change moves it 2-6%"),
 }
 
 # exposed async host work per layer, against compute per layer. THREE POINTS.
