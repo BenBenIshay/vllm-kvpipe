@@ -1,7 +1,8 @@
 # Overhead characterisation — where everything is
 
 **Everything in this directory is a copy.** The originals live on the branch
-`overhead-characterisation`, inside a git worktree at
+`perblock-d2h-opt` (which carries `overhead-characterisation` in its history),
+inside a worktree at
 `/mnt/beegfs/benishay/vllm-kvpipe/.claude/worktrees/overhead-char/`, which is
 **not visible from the main checkout** — a worktree materialises only its own
 files, and `/mnt/beegfs/benishay/vllm-kvpipe/paper/` will not show any of them.
