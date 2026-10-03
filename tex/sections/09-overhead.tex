@@ -291,14 +291,34 @@ pin; \S\ref{sec:overhead:threats} treats it as the dominant uncertainty.
 \emph{Question: how does $c$ scale, and which of its parts does a faster link
 divide?}
 
-\paragraph{Proportional to context, over a floor.} Across three contexts $c$ is
-0.726, 1.073 and 2.114\,ms per rider, with 79--83\% of the nominal transfer time
-hidden inside compute at every context.
-% src: paper/model/c_scaling.py @ 908d2a773
-The ratio $c/S$ is not constant, however: it falls 27\% from the shortest
-context, which is the signature of a context-independent floor inside $c$.
-Fitting $c = c_0 + kS$ gives $c_0 = 0.205$\,ms per rider and
-$k = 1.84\times10^{-3}$\,ms per rider-token.
+\paragraph{Proportional to the context actually streamed.} Across three
+contexts $c$ is 0.726, 1.073 and 2.114\,ms per rider, with 79--83\% of the
+nominal transfer time hidden inside compute at every context.
+% src: paper/model/c_scaling.py @ c7574eadb
+
+The relevant context here is not the prompt. What a rider streams each step is
+its \emph{current} sequence length, which grows as it generates, so the
+quantity $c$ scales with must be measured rather than taken from the request.
+Derived from the bytes the harness reports, it sits a constant 79 tokens above
+the prompt across all four sweeps (335, 591, 1103 and 2127 tokens for prompts of
+256, 512, 1024 and 2048), that offset being the average generated length over
+the steady measurement window. Against this measured context $c/S$ is nearly
+constant, varying by 19\% over a 3.3$\times$ range and not monotonically, and
+\begin{equation}
+c = 0.059 + 1.84\times10^{-3} S \quad \textrm{ms per rider},
+\label{eq:overhead:cfit}
+\end{equation}
+so $c$ is almost purely proportional to streamed bytes, with an intercept of
+roughly 8\% of $c$ at the shortest context.
+
+Equation~\ref{eq:overhead:cfit} is therefore \emph{not} usable as an estimate of
+$c$'s context-independent floor, and we do not use it as one: extrapolating a
+3.3$\times$ context sweep back to $S = 0$ is too long a lever for three points.
+The floor is instead taken from the layer axis below, which measures the
+per-rider-per-layer term directly at fixed head geometry. We note this because
+dividing by the prompt rather than the streamed length inflates the apparent
+curvature in $c/S$ from 19\% to 37\% and makes the floor look four times
+larger than it is.
 
 \paragraph{Four components, one of them link-bound.} Separating the classes of
 Table~\ref{tab:overhead:classes} requires three distinct experiments, because no
