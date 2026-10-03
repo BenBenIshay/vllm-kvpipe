@@ -70,6 +70,19 @@ class Stub:
         self._w_cur = 0
         self._events = {}
         self._ar = torch.arange(w_max, dtype=torch.int32)
+        # T2 state. build_step now flushes deferred mirror writes first, so the
+        # stand-in has to carry enough for that call to be real rather than
+        # stubbed out -- otherwise the test would pass while the ordering it is
+        # supposed to protect was broken.
+        self._wt_dirty = False
+        self._wt_pending = []
+        self._wt_k = None
+        self._wt_v = None
+        self._wt_event = None
+        self.wt_flushes = 0
+        self.wt_deferred_rows = 0
+        self.host_k = {}
+        self.host_v = {}
 
     # bind the real implementations. `_active_host` is a property, so it has
     # to be a CLASS attribute to work at all -- which is itself worth asserting,
@@ -78,6 +91,7 @@ class Stub:
     _plan_extents = RungdHostPool._plan_extents
     compact_of = RungdHostPool.compact_of
     _active_host = RungdHostPool._active_host
+    flush_token_writes = RungdHostPool.flush_token_writes
 
 
 def extents(spec, bpr):
@@ -229,9 +243,94 @@ def main():
     else:
         print("  ok   %-32s %s" % ("_active_host setter", pool._runs))
 
+    # ---------------------------------------------------------------- T2
+    # The deferred mirror write. The async copy needs CUDA, but the SCATTER is
+    # pure CPU, so the part that can be wrong on the host is testable here:
+    # whether the deferred rows land in the right places, whether the flush is
+    # idempotent, and whether build_step performs it BEFORE anything could read
+    # the mirror -- which is the entire correctness argument for T2.
+    bs_t, nkv, hd, L = 4, 2, 3, 3
+    pool = Stub(extents({"a": (0, 2), "b": (1, 2)}, 4), block_size=bs_t)
+    pool.layers = ["l%d" % i for i in range(L)]
+    for ln in pool.layers:
+        pool.host_k[ln] = torch.zeros(8, bs_t, nkv, hd)
+        pool.host_v[ln] = torch.zeros(8, bs_t, nkv, hd)
+    pool._wt_k = torch.zeros(L, 2, nkv, hd)
+    pool._wt_v = torch.zeros(L, 2, nkv, hd)
+
+    t2_fail = 0
+
+    # a flush with nothing pending must do nothing and claim nothing
+    if pool.flush_token_writes() != 0 or pool.wt_flushes != 0:
+        t2_fail += 1
+        print("  FAIL %-32s flush was not a no-op when clean" % "T2 idempotent")
+    else:
+        print("  ok   %-32s no-op when nothing pending" % "T2 idempotent")
+
+    # stage distinguishable values and defer them
+    for li in range(L):
+        pool._wt_k[li, 0].fill_(100 + li)
+        pool._wt_k[li, 1].fill_(200 + li)
+        pool._wt_v[li, 0].fill_(-(100 + li))
+        pool._wt_v[li, 1].fill_(-(200 + li))
+        # rider a's token at flat row 1, rider b's at flat row 5
+        pool._wt_pending.append((li, torch.tensor([1, 5]), 2))
+    pool._wt_dirty = True
+
+    rows = pool.flush_token_writes()
+    probs = []
+    if rows != L * 2:
+        probs.append("applied %d rows, expected %d" % (rows, L * 2))
+    for li, ln in enumerate(pool.layers):
+        flat_k = pool.host_k[ln].view(8 * bs_t, nkv, hd)
+        flat_v = pool.host_v[ln].view(8 * bs_t, nkv, hd)
+        if not torch.all(flat_k[1] == 100 + li):
+            probs.append("layer %d row 1 K wrong" % li)
+        if not torch.all(flat_k[5] == 200 + li):
+            probs.append("layer %d row 5 K wrong" % li)
+        if not torch.all(flat_v[1] == -(100 + li)):
+            probs.append("layer %d row 1 V wrong" % li)
+        # every other row must be untouched
+        touched = [r for r in range(8 * bs_t)
+                   if r not in (1, 5) and flat_k[r].abs().sum() != 0]
+        if touched:
+            probs.append("layer %d scattered into %s" % (li, touched[:4]))
+    if pool._wt_dirty or pool._wt_pending:
+        probs.append("still dirty after flushing")
+    if probs:
+        t2_fail += 1
+        print("  FAIL %-32s %s" % ("T2 deferred scatter", "; ".join(probs)))
+    else:
+        print("  ok   %-32s %d rows over %d layers, nothing else touched"
+              % ("T2 deferred scatter", rows, L))
+
+    # a second flush must be a no-op, not a re-apply
+    again = pool.flush_token_writes()
+    if again != 0:
+        t2_fail += 1
+        print("  FAIL %-32s re-applied %d rows" % ("T2 flush twice", again))
+    else:
+        print("  ok   %-32s second flush applied nothing" % "T2 flush twice")
+
+    # AND THE ORDERING: build_step must flush before it does anything else,
+    # because _issue_runs reads the mirror host-to-device later in the step.
+    pool._wt_pending.append((0, torch.tensor([2]), 1))
+    pool._wt_k[0, 0].fill_(777.0)
+    pool._wt_dirty = True
+    pool.build_step(["a", "b"], [8, 8])
+    flat = pool.host_k[pool.layers[0]].view(8 * bs_t, nkv, hd)
+    if pool._wt_dirty or not torch.all(flat[2] == 777.0):
+        t2_fail += 1
+        print("  FAIL %-32s build_step did not flush first" % "T2 ordering")
+    else:
+        print("  ok   %-32s build_step flushed before proceeding"
+              % "T2 ordering")
+
+    fails += t2_fail
+
     print()
     print("BUILD-STEP EQUIVALENCE %s"
-          % ("PASS (%d cases)" % (len(CASES) + 2) if not fails
+          % ("PASS (%d cases)" % (len(CASES) + 6) if not fails
              else "FAIL (%d)" % fails))
     return 1 if fails else 0
 

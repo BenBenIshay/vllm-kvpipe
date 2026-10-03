@@ -346,6 +346,11 @@ def main() -> int:
                         "the host does not work here: it reads 21.4 ms per step "
                         "for two copies of one token's KV, which is the host "
                         "blocked on the GPU, not a cost. NUMERICALLY INVALID.")
+    p.add_argument("--no-d2h-async", action="store_true",
+                   help="restore the OLD blocking mirror write (T2 off). The "
+                        "async deferred write is the default; this is what the "
+                        "before/after comparison needs. Numerically VALID "
+                        "either way -- both paths update the mirror.")
     p.add_argument("--d2h-probe", action="store_true",
                    help="PHASE 0: make write_token's mirror copy NON-BLOCKING "
                         "into pinned staging and skip the scatter. Same launch "
@@ -410,6 +415,8 @@ def main() -> int:
     os.environ["VLLM_KVPIPE_RUNGD_XFER_MODE"] = a.xfer_mode
     if a.skip_d2h:
         os.environ["VLLM_KVPIPE_RUNGD_SKIP_D2H"] = "1"
+    if a.no_d2h_async:
+        os.environ["VLLM_KVPIPE_RUNGD_D2H_ASYNC"] = "0"
     if a.d2h_probe:
         os.environ["VLLM_KVPIPE_RUNGD_D2H_PROBE"] = "1"
         os.environ["VLLM_KVPIPE_RUNGD_D2H_PROBE_UNSAFE"] = "1"
@@ -723,6 +730,7 @@ def main() -> int:
            "xfer_mode": a.xfer_mode,
            "skip_d2h": bool(a.skip_d2h),
            "d2h_probe": bool(a.d2h_probe),
+           "d2h_async": not bool(a.no_d2h_async),
            "rungd_layers": a.rungd_layers or 0,
            "numerically_valid": (a.xfer_mode == "real"
                                  and a.rungd_layers == 0

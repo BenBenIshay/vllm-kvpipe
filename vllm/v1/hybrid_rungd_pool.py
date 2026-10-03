@@ -220,6 +220,38 @@ class RungdHostPool:
                   "NUMERICALLY INVALID. Timing measurement only.", flush=True)
         self._probe_k: torch.Tensor | None = None
         self._probe_v: torch.Tensor | None = None
+        # T2. Phase 0 priced the blocking mirror write's SYNCHRONISATION at
+        # 8.47 ms of F (real 11.31 -> probe 2.84), against 0.25 ms of drift
+        # between the bracketing real arms -- a 33.5x ratio, so it is the
+        # effect and not drift. It sits at 90% of the 9.45 ms SKIP_D2H upper
+        # bound, so a correct fix pays only ~1 ms back.
+        #
+        # That settles a disagreement: commit c609d93c7 made this copy async,
+        # measured 1.6 ms and reverted on cost. On today's code it is 8.47.
+        # Two things changed -- the async prefetch chain now puts far more
+        # behind the same drain, and the per-row Python loop that commit named
+        # as its own cost driver has since been vectorised away.
+        #
+        # So: copy asynchronously into pinned staging, and DEFER the host-side
+        # scatter to the start of the next step, behind ONE event wait. 2L
+        # blocking copies per step become 2L async ones plus a single wait that
+        # is already satisfied by the time it is reached.
+        #
+        # Set VLLM_KVPIPE_RUNGD_D2H_ASYNC=0 to get the old blocking path back,
+        # which is what the before/after measurement needs.
+        self._d2h_async = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_ASYNC", "1") == "1"
+            and torch.cuda.is_available()
+            and not self._d2h_probe
+            and not self._skip_d2h
+        )
+        self._wt_k: torch.Tensor | None = None
+        self._wt_v: torch.Tensor | None = None
+        self._wt_pending: list[tuple[int, torch.Tensor, int]] = []
+        self._wt_event = torch.cuda.Event() if self._d2h_async else None
+        self._wt_dirty = False
+        self.wt_flushes = 0
+        self.wt_deferred_rows = 0
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
@@ -292,6 +324,8 @@ class RungdHostPool:
         return blks
 
     def free_req(self, req_id: str) -> None:
+        # the extent is about to be recycled; pending rows must land first
+        self.flush_token_writes()
         if self._bpr > 0:
             ext = self._req_extent.pop(req_id, None)
             if ext is not None:
@@ -310,6 +344,8 @@ class RungdHostPool:
         resident_kv: torch.Tensor,        # [2, nblk, bs, nkv, hd] resident tensor
         resident_block_ids: list[int],    # logical i -> resident block id
     ) -> None:
+        # the extent is about to be recycled; pending rows must be applied first
+        self.flush_token_writes()
         hblks = self.req_blocks[req_id]
         n = min(len(hblks), len(resident_block_ids))
         if n == 0:
@@ -336,6 +372,8 @@ class RungdHostPool:
         afterwards, so the caller must have allocated `resident_block_ids` for
         the request's whole sequence before calling this.
         """
+        # reads the mirror on the CPU, so pending token writes must have landed
+        self.flush_token_writes()
         hblks = self.req_blocks.get(req_id, [])
         n = min(len(hblks), len(resident_block_ids))
         if n == 0:
@@ -388,6 +426,8 @@ class RungdHostPool:
         Token-major in, block-major out: tokens [start_pos, start_pos+n) land in
         the host blocks this request already owns via `ensure_req`.
         """
+        # writes the mirror, so pending token writes must land first or be lost
+        self.flush_token_writes()
         n = keys.shape[0]
         if n == 0:
             return
@@ -466,6 +506,8 @@ class RungdHostPool:
         Token-major out (the inverse of `preload_layer`), so the result can be
         fed straight back through `preload_req`.
         """
+        # reads the mirror on the CPU, so pending token writes must have landed
+        self.flush_token_writes()
         if key in self.prefill_stash:
             return
         hblks = self.req_blocks.get(req_id)
@@ -538,6 +580,8 @@ class RungdHostPool:
         copy, so it must never be used on the hot path -- the whole point of the
         split layout is that no such tensor is ever formed.
         """
+        # materialises the mirror, so pending token writes must have landed
+        self.flush_token_writes()
         return {ln: torch.stack((self.host_k[ln], self.host_v[ln]))
                 for ln in self.layers}
 
@@ -621,6 +665,10 @@ class RungdHostPool:
         """Compact the active cohort's host blocks into [0:W) and return
         (block_table [n_req, max_blk], seqused [n_req]) in active order."""
         _t = PT.now()
+        # FIRST, before anything reads the mirror this step. See
+        # flush_token_writes for why this placement is the correctness
+        # argument and not merely tidy.
+        self.flush_token_writes()
         self._events = {}
         n_req = len(active_req_ids)
         plan = self._plan_extents(active_req_ids)
@@ -787,6 +835,8 @@ class RungdHostPool:
         Returns bytes written (0 when disabled or the cohort is empty), so a
         harness can report traffic rather than infer it.
         """
+        # overwrites mirror rows, so pending token writes must land first
+        self.flush_token_writes()
         if not self._writeback or self._w_cur == 0:
             return 0
         ln_name = self.layers[layer_idx]
@@ -847,6 +897,78 @@ class RungdHostPool:
         # two together say whether RUNGD_ASYNC is buying or costing.
         PT.add("stream_layer", _t)
         return kslot, vslot
+
+    def _wt_staging(self, like: torch.Tensor, n_layers: int):
+        """Pinned staging for the deferred mirror write, [L, n, ...].
+
+        Grown only, never shrunk: pinned allocation is expensive and the cohort
+        size is stable in steady state. A regrow can only legitimately happen at
+        the FIRST layer of a step, because the cohort does not change mid-step
+        and `build_step` has flushed by then -- so a regrow while rows are still
+        pending would silently drop them, and is refused.
+        """
+        n = like.shape[0]
+        need = (self._wt_k is None or self._wt_k.shape[1] < n
+                or self._wt_k.shape[0] != n_layers
+                or self._wt_k.shape[2:] != like.shape[1:]
+                or self._wt_k.dtype != like.dtype)
+        if need:
+            if self._wt_dirty:
+                raise RuntimeError(
+                    "rungd: mirror staging regrow with %d rows still pending; "
+                    "the cohort changed mid-step, which would drop them"
+                    % len(self._wt_pending))
+            shape = (n_layers, max(n, 1)) + tuple(like.shape[1:])
+            self._wt_k = torch.empty(shape, dtype=like.dtype, device="cpu",
+                                     pin_memory=True)
+            self._wt_v = torch.empty(shape, dtype=like.dtype, device="cpu",
+                                     pin_memory=True)
+            PT.count("wt_staging_realloc")
+        return self._wt_k, self._wt_v
+
+    def flush_token_writes(self) -> int:
+        """Apply the deferred mirror writes. Idempotent; returns rows applied.
+
+        ORDERING, which is the whole correctness argument. Between the async
+        copy and this scatter the host mirror does NOT yet hold the new token,
+        so every reader of the mirror must be ordered after it. The
+        correctness-critical one is `_issue_runs`, which re-streams the mirror
+        host-to-device on the HOT PATH at the next step: if it ran first it
+        would carry stale KV and the output would be silently wrong.
+
+        That is safe by construction rather than by a guard: `build_step` runs
+        once per step before any `_issue_runs` of that step, and it calls this
+        first. Nothing prefetches across a step boundary -- `stream_layer`'s
+        prefetch is guarded by `layer_idx + 1 < len(self.layers)`.
+
+        The CPU readers (`restore_layer`, `stash_from_host`, the host-tensor
+        property) and the CPU writers (`seed_layer`, `preload_layer`) call this
+        too. In decode steady state none of them is hit, so the cost is zero;
+        when one is, it is a wait that has already elapsed plus a scatter that
+        was going to happen anyway. ONE idempotent flush keyed on a dirty flag,
+        rather than the three separate sync guards that the earlier attempt
+        accumulated and was reverted partly for.
+        """
+        if not self._wt_dirty:
+            return 0
+        if self._wt_event is not None:
+            self._wt_event.synchronize()
+        rows = 0
+        for li, host_pos, n in self._wt_pending:
+            ln = self.layers[li]
+            hk, hv = self.host_k[ln], self.host_v[ln]
+            bs = hk.shape[1]
+            hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(
+                0, host_pos, self._wt_k[li, :n])
+            hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(
+                0, host_pos, self._wt_v[li, :n])
+            rows += n
+        self._wt_pending.clear()
+        self._wt_dirty = False
+        self.wt_flushes += 1
+        self.wt_deferred_rows += rows
+        PT.count("wt_flush_rows", rows)
+        return rows
 
     def _probe_staging(self, like: torch.Tensor):
         """Pinned staging for the probe arm, allocated once and grown only.
@@ -914,7 +1036,22 @@ class RungdHostPool:
         # one, and a faster link does not remove it. Timed on its own because
         # the earlier profiler charged this call the model's own compute and
         # produced a "21 ms" figure that was worth ~4 ms.
-        if self._d2h_probe:
+        if self._d2h_async:
+            # Async into pinned staging; the host-side scatter is deferred to
+            # the next step's build_step, behind one event wait.
+            _td = PT.now()
+            li = layer_idx
+            sk, sv = self._wt_staging(keys, len(self.layers))
+            sk[li, :n].copy_(keys, non_blocking=True)
+            sv[li, :n].copy_(values, non_blocking=True)
+            self._wt_event.record()
+            # host_pos is derived once per step by the caller and handed to
+            # every layer, so it may be a buffer that gets reused. The scatter
+            # reads it a step later, so hold a COPY rather than aliasing it.
+            self._wt_pending.append((li, host_pos.clone(), n))
+            self._wt_dirty = True
+            PT.add("write_token_d2h_async", _td)
+        elif self._d2h_probe:
             # Same two copies, same bytes, pinned destination, NON-BLOCKING,
             # and no scatter. Prices the synchronisation on its own.
             _td = PT.now()
