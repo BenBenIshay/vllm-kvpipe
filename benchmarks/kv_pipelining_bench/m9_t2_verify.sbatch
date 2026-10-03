@@ -108,31 +108,77 @@ A)
     run T2_c2048_blocking 2048 16 0,1,2 --no-d2h-async
     ;;
 
-B)  # NEGATIVE CONTROL. Slice A showed the suite passes with T2 on and with
-    # it off -- which proves T2 breaks nothing, but NOT that the suite could
-    # catch a T2 bug. A test that passes either way is insensitive, and
-    # "9/9 with T2 on" would then be no evidence at all.
+B)  # NEGATIVE CONTROL, second attempt. The first one was wrong in two ways
+    # and both are worth recording, because each would have produced a
+    # confident but empty claim.
     #
-    # So suppress the deferred flush, which is exactly the silent failure mode
-    # (the mirror goes stale and _issue_runs streams wrong KV next step), and
-    # require the token-identical test to FAIL. If it passes, the correctness
-    # argument for T2 rests on nothing and must be rebuilt.
+    #   1. It checked the EXIT CODE. hybrid_rungd_real.py's main() has no
+    #      sys.exit, so it always exits 0 -- run_suite.sh decides by grepping
+    #      stdout for "REAL CORRECTNESS PASS". So the check was meaningless and
+    #      read an inconclusive run as a pass.
+    #   2. The suppression itself leaked. Returning early without clearing left
+    #      _wt_dirty set and grew _wt_pending by one entry per layer per step,
+    #      so the pool server failed its completions from the LEAK rather than
+    #      from stale KV. The control was testing the wrong failure.
+    #
+    # Now: the suppression DROPS the pending rows, which is exactly a missed
+    # flush and nothing else; and the verdict is read from the output string,
+    # distinguishing PASS / FAIL / INCONCLUSIVE rather than collapsing them.
+    #
+    # A POSITIVE CONTROL runs first. Without it, an INCONCLUSIVE negative arm
+    # cannot be told apart from a broken environment.
+    verdict () {   # $1 = log file -> PASS | FAIL | INCONCLUSIVE | NONE
+        if   grep -q "REAL CORRECTNESS PASS" "$1"; then echo PASS
+        elif grep -q "REAL CORRECTNESS FAIL" "$1"; then echo FAIL
+        elif grep -q "INCONCLUSIVE"          "$1"; then echo INCONCLUSIVE
+        else echo NONE; fi
+    }
+
     echo
-    echo "######## NEGATIVE CONTROL: flush suppressed, test MUST fail ########"
-    VLLM_KVPIPE_RUNGD_NOFLUSH=1 VLLM_KVPIPE_RUNGD_NOFLUSH_UNSAFE=1 \
-        "$PY" benchmarks/kv_pipelining_bench/hybrid_rungd_real.py 2>&1 | tail -25
-    RC=${PIPESTATUS[0]}
-    echo "token-identical test exit with flush suppressed: $RC"
-    if [ "$RC" -eq 0 ]; then
+    echo "######## POSITIVE CONTROL: flush intact, test must PASS ########"
+    "$PY" benchmarks/kv_pipelining_bench/hybrid_rungd_real.py \
+        > "$OUT/negctl_positive.log" 2>&1
+    POS=$(verdict "$OUT/negctl_positive.log")
+    echo "verdict with the flush intact: $POS"
+    tail -6 "$OUT/negctl_positive.log"
+    if [ "$POS" != "PASS" ]; then
         echo
-        echo "BAD: the token-identical test PASSED with the flush suppressed."
-        echo "It cannot see a missed flush, so it is not evidence for T2."
-        exit 30
+        echo "FATAL: the token-identical test does not PASS even with the flush"
+        echo "intact, so nothing can be concluded from the negative arm. This is"
+        echo "an environment or harness problem, not a T2 result."
+        exit 31
     fi
+
     echo
-    echo "GOOD: suppressing the flush breaks the token-identical test, so that"
-    echo "test is sensitive to exactly T2's failure mode and its PASS in slice"
-    echo "A is meaningful."
+    echo "######## NEGATIVE CONTROL: flush suppressed, test must FAIL ########"
+    VLLM_KVPIPE_RUNGD_NOFLUSH=1 VLLM_KVPIPE_RUNGD_NOFLUSH_UNSAFE=1 \
+        "$PY" benchmarks/kv_pipelining_bench/hybrid_rungd_real.py \
+        > "$OUT/negctl_negative.log" 2>&1
+    NEG=$(verdict "$OUT/negctl_negative.log")
+    echo "verdict with the flush suppressed: $NEG"
+    tail -12 "$OUT/negctl_negative.log"
+
+    echo
+    case "$NEG" in
+      FAIL)
+        echo "GOOD: suppressing the flush makes the token-identical test FAIL,"
+        echo "so that test is sensitive to exactly T2's failure mode and its"
+        echo "PASS in slice A is meaningful evidence."
+        ;;
+      PASS)
+        echo "BAD: the test PASSED with the flush suppressed. It cannot see a"
+        echo "missed flush, so slice A's 9/9 is not evidence for T2 and the"
+        echo "correctness argument must be rebuilt."
+        exit 30
+        ;;
+      *)
+        echo "INCONCLUSIVE ($NEG): the negative arm did not produce a token"
+        echo "comparison, so it neither supports nor refutes T2. The positive"
+        echo "arm passed, so the environment is fine -- look at"
+        echo "$OUT/negctl_negative.log for why this arm did not run."
+        exit 32
+        ;;
+    esac
     ;;
 
 *)  echo "unknown SLICE=$SLICE"; exit 2 ;;

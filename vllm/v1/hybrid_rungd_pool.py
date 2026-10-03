@@ -964,12 +964,23 @@ class RungdHostPool:
         if not self._wt_dirty:
             return 0
         if self._wt_noflush:
-            # DELIBERATELY BROKEN, for a negative control. Disabling the flush
-            # must make the token-identical test FAIL; if it passes, that test
-            # cannot see a missed flush and "the suite is 9/9 with T2 on" is
-            # not evidence of T2's correctness. A suite that passes either way
-            # proves only that it is insensitive.
-            PT.count("wt_flush_suppressed")
+            # DELIBERATELY BROKEN, for a negative control: DROP the pending
+            # rows instead of applying them. The mirror then goes stale, which
+            # is precisely T2's failure mode, and the token-identical test must
+            # FAIL. If it passes, that test cannot see a missed flush and "the
+            # suite is 9/9 with T2 on" is not evidence of T2's correctness --
+            # a test that passes either way proves only that it is insensitive.
+            #
+            # Dropping rather than merely returning early matters. A first
+            # version returned without clearing, which left _wt_dirty set and
+            # let _wt_pending grow by one entry per layer per step forever. The
+            # pool server then failed its completions, but from the LEAK rather
+            # than from stale KV -- so the control was testing the wrong thing
+            # and the test reported INCONCLUSIVE instead of FAIL.
+            n_dropped = sum(x[2] for x in self._wt_pending)
+            self._wt_pending.clear()
+            self._wt_dirty = False
+            PT.count("wt_flush_suppressed_rows", n_dropped)
             return 0
         if self._wt_event is not None:
             self._wt_event.synchronize()
