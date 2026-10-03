@@ -322,14 +322,34 @@ def report():
     print(" 4.  DOES THE VERDICT SURVIVE HOW c IS APPORTIONED?")
     print("=" * 76)
     r2c0, r2k = route2()
-    print("\n %-34s %10s %12s %9s" % ("route", "c0", "k", "c@512"))
-    print(" %-34s %10.3f %12.3e %9.3f"
-          % ("three contexts, 3 jobs, direct", c0, k, c0 + k * 512))
-    print(" %-34s %10.3f %12.3e %9.3f"
-          % ("105-pt within-job component fit", r2c0, r2k, r2c0 + r2k * 512))
+    # BOTH routes are now in S_eff, so both must be evaluated at the ctx-512
+    # arm's MEASURED streamed context and not at its nominal prompt. Evaluating
+    # an S_eff fit at 512 understates it by k*79, which is how a 13% error
+    # crept into a comparison column.
+    s512 = fits.get(512, {}).get("s_eff") or 512
+    nroute1 = pooled_slope(min_pts=MIN_PTS_LOOSE)
+    lab1 = ("%d arms pooled, direct" % nroute1["n"]) if nroute1 else "route 1"
+    # Each route is evaluated in the x-variable it was FITTED in: route 1 in
+    # the measured streamed context, route 2's component coefficients in the
+    # nominal prompt, since that is what they were regressed against. Mixing
+    # the two conventions is itself an error and is the reason this is spelled
+    # out rather than printed as one column.
+    print("\n %-30s %9s %12s %9s %10s"
+          % ("route", "c0", "k", "x used", "c on arm"))
+    print(" %-30s %9.3f %12.3e %9.0f %10.3f"
+          % (lab1 + " [S_eff]", c0, k, s512, c0 + k * s512))
+    print(" %-30s %9.3f %12.3e %9d %10.3f"
+          % ("component fit [nominal S]", r2c0, r2k, 512, r2c0 + r2k * 512))
     m512 = fits.get(512, {}).get("c")
     if m512:
-        print(" %-34s %10s %12s %9.3f" % ("measured at ctx 512", "-", "-", m512))
+        print(" %-30s %9s %12s %9s %10.3f"
+              % ("MEASURED on that arm", "-", "-", "-", m512))
+        print()
+        print(" Both routes overshoot the arm they are compared against, by")
+        print(" %.0f%% and %.0f%% -- so neither is a tight description of a"
+              % (100 * ((c0 + k * s512) / m512 - 1),
+                 100 * ((r2c0 + r2k * 512) / m512 - 1)))
+        print(" single arm, and the sensitivity below is the honest use of them.")
     print("\n Route 1 puts %.0f%% less in the floor and %.0f%% more in the slope."
           % (100 * (1 - c0 / r2c0), 100 * (k / r2k - 1)))
     print(" They diverge only on EXTRAPOLATION, which is where the projection")
