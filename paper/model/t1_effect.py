@@ -39,6 +39,31 @@ BASELINE_MS_PER_BLOCK = 0.00765   # the pre-T1 coefficient, from slice B/B2
 WARMUP_PER_GROUP = 3              # first-touch steps at each new cohort size
 
 
+def purity_ok(path):
+    """(ok, note) from the arm's companion run record.
+
+    The phase JSONL carries no purity verdict, so an arm whose rows the gate
+    rejected would otherwise be read as if it were clean. The campaign's rule
+    is that a point failing the gate is DISCARDED, not adjusted, and that has
+    to apply to this analysis too: T1_c2048_bs64 had all three rows rejected
+    for prefill leakage, because block rounding at bs 64 inflates each
+    request's allocation from 2256 to 2304 tokens and 16 residents then exceed
+    the pool, tipping it into eviction and recompute. Its r=0 baseline is
+    already contaminated (61.42 ms against 53.76 at bs 16).
+    """
+    rec = re.sub(r"_phases\.jsonl$", ".json", path)
+    if not os.path.exists(rec):
+        return True, "no run record found"
+    try:
+        d = json.load(open(rec))
+    except ValueError:
+        return True, "run record unreadable"
+    tot, use = d.get("n_rows"), d.get("n_rows_usable")
+    if tot and use is not None and use < tot:
+        return False, "purity gate rejected %d of %d rows" % (tot - use, tot)
+    return True, "%s/%s rows usable" % (use, tot)
+
+
 def read_arm(path):
     """Per-step records grouped by (n_active, block_size, fast_path)."""
     groups = {}
@@ -103,6 +128,11 @@ def main():
     allrows = {}
     for f in files:
         tag = re.sub(r"_phases\.jsonl$", "", os.path.basename(f))
+        ok, note = purity_ok(f)
+        if not ok:
+            print(" %-18s DISCARDED -- %s" % (tag, note))
+            print()
+            continue
         rows = summarise(read_arm(f))
         if not rows:
             print(" %-18s no usable records yet" % tag)
