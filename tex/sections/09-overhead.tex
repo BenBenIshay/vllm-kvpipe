@@ -478,41 +478,107 @@ does not depend on the rider count at all.
 \subsection{Removing the two host-side costs}
 \label{sec:overhead:opt}
 
-\emph{Both binding costs are host-side artefacts of the current implementation
-rather than properties of the design.} We describe the changes and their
-projected effect; they are not yet measured, and we mark them as proposals
-throughout.
+\emph{Both binding costs are host-side artefacts of the implementation rather
+than properties of the design.} Both were subsequently removed, and this section
+reports what that measured. The coefficients here are measurements on the
+modified code, not projections.
 
-\paragraph{The block table.} Rebuilding the rider block table performs one
-Python-level tensor element assignment per rider block per step, which is 1024
-assignments at $S{=}2048$ and eight riders. The allocator, however, already
-grants each request a contiguous extent, so a request's compacted block
-identifiers are also contiguous and an entire row is one arithmetic range. The
-rebuild becomes one vectorised operation per \emph{request} instead of one per
-block, which removes the term's dependence on $S$ rather than reducing its
-constant: per-block cost falls from 3.917\,ms per rider at the target to
-approximately 0.01, and $c$ from 5.173 to about 1.27 --- below the 3.37 budget,
-which as built it exceeds.
+\paragraph{Deciding the second one, since two measurements disagreed.} The
+differencing arm of \S\ref{sec:overhead:F} puts the synchronous mirror write at
+9.10\,ms, but an earlier attempt at making precisely that copy asynchronous
+measured 1.6\,ms and was abandoned on cost. Rather than choose between them we
+priced the synchronisation directly, with an arm that keeps both copies and only
+makes them non-blocking into pinned staging, skipping the host-side scatter so
+that launch count and byte volume are held fixed:
+\begin{align*}
+\textrm{real} - \textrm{probe} &= 8.47\,\textrm{ms} &&\textrm{the synchronisation},\\
+\textrm{probe} - \textrm{skip} &= 0.98\,\textrm{ms} &&\textrm{the asynchronous copy still paid},\\
+\textrm{real}_a - \textrm{real}_b &= 0.25\,\textrm{ms} &&\textrm{drift, a 33.5}\times\textrm{ ratio.}
+\end{align*}
+% src: paper/model/phase0.py @ 28a6c7ad6
+The differencing figure is an upper bound, since that arm omits work a correct
+implementation must still perform; the earlier 1.6\,ms is a measurement of
+different code, because the asynchronous prefetch chain now places substantially
+more behind the same drain and the per-row host loop that attempt identified as
+its own cost driver has since been vectorised away. The per-rider cost moved
+only 14\% across these arms, as a per-layer cost must.
 
-\paragraph{The mirror write.} The synchronous copy of \S\ref{sec:overhead:F} can
-be made asynchronous into a pinned staging buffer, with the host-side scatter
-deferred to the following step behind a single event wait, reducing $2L$
-serialisation points per step to one that is already satisfied. The correctness
-obligation is that the mirror is read back by the next step's
-host-to-device refresh, so the deferred scatter must precede it; this holds by
-construction because the per-step setup runs before any layer's refresh, and no
-prefetch crosses a step boundary.
+\paragraph{The block table.} The rebuild performed one Python-level tensor
+element assignment per rider \emph{block} per step. The allocator already grants
+each request a contiguous extent --- a guarantee the refresh path already relied
+on --- so a request's compacted identifiers are contiguous too and an entire row
+is one arithmetic range taken from a preallocated sequence. Measured on a
+host-side timer, the per-rider cost of the rebuild falls from 0.275 to
+0.00313\,ms at $S{=}512$, and since the coefficient no longer carries $S$, from
+3.917 to 0.00313\,ms at the projection target.
+% src: paper/model/t1_effect.py @ 28a6c7ad6
 
-We flag an honest uncertainty here rather than resolve it by assumption. The
-9.10\,ms of \S\ref{sec:overhead:F} is an upper bound, because the differencing
-arm omits work a correct implementation must still perform, and an earlier
-attempt at precisely this change measured only 1.6\,ms before being reverted on
-cost. The two are measurements of different code: the asynchronous prefetch
-chain now places substantially more behind the same drain, and the per-row
-host loop that the earlier attempt identified as its own cost driver has since
-been vectorised away. The realisable gain lies between these bounds, and a
-timing-only probe that makes the copy asynchronous without performing the
-scatter isolates it directly.
+The claim is that the term lost its dependence on the block count rather than
+merely shrinking, and that is shown three ways rather than fitted once. Against
+rider count it is linear to twelve riders with no block term. Against
+\emph{block size}, which is the only axis that moves the block count without
+moving anything else, a fourfold reduction moves the timer by 2--6\% at every
+rider count where it would previously have moved fourfold, and the two arms'
+per-rider slopes agree to 3\% while differing fourfold in block count
+throughout. Against context, 132 blocks at $S{=}2048$ against 36 at $S{=}512$
+leaves the timer unchanged (0.0240 against 0.0243\,ms).
+
+\paragraph{The mirror write.} The copy is now asynchronous into pinned staging
+and the host-side scatter is deferred to the following step behind a single
+event wait, so $2L$ blocking serialisation points per step become $2L$
+asynchronous copies and one wait that is already satisfied. The correctness
+obligation is that the mirror is read back by the next step's host-to-device
+refresh, so the deferred scatter must precede it; this holds by construction,
+because the per-step setup runs before any layer's refresh and no prefetch
+crosses a step boundary. Bracketed before and after, with both arms numerically
+valid, the fixed cost falls from 11.48 to 4.74\,ms at $S{=}512$ and from 9.70 to
+4.69 at $S{=}2048$, against 0.19\,ms of drift between the bracketing arms.
+% src: paper/model/t2_effect.py @ 28a6c7ad6
+
+That is 80\% of the 8.47\,ms the probe arm priced, and the shortfall is
+principled rather than unexplained: the probe skipped the scatter entirely and
+the implementation still performs it, one step later. Per layer the fixed cost
+falls from 0.1655 to 0.0737\,ms, so after subtracting the exposed asynchronous
+host work the blocking component falls from 0.142 to 0.048 --- \emph{two thirds
+of it, not all of it}. We carry that as its own coefficient rather than reusing
+the idealised figure, because conflating the two overstates the result by
+exactly the third that remains.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrrl@{}}
+\toprule
+state & $c$ & $F$ & $r$ at break-even & gain \\
+\midrule
+as implemented   & 5.173 & 13.44 & --- & 0.65$\times$ \\
+block table only & 1.259 & 13.44 & 6.4 & 0.87$\times$ \\
+\textbf{both}    & \textbf{1.259} & \textbf{5.90} & \textbf{2.8} & \textbf{1.06}$\mathbf{\times}$ \\
+\bottomrule
+\end{tabular}
+\caption{The projection with both changes as built and measured, at the target:
+Llama-70B fp8, $S{=}8192$, 419\,GB/s, 7.2 residents from capacity,
+$T_0/B = 3.37$\,ms, $r^{*} = 3.8$. Milliseconds unless marked.}
+\label{tab:overhead:delivered}
+\end{table}
+
+Table~\ref{tab:overhead:delivered} gives the result, and three things in it were
+not visible before the work was done. The block-table change \emph{alone is not
+sufficient}: it satisfies condition~\ref{eq:overhead:nec}, but break-even then
+falls at 6.4 riders against a knee of 3.8, so neither change turns the target
+positive by itself. The attainable gain is 1.06$\times$ rather than the
+1.21$\times$ of \S\ref{sec:overhead:pays}, because that figure assumed the
+blocking copy removed entirely; a third of it remains, the fixed cost still
+dominates, and a knee of 3.8 riders leaves no room to amortise it. And the
+qualitative change is the one that matters: the configuration as implemented
+failed condition~\ref{eq:overhead:nec}, which no interconnect could repair at
+any bandwidth, and it no longer does.
+
+\paragraph{What was deliberately not done.} The deferred scatter could be a
+single operation rather than $2L$ of them, by unifying the per-layer mirrors
+into one pinned allocation with per-layer views. That is worth roughly 0.4\,ms
+of an 8\,ms win and is the only change among these that alters a data layout
+every mirror access shares, so we did not make it.
 
 \subsection{Threats to validity}
 \label{sec:overhead:threats}
