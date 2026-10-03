@@ -677,20 +677,42 @@ Three things this says that the pre-implementation projection did not.
 | check | result |
 |---|---|
 | `run_suite.sh` with T2 on | **9/9**, including the token-identical end-to-end test |
-| `run_suite.sh` with T2 off | 9/9 — the baseline, and see the caveat below |
+| `run_suite.sh` with T2 off | 9/9 — the baseline |
+| **negative control** | flush intact → **PASS**; flush suppressed → **FAIL, 3/3 tokens diverged** |
 | `build_step_equiv_test.py` | **18/18**: 14 T1 cases bitwise against the pre-change algorithm (carried verbatim so it cannot drift), plus 4 for T2 |
 | fast path actually taken | `build_fast_path: 1` on every recorded step inside the real engine |
 | purity gate | every retained row; one arm discarded in full, see below |
 | `overhead_model.py` | 12/12, including two assertions that T2 must cut `F` substantially but stay above the idealised floor |
 
-**The suite passing with T2 both on and off does not by itself show the suite
-could *catch* a T2 bug**, and T2's failure mode is silent — a missed flush leaves
+**The suite passing with T2 both on and off would not by itself show the suite
+could *catch* a T2 bug**, and T2's failure mode is silent: a missed flush leaves
 the mirror stale, `_issue_runs` streams wrong KV at the next step, and tokens
-come out quietly wrong rather than the run crashing. A negative control that
-suppresses the flush and *requires* the token-identical test to fail is
-therefore part of the evidence, and is in flight at the time of writing. Until
-it reports, the claim here is that the suite passes with T2 on — not that it
-would have caught the bug.
+come out quietly wrong rather than the run crashing. So the evidence includes a
+**negative control** — suppress the deferred flush, and require the
+token-identical test to fail.
+
+It does. With the flush intact the test passes; with it suppressed, **all three
+prompts diverge**, and the divergence looks like what stale KV should produce:
+
+```
+vanilla -> ' Julius Caesar, a Roman general and statesman,'
+pool    -> ' Julius Caesar Augustus, cano\nPlease implement'
+```
+
+A positive arm runs first and must pass, because otherwise an inconclusive
+negative arm cannot be told apart from a broken environment. **That is what
+makes the 9/9 evidence rather than merely true**: the test is demonstrably
+sensitive to exactly the failure mode T2 introduces.
+
+Two defects in the first version of this control are worth recording, because
+each would have produced a confident but empty claim. It checked the *exit
+code*, but the test's `main()` has no `sys.exit` and always exits 0 — the suite
+decides by grepping stdout — so it read a run that never compared tokens as a
+pass. And the suppression itself leaked: returning early without clearing left
+the pending list growing by one entry per layer per step, so the server failed
+its completions from the leak rather than from stale KV, and the test reported
+*inconclusive*. The control now drops the pending rows, which is a missed flush
+and nothing else, and reads the verdict string rather than the exit status.
 
 **One arm was discarded entirely.** At ctx 2048 with `block_size` 64 the gate
 rejected all three rows for prefill leakage: block rounding inflates each

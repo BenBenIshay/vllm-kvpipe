@@ -1,7 +1,24 @@
 # Optimisation proposal: the per-block table rebuild and the blocking D2H
 
-**Status: for review. No code written.**
-Prepared 2026-10-03 against `overhead-characterisation` @ `908d2a773`.
+**Status: EXECUTED. Both targets built, measured and verified.**
+Prepared 2026-10-03 against `overhead-characterisation` @ `908d2a773`;
+implemented on `perblock-d2h-opt`. Results are in
+`OVERHEAD_CHARACTERISATION.md` §9 — this document is kept as the design record
+and its decisions are resolved below.
+
+| decision | resolution |
+|---|---|
+| Phase 0 first, or straight to implementation? | **Phase 0 first.** It priced the synchronisation at **8.47 ms** against 0.25 ms of drift, clearing the 2 ms abandon threshold by 4× and reversing the earlier 1.6 ms measurement. Worth the hour. |
+| T1 unconditionally? | **Yes, and it was the better target.** `c` 5.173 → **1.259**, below the 3.37 budget it previously exceeded. |
+| The unified-mirror layout (step 5)? | **Skipped.** ~0.4 ms of an ~8 ms win, and the only change touching a layout every mirror access shares. Available as a follow-up. |
+| Where should it land? | A branch off the **campaign head**, not `hybrid-kv-tiers` as suggested here — verification needs the campaign's measurement tooling. Baseline stays citable at `a90ed1b49`. |
+
+**What the proposal got wrong, for the record.** It treated the two targets as
+independent wins. They are not: T1 alone satisfies condition (1) but leaves
+break-even at 6.4 riders against a knee of 3.8, so **neither change turns the
+target positive by itself**. And the projected gain assumed the blocking D2H
+removed entirely; measured, T2 removes 66% of it, so the gain is **1.06× rather
+than 1.21×**.
 
 These are the two costs the overhead campaign identified as the binding
 constraints on the feature. Together they are **88% of `c` and 85% of `F`** at
