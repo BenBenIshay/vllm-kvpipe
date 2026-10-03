@@ -43,17 +43,15 @@ Three things to read off that table, in order of importance:
 3. **C2C is the first bandwidth point that works at all.** PCIe6 already
    satisfies the necessary condition and *still* loses. So what the link buys is
    not primarily the bandwidth term — it is the knee (§5).
-4. **Riders do share some of `c`** — the per-rider cost is mildly sublinear,
-   α̂ = 0.69 — and only the 9.2% that is bytes on the wire is per-rider by
-   physics; the rest is batchable or vectorisable (§2, §3.2b). Sharing moves the
-   target numbers by about three gain points (0.65→0.66× as built, 1.21→1.24×
-   fixed) and changes neither verdict, **because the knee caps how many riders
-   there are to share over.** That is the same conclusion as (3), reached from
-   the other side.
+4. **Riders do not measurably share `c`** — the per-rider cost is constant
+   within the resolution of these sweeps (§2). But **only the 9.2% that is bytes
+   on the wire is per-rider by *physics*;** the launches and the mirror write are
+   batchable and the block-table rebuild is vectorisable (§3.2b). So sharing is
+   an available engineering lever rather than an observed effect, and what it
+   would be worth is capped by the knee — the same conclusion as (3), from the
+   other side.
 
-Everything below is the derivation and the evidence. The `c` table above is
-computed under the affine law; §2 and §5b give the sublinear reading and show it
-does not move the verdicts.
+Everything below is the derivation and the evidence.
 
 ---
 
@@ -80,22 +78,15 @@ than that, **no rider count helps** — the gain curve never crosses 1, and `F`
 is irrelevant. This is why `c`, not `F`, is the core question: `F` sets *where*
 break-even is, but `c` sets *whether there is one*.
 
-> **Caveat, and it matters — condition (1) is exact only if `ΔT` is affine in
-> `r`.** §2 shows it is mildly concave (α̂ = 0.69 at ctx 512). Under
-> `ΔT = F + c·r^α` with α < 1 the left side of the gain condition grows
-> *linearly* in r while the right side grows *sublinearly*, so a large enough r
-> always wins and **"never pays at any rider count" is false in principle.**
->
-> What makes it true in practice is the **knee**. The sublinearity exists only
-> below it; above it M4 measured the step as the full nominal link time — linear
-> in r with a large slope, predicting 254.02 ms against 254.02 measured. So the
-> saving switches off exactly where it would start to compound.
->
-> The consequence is that the real gate is *"does some r ≤ knee give gain > 1"*,
-> and since `r* ∝ X`, **the interconnect is more central under this reading, not
-> less.** Condition (1) remains the right first screen because at the target the
-> knee is only 3.8 riders, where α has almost no room to act (§5), but it is a
-> screen rather than a theorem.
+> **Condition (1) is exact only if `ΔT` is affine in `r`, and §2 establishes
+> that it is** — within the resolution of these sweeps. An earlier draft
+> reported a sublinear exponent, which would have demoted condition (1) from a
+> gate to a screen, because with α < 1 the left side of the gain condition grows
+> linearly while the right grows sublinearly and a large enough cohort always
+> wins. **That exponent did not survive scrutiny** (§2): it was set by the fit
+> window rather than by the system. Condition (1) is therefore a gate, and
+> "never pays at any rider count" is a statement about the measured law rather
+> than an artefact of a particular fit.
 
 `T0/B` is not a free parameter. `B` is a capacity, `B = (HBM − weights −
 overhead)/(b_tok·S)`, so
@@ -124,40 +115,59 @@ host staging, 6.4 GB/s scattered `index_select`); the extent-allocation and
 block-major layout fix removed it. This **removes a risk** the plan carried:
 C2C's larger rider count does not walk into a blow-up regime.
 
-**But it is not a constant either — riders do share some cost.** An earlier
-draft asserted "`c` is constant in `r`" on the strength of a fitted `r²`
-coefficient of −0.00027. That was the wrong statistic, and the assertion was too
-strong. Fitting `ΔT = F + c·r^α` instead (`paper/model/amortization.py`):
+**And it is constant, within what this measurement can resolve.** Getting here
+took three attempts and the second one is the instructive failure, so both are
+recorded.
 
-| ctx | n | affine | power law | F-test | P(α<1) |
-|---|---|---|---|---|---|
-| 256 | 7 | `12.07 + 0.726·r`, RSS 0.824 | α = 0.75, RSS 0.534 | F(1,4) = 2.18, not rejected | 86% |
-| **512** | **8** | `11.85 + 1.073·r`, RSS 0.530 | **α = 0.69**, RSS 0.173 | **F(1,5) = 10.28, affine REJECTED** | **98%** |
-| 1024 | 4 | `10.89 + 2.114·r`, RSS 0.650 | α = 0.40 (grid floor) | F(1,1) = 7.55, underpowered | 100% |
+*Attempt 1* claimed `c` is constant on the strength of a fitted `r²` coefficient
+of −0.00027. That is the wrong statistic: an `r²` term is not how one tests for
+a power law.
 
-At ctx 512 — the best-powered context — the affine law is rejected and
-α̂ = 0.69. Two checks that this is a real effect and not one bad point:
+*Attempt 2* fitted `ΔT = F + c·r^α` and got **α = 0.69 at ctx 512**, reporting
+the affine law as *rejected*. Every check it was given passed:
 
-* The affine **residuals carry the concavity signature**: `−0.29 −0.12 +0.12
-  +0.17 +0.42 +0.23 −0.32 −0.23` — negative at *both* ends, positive in the
-  middle. A single inflated point gives one large residual and no pattern.
-* **Dropping r = 1 moves `c` by only −3.8%**, so the bend is not an endpoint
-  artifact at the one place where `F` dominates.
+| check | result |
+|---|---|
+| F-test for α ≠ 1 | F(1,5) = 10.28, affine rejected |
+| bootstrap | P(α<1) = 98%, CI [0.40, 0.86] |
+| residual sign pattern | negative at both ends, positive in the middle |
+| leave-one-out | α stays in 0.52–0.74, never near 1 |
+| dropping the r=1 point | moves `c` by only −3.8% |
 
-**However, α is not pinned where it would matter.** The two models agree to
-**1.3% at r = 8** and diverge only outside the measured range:
+**The conclusion was still wrong, and this is worth dwelling on.** The fit is
+nearly *unidentified*: at the first rider point `F` is about 95% of `ΔT`, so `F`
+and `c·r^α` trade off against each other with almost no leverage on the
+exponent. Every check above conditions on the fit window and the points inside
+it, so none of them can see that the estimate moves wholesale when the window
+changes. It does:
 
-| r | affine | power law | gap | |
-|---|---|---|---|---|
-| 8 | 20.43 | 20.18 | −1.3% | measured |
-| 16 | 29.02 | 26.31 | −9.3% | extrapolation, past the knee |
-| 32 | 46.19 | 36.21 | −21.6% | extrapolation |
-| 64 | 80.52 | 52.18 | −35.2% | extrapolation |
+| arm | r≤4 | r≤6 | r≤8 | r≤12 | r≤16 | swing |
+|---|---|---|---|---|---|---|
+| ctx 512 | 0.900 | 0.855 | 0.690 | 0.690 | 0.690 | 0.21 |
+| ctx 256 | — | 0.890 | 0.960 | 0.750 | 0.750 | 0.21 |
+| **ctx 128 (A1)** | 0.400 | 0.400 | 0.590 | 0.940 | **1.085** | **0.69** |
+| **ctx 128 (A2)** | 0.400 | 0.615 | 0.980 | 0.795 | **0.980** | **0.58** |
 
-ctx 512 on PCIe has a knee of 8, so **the regime where the distinction matters
-is unreachable on this substrate.** Both fits describe the data; they disagree
-about a regime nobody measured. See §7 — this is now the campaign's leading open
-question.
+The bottom two rows are **two runs of the identical configuration**, adjacent in
+time. α runs 0.40 → 1.085 on one of them as the window widens, and the two
+disagree by **0.39 at the same window** (r≤8). The 0.400 cells are the grid
+floor, meaning the fit wanted a smaller exponent still — those windows are
+degenerate. For reference, run-to-run spread of the quantities that *are*
+identified: `c` repeats to **1.5%** and `F` to 10%, consistent with the known
+±14% job offset.
+
+**So α is not a property of the system, and no value for it should be quoted.**
+The affine law `ΔT = F + c·r` is the right description — not because sharing is
+proven absent, but because any deviation is below the resolution of these
+sweeps. This was obtained by widening the rider axis to r=16 at short context,
+which was the experiment designed to *pin* α and instead showed it unpinnable.
+
+The lesson generalises past this campaign: **a goodness-of-fit statistic
+computed inside one fit window cannot detect a model that is unidentified across
+windows.** The window sweep is now the primary diagnostic in
+`paper/model/amortization.py`, ahead of the F-test and the bootstrap, and its
+selftest asserts that α is unstable so the finding cannot be quietly
+reinstated.
 
 ---
 
@@ -255,8 +265,8 @@ engineered rather than merely observed. **Only one component is a floor:**
 
 So at the target only the **9.2%** that is bytes on the wire is physically
 per-rider. The other 90.8% is per-rider because of how the path is written —
-which is also the mechanism behind the measured α < 1, since back-to-back
-memcpys pipeline in the copy engine while a single one cannot.
+though note that no sharing is actually *observed* (§2): these are costs that
+*could* be batched, not costs that currently amortise on their own.
 
 **Batching is not the same as making it cheaper.** Moving a cost from `c` into
 `F` converts a charge paid r times into one paid once, which *helps in
@@ -364,28 +374,24 @@ knee** — by making a profitable rider count *admissible* — not by making eac
 rider cheaper. Which also means the knee is the quantity to design against, and
 it is the one that C2C improves most cleanly.
 
-### 5b. The knee also caps what rider-sharing can ever be worth
+### 5b. The knee also caps what batching could ever be worth
 
-§2's α < 1 and §3.2b's batchable components both pay off *in proportion to r*,
-so the knee bounds them too. Running the target under both laws:
+§3.2b identifies three components of `c` that are batchable in principle, which
+would move them out of `c` and into `F` — a charge paid `r` times becoming one
+paid once. That helps **in proportion to `r`**, so the knee bounds it just as it
+bounds everything else.
 
-| scenario | ΔT at r = knee | gain | |
-|---|---|---|---|
-| as built, affine | 33.01 | 0.65× | loses |
-| as built, α = 0.69 on the batchable share | 32.01 | **0.66×** | loses |
-| block removed + D2H fixed, affine | 6.42 | 1.21× | pays |
-| …+ α = 0.69 on the batchable share | 5.56 | **1.24×** | pays |
+At the target the knee is 3.8 riders, so there are under four riders to amortise
+over and batching the launches and the mirror write is worth little *there*. Its
+leverage scales with the knee, which goes as `X/S`: at **2× C2C and ctx 2048 the
+knee is 30 riders**, where moving a per-rider charge into the fixed cost divides
+it by thirty.
 
-**Sharing does not rescue the as-built case and does not decide the fixed one.**
-At the target it acts over 3.8 riders and moves the gain by about three points.
-It does not change either verdict.
-
-But the leverage scales with the knee, and the knee goes as `X/S`. At **2× C2C
-and ctx 2048 the knee is 30 riders**, and there `r^0.69` against `r` is a **65%
-saving** on the per-rider share. So rider-sharing is nearly worthless at the
-narrow operating point this campaign could reach, and potentially decisive at a
-wide one — which is the same conclusion as §5 arrived at from the other
-direction: **the knee is the quantity that governs, and the link sets it.**
+This is the same conclusion §5 reached from the other direction. **Batching is a
+real lever, but the knee gates how much it returns, and the link sets the
+knee.** It is also why the optimisation proposal targets the per-block rebuild
+first: that one is not a batching play at all but the removal of an `∝ S` term,
+and it does not depend on the rider count to pay off.
 
 ---
 
@@ -422,19 +428,11 @@ layer, and that is the one quantity an A100 cannot tell us (§7).
 
 Four uncertainties, stated rather than absorbed.
 
-0. **The rider-sharing exponent α is unresolved past r = 8, and this is now the
-   leading open question** — ahead of item 3, because its leverage is larger.
-   Affine and α = 0.69 agree to 1.3% at r = 8 and are **35% apart at r = 64**,
-   and the gap is pure extrapolation. At the target's knee of 3.8 riders it is
-   worth about three gain points (§5b) and changes nothing; at a knee of 30 it
-   is a 65% saving on the per-rider share and would change a great deal.
-
-   **It is also the cheapest thing left to measure, and needs no new
-   hardware.** The knee goes as `1/S`, so shortening the context widens the
-   rider axis on the A100 we already hold: ctx 256 already gives a knee of 14,
-   and ctx 128 would give ≈28 — enough span to fit α over a 4× rider range
-   instead of the current 8 points under a knee of 8. One sweep, a few GPU
-   hours, same harness and the same purity gate. Do this before the H100 run.
+0. **The hiding fraction, promoted to first place** — see item 3, which is now
+   the leading open question again. The exponent α that briefly held this slot
+   has been **resolved negatively**: it is unidentified rather than unresolved
+   (§2), so there is nothing left to measure there and the sweep that would have
+   settled it has been run.
 1. **Between-job offset ±14%** on `F` (within-job is ±5%; the noise floor is
    ±0.47% per step). An earlier pooled fit laundered this offset into the
    coefficients — held-out max error 11.0% ≈ the 1.78 ms job spread. Fixed with
@@ -474,11 +472,10 @@ measurement in the whole programme.
 
 **On `c`'s behaviour — the core question:**
 
-`c` does **not grow** with `r` (no superlinearity, no `r_max` in range) and is
-**affine in `S`** with a floor, `c = c₀ + k·S`. It is **mildly sublinear in
-`r`** — riders do share some cost, α̂ = 0.69 at ctx 512 with the affine law
-rejected — but α is unpinned past r = 8 and worth only ~3 gain points at the
-target's knee of 3.8.
+`c` is **constant in `r`** within the resolution of these sweeps — no
+superlinearity, no `r_max` in range, and no measurable rider-sharing either; an
+earlier sublinear exponent proved to be a fit-window artefact (§2). It is
+**proportional to the streamed context**, `c = 0.059 + 1.841e-3·S_eff`.
 
 `c` has four components and the link divides only one. At ctx 512 on PCIe that
 one is roughly half of `c`; at ctx 8192 on C2C it is 9%, because the link term
@@ -553,18 +550,16 @@ host loops.
 Recorded because several were confident and wrong, and the measurement caught
 them:
 
-0. **"`c` is constant in `r`" — overstated, and corrected in §2.** The evidence
-   cited was a fitted `r²` coefficient of −0.00027, which is the wrong statistic
-   for the question. A power-law fit rejects the affine law at ctx 512
-   (F(1,5) = 10.28, α̂ = 0.69, bootstrap P(α<1) = 98%), the residual sign
-   pattern carries the concavity signature, and it survives dropping r = 1.
-   **Riders do share cost.** The report also treated `c`'s per-rider-ness as
-   intrinsic when only the 9.2% that is bytes on the wire actually is (§3.2b).
-   Neither verdict changes — sharing moves the target gain 0.65→0.66× and
-   1.21→1.24× — but the *reason* the as-built case fails shifts from "`c`
-   exceeds the budget, full stop" to "`c` exceeds the budget and the knee is too
-   narrow for sharing to close the gap", which puts more weight on the link, not
-   less.
+0. **"Riders share part of `c`, α̂ = 0.69" — RETRACTED.** This was itself a
+   correction to an earlier overstatement, and it went too far the other way.
+   The exponent is **unidentified**: on one arm at one context it runs 0.40 to
+   1.085 purely as the fit window widens, and two runs of the identical
+   configuration disagree by 0.39 at the same window (§2). An F-test, a
+   bootstrap, a residual-sign check and leave-one-out all endorsed α = 0.69,
+   and all four condition on the fit window, so none could see the problem.
+   **The affine law stands.** What survives from that round, and is the useful
+   part, is the *structural* finding: only 9.2% of `c` at the target is
+   per-rider by physics, and the rest is batchable or vectorisable (§3.2b).
 0b. **"`c/S` falls, so `c` has a context-independent floor" — retracted.** It
    came from dividing by the nominal prompt length when what a rider streams is
    its *current* sequence length, a constant 79 tokens longer here. On the

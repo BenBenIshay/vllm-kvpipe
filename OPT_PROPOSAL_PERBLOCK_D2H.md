@@ -364,8 +364,17 @@ residents from capacity, `T0/B` = 3.37 ms, knee 3.8:
 The last row is the standing caveat from the campaign and these changes do not
 address it: the hiding fraction of the remaining async host work is unmeasurable
 on an A100 and bands `F` over 18×. That is a separate experiment (one run on any
-GPU faster than an A100), and it is **second** in priority behind the α sweep
-now on `nova07`.
+GPU faster than an A100), and it is now the **leading** open question — the
+rider-sharing exponent that briefly displaced it has since been closed
+negatively, as unidentified rather than unresolved, so there is nothing further
+to measure there.
+
+**Nothing in this proposal rests on that exponent.** Both targets were argued
+structurally — from what each component is proportional to and from what the
+allocator already guarantees — rather than from an observed sharing effect, so
+the retraction leaves the proposal intact. It does change one framing: batching
+the launches and the mirror write is a lever that would move cost from `c` into
+`F`, not the capture of a saving already visible in the data.
 
 **The reason to do this work is not that it makes the feature win.** It is that
 as the code stands, a C2C machine would be benchmarked against a ceiling of
