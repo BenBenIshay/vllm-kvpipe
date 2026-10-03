@@ -75,6 +75,25 @@ COEFF = {
                             "different compute per layer, so it tracks KV "
                             "geometry not compute"),
     "d2h_per_layer_2x64": (0.086, "ms/layer", "M3, Qwen-0.5B"),
+    # POST-T1, MEASURED. The block-table rebuild was 0.00765 ms per rider BLOCK
+    # (d_per_block above), so it scaled with context: 3.917 ms/rider at ctx
+    # 8192, 76% of c at the target. T1 made it one slice assignment per REQUEST
+    # and the measured cost is now per-RIDER and block-independent:
+    #
+    #   ctx 512 bs 16, build_step_bt_python, Class A host timer
+    #     riders   1      2      4      8     12
+    #     blocks  36     72    144    288    432
+    #     bt ms   .0243  .0283  .0341  .0475  .0593
+    #
+    #   fit: bt_ms = 0.0216 + 0.00317 * riders, max residual 0.00055 ms
+    #
+    # Blocks rose 12x while the time rose 2.4x, and ms/BLOCK fell 5x -- a
+    # per-block cost would have held ms/block constant. 87x less per rider at
+    # ctx 512, and because the coefficient no longer carries S, 1234x at the
+    # ctx-8192 target.
+    "t1_per_rider": (0.00317, "ms/rider",
+                     "M8 T1_c512_bs16, 5 rider points, fit residual 0.00055; "
+                     "replaces d_per_block and is INDEPENDENT of block count"),
 }
 
 # exposed async host work per layer, against compute per layer. THREE POINTS.
@@ -144,12 +163,20 @@ def F_ms(m: Model, hw: HW, exposed_per_layer: float, d2h_fixed: bool) -> float:
 
 
 def c_ms(m: Model, hw: HW, S: int, bs: int, d2h_fixed: bool,
-         link_frac: float | None = None) -> dict:
+         link_frac: float | None = None, t1: bool = False) -> dict:
+    """Per-rider cost, decomposed.
+
+    `t1=True` uses the MEASURED post-T1 block-table coefficient instead of the
+    per-block one. That is not an estimate of a proposed change: T1 is
+    implemented, the suite is 9/9 with it, and the coefficient is a fit over
+    five rider points (see COEFF["t1_per_rider"]).
+    """
     nominal = m.b_tok * S / (hw.link * 1e9) * 1e3
     frac = COEFF["c_link"][0] if link_frac is None else link_frac
     parts = {
         "per_rider_layer": COEFF["b_per_rider_layer"][0] * m.L,
-        "per_block": COEFF["d_per_block"][0] * (S // bs),
+        "per_block": (COEFF["t1_per_rider"][0] if t1
+                      else COEFF["d_per_block"][0] * (S // bs)),
         "link": frac * nominal,
         "d2h": 0.0 if d2h_fixed else COEFF["d2h_per_rider"][0],
     }
@@ -159,13 +186,13 @@ def c_ms(m: Model, hw: HW, S: int, bs: int, d2h_fixed: bool,
 
 
 def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
-               d2h_fixed: bool, bs: int = 16, drop_per_block: bool = False)\
-        -> dict:
+               d2h_fixed: bool, bs: int = 16, drop_per_block: bool = False,
+               t1: bool = False) -> dict:
     if b_res is None:
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
     F = F_ms(m, hw, exposed, d2h_fixed)
-    parts = c_ms(m, hw, S, bs, d2h_fixed)
+    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     per_resident = t0 / b_res
     knee = t0 / (m.b_tok * S / (hw.link * 1e9) * 1e3)
@@ -185,7 +212,7 @@ def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
 
 def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
          d2h_fixed: bool, b_res: float | None = None, bs: int = 16,
-         drop_per_block: bool = False) -> float:
+         drop_per_block: bool = False, t1: bool = False) -> float:
     """Throughput gain from admitting r riders on top of B residents.
 
         gain = (1 + r/B) / (1 + (F + c*r)/T0)
@@ -198,7 +225,7 @@ def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
     F = F_ms(m, hw, exposed, d2h_fixed)
-    parts = c_ms(m, hw, S, bs, d2h_fixed)
+    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     return (1.0 + r / b_res) / (1.0 + (F + c * r) / t0)
 
@@ -406,6 +433,23 @@ def _selftest() -> int:
     print("  [%s] PCIe6 fails on the KNEE not on c<T0/B (c=%.2f<%.2f, "
           "r_be=%.1f>knee=%.1f)" % ("ok " if good else "BAD", p6["c"],
                                     p6["t0_over_b"], p6["r_be"], p6["knee"]))
+
+    # T1 IS IMPLEMENTED AND MEASURED, so its effect on the gate is asserted,
+    # not projected. The whole point of the block-table rewrite was to get c
+    # under T0/B at the target, which it failed by 53% before.
+    S = 8192
+    before = break_even(L70, GH200, S, None, HIDING[2][1], False)
+    after = break_even(L70, GH200, S, None, HIDING[2][1], False, t1=True)
+    tb = before["t0"] / before["b_res"]
+    good = before["c"] > tb and after["c"] < tb
+    ok &= good
+    print("  [%s] T1 brings c under T0/B at the target: %.2f -> %.2f against "
+          "%.2f" % ("ok " if good else "BAD", before["c"], after["c"], tb))
+
+    good = after["parts"]["per_block"] < 0.01
+    ok &= good
+    print("  [%s] the block-table term is now %.5f ms/rider and carries no S"
+          % ("ok " if good else "BAD", after["parts"]["per_block"]))
 
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
