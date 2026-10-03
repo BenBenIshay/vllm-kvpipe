@@ -75,6 +75,7 @@ class Stub:
         # stubbed out -- otherwise the test would pass while the ordering it is
         # supposed to protect was broken.
         self._wt_dirty = False
+        self._wt_noflush = False
         self._wt_pending = []
         self._wt_k = None
         self._wt_v = None

@@ -108,6 +108,33 @@ A)
     run T2_c2048_blocking 2048 16 0,1,2 --no-d2h-async
     ;;
 
+B)  # NEGATIVE CONTROL. Slice A showed the suite passes with T2 on and with
+    # it off -- which proves T2 breaks nothing, but NOT that the suite could
+    # catch a T2 bug. A test that passes either way is insensitive, and
+    # "9/9 with T2 on" would then be no evidence at all.
+    #
+    # So suppress the deferred flush, which is exactly the silent failure mode
+    # (the mirror goes stale and _issue_runs streams wrong KV next step), and
+    # require the token-identical test to FAIL. If it passes, the correctness
+    # argument for T2 rests on nothing and must be rebuilt.
+    echo
+    echo "######## NEGATIVE CONTROL: flush suppressed, test MUST fail ########"
+    VLLM_KVPIPE_RUNGD_NOFLUSH=1 VLLM_KVPIPE_RUNGD_NOFLUSH_UNSAFE=1 \
+        "$PY" benchmarks/kv_pipelining_bench/hybrid_rungd_real.py 2>&1 | tail -25
+    RC=${PIPESTATUS[0]}
+    echo "token-identical test exit with flush suppressed: $RC"
+    if [ "$RC" -eq 0 ]; then
+        echo
+        echo "BAD: the token-identical test PASSED with the flush suppressed."
+        echo "It cannot see a missed flush, so it is not evidence for T2."
+        exit 30
+    fi
+    echo
+    echo "GOOD: suppressing the flush breaks the token-identical test, so that"
+    echo "test is sensitive to exactly T2's failure mode and its PASS in slice"
+    echo "A is meaningful."
+    ;;
+
 *)  echo "unknown SLICE=$SLICE"; exit 2 ;;
 esac
 

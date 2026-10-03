@@ -252,6 +252,18 @@ class RungdHostPool:
         self._wt_dirty = False
         self.wt_flushes = 0
         self.wt_deferred_rows = 0
+        # Negative control. Suppresses the deferred flush so the mirror goes
+        # stale, which is exactly the T2 bug that would be silent in
+        # production. Double-gated, and it announces itself.
+        self._wt_noflush = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_NOFLUSH", "0") == "1"
+            and _os.environ.get("VLLM_KVPIPE_RUNGD_NOFLUSH_UNSAFE", "0") == "1"
+        )
+        if self._wt_noflush:
+            print("*** RungdHostPool: NOFLUSH=1 -- deferred mirror writes are "
+                  "SUPPRESSED. This is a deliberate negative control and the "
+                  "output WILL be wrong. If a correctness test passes with "
+                  "this set, that test cannot see a missed flush.", flush=True)
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
@@ -950,6 +962,14 @@ class RungdHostPool:
         accumulated and was reverted partly for.
         """
         if not self._wt_dirty:
+            return 0
+        if self._wt_noflush:
+            # DELIBERATELY BROKEN, for a negative control. Disabling the flush
+            # must make the token-identical test FAIL; if it passes, that test
+            # cannot see a missed flush and "the suite is 9/9 with T2 on" is
+            # not evidence of T2's correctness. A suite that passes either way
+            # proves only that it is insensitive.
+            PT.count("wt_flush_suppressed")
             return 0
         if self._wt_event is not None:
             self._wt_event.synchronize()
