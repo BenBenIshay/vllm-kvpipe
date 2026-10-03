@@ -102,9 +102,10 @@ a real error in an earlier draft and it halved the budget.
 
 ---
 
-## 2. Does `c` grow as riders are added? No — and it partly *shrinks*
+## 2. Does `c` grow as riders are added? No, and it does not shrink either
 
-Two sub-questions, and an earlier draft of this report got the second one wrong.
+Two sub-questions, and earlier drafts of this report got the second one wrong
+twice, in opposite directions.
 
 **It does not grow.** `r_max` does not exist in range. The documented >60× stall
 does not reproduce: at the stall's own operating point — ctx 1024, r = 20, 5.825
