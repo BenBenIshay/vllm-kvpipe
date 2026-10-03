@@ -16,17 +16,23 @@
 #      need VLLM_ENABLE_V1_MULTIPROCESSING=0, and hybrid_rungd_real FAILS if it
 #      leaks in. run_suite.sh sets it per-test; never export it here.
 #
-#   2. T1's EFFECT, at the context where it is largest we can reach. The
-#      per-block term was measured at 0.00765 ms/block, so at ctx 2048 / bs 16
-#      with 8 riders it was ~1024 tensor __setitem__ calls per step. The Class A
-#      timer `build_step_bt_python` brackets a pure-CPU block, so it is
-#      trustworthy here -- unlike the phase timers that misled this campaign
-#      twice, which were bracketing BLOCKING CUDA calls.
+#   2. T1's EFFECT, read from the Class A timer `build_step_bt_python`, which
+#      brackets a pure-CPU block and is therefore trustworthy -- unlike the
+#      phase timers that misled this campaign twice, which were bracketing
+#      BLOCKING CUDA calls. It needs VLLM_KVPIPE_PHASE_TIMERS=1; PT is a no-op
+#      without it, so the first version of this script would have measured
+#      nothing. Level 1 only: level 2 is Class B and is excluded from every
+#      absolute number in this campaign.
 #
-#      Also run at bs 64. T1 removes the dependence on the BLOCK COUNT, so a 4x
-#      block-size change should now move build_step_bt_python hardly at all,
-#      where before it moved it ~4x. That is the sharpest available test that
-#      the term's scaling is actually gone rather than merely smaller.
+#      Two things follow from that timer being pure HOST work:
+#
+#        * the KNEE DOES NOT APPLY to it. The knee bounds where the step-time
+#          law holds, not where a CPU timer is readable, so these arms run well
+#          past it -- r=12 at ctx 512, whose knee is 8.
+#        * bs 16 vs bs 64 is the sharp test. T1 removes the dependence on the
+#          BLOCK COUNT, so a 4x block-size change should now barely move
+#          build_step_bt_python where before it moved ~4x. That tests that the
+#          scaling is gone rather than merely smaller.
 #
 #   3. PHASE 0, the T2 decision. Four arms at one config, with `real` brackets
 #      straddling the test arms so drift is bounded INSIDE the comparison
@@ -42,10 +48,23 @@
 #      do NOT implement T2. Spend the effort on T1, which is 3.9 ms per rider
 #      at the target and carries no ordering risk.
 #
-# ctx 2048 is used for the T1 arms because the per-block term scales with
-# context and 2048 is the longest we can run; its knee is ~2.4 riders, so the
-# rider points are deliberately low and the step times are NOT a measurement of
-# the overhead law here -- only build_step_bt_python is being read.
+# POOL HEADROOM decides the T1 arm shapes, and it is the reason the wide rider
+# range sits at ctx 512 rather than 2048. The published ctx-2048 / batch-16
+# configuration already runs at 98.5% of the KV pool (16 residents x 2184
+# tokens against 35472), which is how an earlier attempt in this campaign tipped
+# into eviction and recompute and produced a baseline that moved 53.45 -> 64.21
+# ms. Whether a rider consumes paged-pool blocks at all is not something I have
+# established either way -- its KV lives in host memory and only a k_window sits
+# in the separate rolling region -- so rather than assume it, the arms are
+# arranged so the answer does not matter:
+#
+#   ctx 512, r to 12  : ample headroom (19936 of 35472 even if riders DO take
+#                       pool blocks), carries the rider and block-size axes
+#   ctx 2048, r to 2  : the exact rider counts the campaign already ran there
+#                       safely, carries the context axis
+#
+# Step times from these arms are NOT a measurement of the overhead law -- at
+# ctx 512 r=12 is above the knee of 8 -- and are not read as one.
 #
 # No delay command anywhere: this cluster's submit filter rejects any batch
 # script containing one.
@@ -81,6 +100,7 @@ case "$VLLM_PATH" in
 esac
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+# run <tag> <ctx> <batch> <riders> [flags...]   -- no phase timers
 run () {
     local tag=$1 ctx=$2 batch=$3 riders=$4; shift 4
     echo
@@ -91,6 +111,20 @@ run () {
         --gpu-mem-util 0.90 --link-gbps 25.1 \
         --outdir "$OUT" --out "${tag}.json" "$@" 2>&1 | tail -55
     echo "--- $tag done $(date -Is)"
+}
+
+# runpt <tag> ... -- same, with CLASS A phase timers on so
+# build_step_bt_python is actually recorded, and the per-step JSONL kept.
+runpt () {
+    local tag=$1; shift
+    VLLM_KVPIPE_PHASE_TIMERS=1 \
+    VLLM_KVPIPE_PHASE_TIMERS_OUT="$OUT/${tag}_phases.jsonl" \
+    run "$tag" "$@"
+    echo "--- phase rollup for $tag:"
+    grep -oE '"build_step_bt_python":[^,}]*' "$OUT/${tag}_phases.jsonl" \
+        2>/dev/null | tail -3
+    grep -oE '"build_fast_path":[^,}]*' "$OUT/${tag}_phases.jsonl" \
+        2>/dev/null | tail -1
 }
 
 case "$SLICE" in
@@ -110,8 +144,16 @@ A)
 
     echo
     echo "######## 2. T1 -- did the per-block term lose its scaling? ########"
-    run T1_bs16 2048 16 0,1,2 --block-size 16
-    run T1_bs64 2048 16 0,1,2 --block-size 64
+    echo "# Reading build_step_bt_python only. Step times here are above the"
+    echo "# knee at r>2 and are NOT a measurement of the overhead law."
+    echo "# ctx 512: the rider and block-size axes, with pool headroom."
+    runpt T1_c512_bs16 512 16 0,1,2,4,8,12 --block-size 16
+    runpt T1_c512_bs64 512 16 0,1,2,4,8,12 --block-size 64
+    echo
+    echo "# ctx 2048: the context axis, at the rider counts already known"
+    echo "# safe there given 98.5% pool occupancy."
+    runpt T1_c2048_bs16 2048 16 0,1,2 --block-size 16
+    runpt T1_c2048_bs64 2048 16 0,1,2 --block-size 64
 
     echo
     echo "######## 3. PHASE 0 -- price the synchronisation ########"
