@@ -63,9 +63,20 @@ COMPONENTS = [
 ]
 
 
-def load(S, datadir=DATA):
+M7DATA = os.environ.get(
+    "OVERHEAD_M7DATA",
+    "/mnt/beegfs/benishay/paper_runs/20260930/overhead/07_amortization")
+
+# M7: the high-concurrency sweep. The knee goes as 1/S, so a shorter context
+# widens the rider axis on the same hardware. ctx 128 is run TWICE, adjacent in
+# time, because alpha is a shape parameter and its run-to-run spread is what
+# decides whether a context trend in alpha is real.
+M7 = [("A1_c128", 128), ("A2_c128", 128), ("B_c192", 192), ("C_c256", 256)]
+
+
+def load(S, datadir=DATA, fname=None):
     """Below-knee points of one context sweep, direct estimator."""
-    d = json.load(open(os.path.join(datadir, "A_c%d.json" % S)))
+    d = json.load(open(os.path.join(datadir, fname or ("A_c%d.json" % S))))
     rows = [r for r in d["rows"] if r.get("usable")]
     base = [r for r in rows if r["riders"] == 0]
     if not base:
@@ -109,8 +120,8 @@ def best_alpha(pts, lo=0.40, hi=1.60, step=0.005):
     return best
 
 
-def analyse(S, datadir=DATA, nboot=2000, seed=7):
-    t0, lk, pts = load(S, datadir)
+def analyse(S, datadir=DATA, nboot=2000, seed=7, fname=None):
+    t0, lk, pts = load(S, datadir, fname)
     n = len(pts)
     if n < 5:
         return {"ctx": S, "n": n, "enough": False}
@@ -217,6 +228,128 @@ def report(datadir=DATA):
     print()
 
 
+def m7_report(datadir=M7DATA):
+    """The high-concurrency sweep, against the two predictions registered in
+    m7_amortization.sbatch BEFORE the run.
+
+      P1  If the sharing is launch pipelining, alpha should FALL with shorter
+          context, because the amortizable share of c (launch + mirror write)
+          rises as context shrinks: ~60% at ctx 512, ~80% at ctx 128. So
+          predict alpha(128) < alpha(192) < alpha(256) < alpha(512).
+
+      P2  The already-measured alpha(256)=0.75 > alpha(512)=0.69 is the WRONG
+          order for P1. A1 vs A2 -- the same context twice, adjacent in time --
+          gives the run-to-run spread of alpha itself, which decides whether
+          that gap is a real trend or job scatter.
+    """
+    print("=" * 78)
+    print(" M7: alpha AT HIGH CONCURRENCY")
+    print("=" * 78)
+    print()
+    rows = []
+    for fn, S in M7:
+        path = os.path.join(datadir, fn + ".json")
+        if not os.path.exists(path):
+            print(" %-10s ctx %-5d NOT PRESENT YET (%s)" % (fn, S, path))
+            continue
+        a = analyse(S, datadir, fname=fn + ".json")
+        if not a["enough"]:
+            print(" %-10s ctx %-5d only %d below-knee points"
+                  % (fn, S, a["n"]))
+            continue
+        a["tag"], a["S"] = fn, S
+        rows.append(a)
+        F1, c1, rss1 = a["affine"]
+        al, Fa, ca, rssa = a["power"]
+        rmax = max(r for r, _ in a["pts"])
+        print(" %-10s ctx %-5d n=%-3d knee %-5.1f r_max %d"
+              % (fn, S, a["n"], a["knee"], rmax))
+        print("    affine  F=%6.2f c=%6.3f RSS=%8.4f" % (F1, c1, rss1))
+        print("    power   alpha=%.3f F=%6.2f c=%6.3f RSS=%8.4f" % (al, Fa, ca, rssa))
+        print("    F(1,%d)=%6.2f -> affine %s   boot alpha %.2f CI [%.2f, %.2f]"
+              % (a["n"] - 3, a["fstat"],
+                 "REJECTED" if a["rejects_affine"] else "kept",
+                 a["alpha_median"], a["alpha_ci"][0], a["alpha_ci"][1]))
+        print("    concavity signature: %-3s   dropping r=1 moves c %+.1f%%"
+              % ("YES" if a["concavity_signature"] else "no",
+                 a["c_change_dropping_r1_pct"]))
+        print()
+
+    if not rows:
+        print(" nothing to analyse yet.")
+        return
+
+    # P2 FIRST: without the repeatability number, P1 cannot be judged.
+    a1 = next((r for r in rows if r["tag"] == "A1_c128"), None)
+    a2 = next((r for r in rows if r["tag"] == "A2_c128"), None)
+    print("-" * 78)
+    print(" P2  run-to-run spread of alpha (same ctx, adjacent in time)")
+    print("-" * 78)
+    if a1 and a2:
+        d = abs(a1["power"][0] - a2["power"][0])
+        print("   alpha  A1 = %.3f   A2 = %.3f   |difference| = %.3f"
+              % (a1["power"][0], a2["power"][0], d))
+        print("   c      A1 = %.3f   A2 = %.3f   (%+.1f%%)"
+              % (a1["affine"][1], a2["affine"][1],
+                 100 * (a2["affine"][1] / a1["affine"][1] - 1)))
+        print("   F      A1 = %.2f    A2 = %.2f    (%+.1f%%)"
+              % (a1["affine"][0], a2["affine"][0],
+                 100 * (a2["affine"][0] / a1["affine"][0] - 1)))
+        print()
+        print("   => any context trend in alpha smaller than %.3f is NOT"
+              % d)
+        print("      resolvable by this campaign.")
+    else:
+        print("   needs both A1_c128 and A2_c128; not both present.")
+    print()
+
+    print("-" * 78)
+    print(" P1  does alpha fall with shorter context?")
+    print("-" * 78)
+    known = {512: 0.69, 256: 0.75}   # from the 02_law sweep
+    seen = {}
+    for r in rows:
+        seen.setdefault(r["S"], []).append(r["power"][0])
+    print("   %6s %10s %10s" % ("ctx", "alpha (M7)", "alpha (M2)"))
+    for S in sorted(set(list(seen) + list(known))):
+        m7v = ("%.3f" % (sum(seen[S]) / len(seen[S]))) if S in seen else "-"
+        m2v = ("%.2f" % known[S]) if S in known else "-"
+        print("   %6d %10s %10s" % (S, m7v, m2v))
+    order = [sum(seen[S]) / len(seen[S]) for S in sorted(seen)]
+    if len(order) >= 2:
+        rising = all(order[i] <= order[i + 1] for i in range(len(order) - 1))
+        print()
+        print("   alpha %s with context across the M7 contexts."
+              % ("RISES" if rising else "does not rise monotonically"))
+        print("   P1 predicted rising (alpha lower at shorter context): %s"
+              % ("CONSISTENT" if rising else "NOT CONSISTENT"))
+        if a1 and a2:
+            spread = abs(a1["power"][0] - a2["power"][0])
+            rng = max(order) - min(order)
+            print("   range across contexts %.3f vs run-to-run spread %.3f -> %s"
+                  % (rng, spread,
+                     "trend exceeds noise" if rng > spread
+                     else "INSIDE NOISE, no trend claimable"))
+    print()
+
+    # what the wider span buys: affine vs power at the largest cohort reached
+    print("-" * 78)
+    print(" WHAT THE WIDER RIDER AXIS BUYS")
+    print("-" * 78)
+    for r in rows:
+        F1, c1, _ = r["affine"]
+        al, Fa, ca, _ = r["power"]
+        rmax = max(x for x, _ in r["pts"])
+        av, pv = F1 + c1 * rmax, Fa + ca * rmax ** al
+        print("   %-10s r_max=%-3d affine %7.2f  power %7.2f  gap %+6.1f%%"
+              % (r["tag"], rmax, av, pv, 100 * (pv / av - 1)))
+    print()
+    print("   At ctx 512 the two models were 1.3% apart at r=8, which is why")
+    print("   alpha was unconstrained. A gap well outside the run-to-run")
+    print("   spread here is what pins it.")
+    print()
+
+
 def _selftest(datadir=DATA):
     ok = True
     a = analyse(512, datadir, nboot=400)
@@ -268,9 +401,14 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--selftest", action="store_true")
+    p.add_argument("--m7", action="store_true",
+                   help="the high-concurrency sweep and its two predictions")
     args = p.parse_args()
     if args.selftest:
         return _selftest()
+    if args.m7:
+        m7_report()
+        return 0
     report()
     return 0
 
