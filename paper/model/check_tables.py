@@ -127,7 +127,12 @@ print("\nOne value per quantity across all sections")
 tex = "".join(p.read_text() for p in sorted(TEX.glob("*.tex")))
 for pat, allowed, label in [
         # 1935 is the measured A100 peak; 1450 is 0.75 of it, the achieved rate.
-        (r"(\d{3,4})\\,GB/s", {"450", "419", "900", "371", "1935", "1450"}, "bandwidth")]:
+        # 128 is PCIe6 x16, a sweep point in the overhead section's link sweep
+        # (sections/09-overhead.tex) and NOT a restatement of another link's
+        # speed. This check exists to stop ONE quantity being given two values;
+        # a genuinely new link belongs inside the set rather than outside it.
+        (r"(\d{3,4})\\,GB/s",
+         {"450", "419", "900", "371", "1935", "1450", "128"}, "bandwidth")]:
     seen = set(re.findall(pat, tex))
     bad = seen - allowed
     print(f"  {'ok  ' if not bad else 'FAIL'} {label}: {sorted(seen)}")

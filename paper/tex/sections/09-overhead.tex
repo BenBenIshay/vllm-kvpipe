@@ -222,20 +222,32 @@ earlier code did not complete at all.
 
 Two qualifications matter.
 
-First, $\Delta T$ is \emph{mildly concave} rather than exactly affine: riders
-share part of their cost. Fitting $\Delta T = F + c\,r^{\alpha}$ gives
-$\alpha = 0.69$ at $S{=}512$ and rejects $\alpha{=}1$
-($F(1,5) = 10.28$), with the affine residuals negative at both ends of the
-rider range and positive in the middle --- the signature of genuine curvature
-rather than one outlying point --- and the estimate surviving removal of the
-$r{=}1$ point, which moves $c$ by $-3.8$\%.
-% src: paper/model/amortization.py @ 908d2a773
-The sharing is consistent with launch pipelining: $2 L r$ back-to-back copies
-queue more efficiently than one does alone. It is also bounded in consequence,
-because the affine and power-law fits agree to 1.3\% at the largest measured
-cohort and diverge only above the knee, where the step is bandwidth-bound and
-the sharing cannot act. We therefore report $c$ under the affine law and treat
-$\alpha$ as a correction, quantified in \S\ref{sec:overhead:pays}.
+First, the affine form is not assumed; it is what survives an attempt to
+refute it. Riders might be expected to \emph{share} part of their cost, since
+$2 L r$ back-to-back copies could queue more efficiently than one does alone,
+which would make $\Delta T$ concave. Fitting $\Delta T = F + c\,r^{\alpha}$ does
+return $\alpha = 0.69$ at $S{=}512$, with an $F$-test rejecting $\alpha{=}1$
+($F(1,5) = 10.28$), a bootstrap putting $P(\alpha<1)$ at 98\%, affine residuals
+negative at both ends of the rider range and positive in the middle, and the
+estimate surviving leave-one-out within $0.52$--$0.74$.
+
+\emph{All five of those checks are nonetheless uninformative here}, and the
+reason is worth stating because it generalises. The three-parameter fit is
+nearly unidentified: at the first rider point $F$ is roughly 95\% of
+$\Delta T$, so $F$ and $c\,r^{\alpha}$ trade off against one another with
+almost no leverage on the exponent. Every check above conditions on the fit
+window and the points inside it, so none of them can detect that the estimate
+moves wholesale when the window changes --- which it does, from $0.40$ to
+$1.085$ on a single sweep at a single context as the window widens from
+$r \le 4$ to $r \le 16$. Two runs of an identical configuration, taken
+adjacent in time, disagree by $0.39$ at a fixed window, against a run-to-run
+spread of $1.5$\% in $c$ and $10$\% in $F$.
+% src: paper/model/amortization.py @ 31109cc61
+We therefore quote no value for $\alpha$ and report $c$ under the affine law:
+any rider-sharing present is below the resolution of these sweeps. A
+goodness-of-fit statistic computed inside one fit window cannot detect a model
+that is unidentified across windows, so the window sweep rather than the
+$F$-test is the diagnostic we rely on.
 
 Second, the split is only meaningful below the knee, and our own earlier
 analysis of a two-regime dataset concluded that it was not meaningful at all.
@@ -429,19 +441,19 @@ because break-even needs 1.8 riders while $r^{*}$ admits 1.2. It fails on
 equation~\ref{eq:overhead:knee}, the interconnect's dominant contribution is to
 make a profitable rider count admissible, not to make each rider cheaper.
 
-\paragraph{The rider-sharing correction.} The concavity of
-\S\ref{sec:overhead:law} works in the design's favour and strengthens this
-reading. With $\alpha < 1$ the left side of the gain condition grows linearly in
-$r$ while the right grows sublinearly, so a sufficiently large cohort always
-wins and condition~\ref{eq:overhead:nec} is a screen rather than a theorem. What
-makes it binding in practice is the knee: the sharing exists only below it. Its
-value is accordingly bounded by $r^{*}$, and at the target, where $r^{*}$ is
-3.8, it moves the attainable gain by about three points --- from $0.65$ to
-$0.66\times$ as built and $1.21$ to $1.24\times$ once the host costs are
-removed, changing neither verdict. At a wider knee it is worth considerably
-more: at $S{=}2048$ on a doubled link, $r^{*}$ is 30 and $r^{0.69}$ against $r$
-is a 65\% saving on the shared part. Both readings converge on the same
-conclusion: \emph{the knee governs, and the link sets the knee.}
+\paragraph{What batching could add, and why the knee bounds that too.}
+\S\ref{sec:overhead:c} identifies three components of $c$ that are per-rider
+only as implemented. Batching them would move each from $c$ into $F$, turning a
+charge paid $r$ times into one paid once --- which helps \emph{in proportion to}
+$r$, so condition~\ref{eq:overhead:reach} bounds it exactly as it bounds
+everything else. At the target, where $r^{*}$ is 3.8, there are under four
+riders to amortise over and the return is small. At $S{=}2048$ on a doubled
+link, where $r^{*}$ is 30, moving a per-rider charge into the fixed cost divides
+it by thirty. This is the same conclusion reached from the other direction:
+\emph{the knee governs, and the link sets the knee.} It is also why
+\S\ref{sec:overhead:opt} targets the block-table rebuild first, that one being
+not a batching play but the removal of a term proportional to $S$, whose return
+does not depend on the rider count at all.
 
 \subsection{Removing the two host-side costs}
 \label{sec:overhead:opt}
@@ -506,9 +518,10 @@ slope differs between two routes --- a cross-context fit and a within-job
 component fit --- which agree to 7\% at the measured context and diverge on
 extrapolation. We ran the verdict under both; as built neither pays, and with
 the host costs removed both do, so the conclusion does not rest on the choice.
-Likewise $\alpha$ is unconstrained above the measured cohort, which is why
-\S\ref{sec:overhead:pays} reports its effect as a bounded correction rather
-than folding it into the coefficients.
+The exponent $\alpha$ of \S\ref{sec:overhead:law} is a closed question rather
+than an open one: it is unidentified, not merely unresolved, so widening the
+rider axis further would not settle it. We report the affine law and note that
+any sharing it hides is below resolution.
 
 \paragraph{Single device, projected target.} The target model and interconnect
 are projected from coefficients measured on one device at shorter contexts, with

@@ -1,36 +1,58 @@
 #!/usr/bin/env python3
 """Does c amortize across riders?  (Ben's question, 2026-10-03.)
 
-The first report asserted "c is constant in r" on the strength of a fitted r^2
-term. That was the wrong statistic and the assertion was too strong. This
-module answers the question properly, and splits it in two, because the two
-halves have completely different consequences:
+THE ANSWER, after three rounds of getting it wrong in both directions:
 
-  (A) EMPIRICAL -- in the measured range, is dT concave in r?
-      Answer: YES, mildly. At ctx 512 a power law dT = F + c*r^alpha fits with
-      alpha = 0.69 and an F-test REJECTS the affine law (F(1,5) = 10.28,
-      bootstrap P(alpha<1) = 98%). The affine residuals are negative at both
-      ends and positive in the middle -- the concavity signature -- and
-      dropping r=1 moves c by only -3.8%, so it is not an endpoint artifact.
-      BUT the two models agree to 1.3% at r=8 and diverge only outside the
-      measured range, so alpha is NOT pinned where it would matter.
+  MEASURABLY, NO. Within the resolution of this measurement the per-rider cost
+  is constant and the affine law dT = F + c*r is the right description. Any
+  rider-sharing is below what these sweeps can resolve.
 
-  (B) STRUCTURAL -- is each component of c per-rider by physics, or only as
-      written? Only the bytes on the wire is a floor. The 2*L*R launches and
-      the r pageable D2H calls are batchable, which would move them OUT of c
-      and INTO F. The per-block Python loop has an irreducible item count but a
-      collapsible per-item cost.
+  STRUCTURALLY, THREE OF FOUR COMPONENTS COULD BE. Only the bytes on the wire
+  is per-rider by physics. The 2*L*r copy launches and the r pageable D2H calls
+  are batchable, which would move them OUT of c and INTO F -- a charge paid r
+  times becoming one paid once. That is an engineering lever even though no
+  sharing is currently measurable, and it helps in proportion to r, which the
+  knee caps.
 
-Consequence, and it changes the shape of the argument: if alpha < 1 then
-`c < T0/B` is not the gate, because the left side of the gain condition grows
-linearly in r while the right side grows sublinearly -- a large enough r always
-wins. "Never pays at any rider count" is false in principle. What makes it true
-in practice is the KNEE: the sublinearity exists only below it, and above it M4
-measured the step as the full nominal link time (linear in r, large slope). So
-the binding constraint is the knee alone, and the knee is proportional to the
-link bandwidth. The interconnect matters MORE under this reading, not less.
+HOW I GOT IT WRONG TWICE, because the second mistake is the instructive one.
 
-    ./.venv/bin/python paper/model/amortization.py [--selftest]
+  Round 1. Claimed "c is constant in r" citing a fitted r^2 coefficient of
+  -0.00027. Wrong statistic: an r^2 term is not how you test for a power law.
+
+  Round 2. Fitted dT = F + c*r^alpha, got alpha = 0.69 at ctx 512, and reported
+  that the affine law was REJECTED -- F(1,5) = 10.28, bootstrap P(alpha<1) =
+  98%, residual sign pattern consistent with concavity, and the estimate
+  surviving leave-one-out at 0.52-0.74. Every one of those checks passed and
+  the conclusion was still wrong.
+
+  What they all missed is that the fit is nearly UNIDENTIFIED. At the first
+  rider point F is about 95% of dT, so F and c*r^alpha trade off against each
+  other with almost no leverage on the exponent. The F-test, the bootstrap and
+  leave-one-out all condition on the fit window and the points inside it, so
+  none of them can see that the estimate moves wholesale when the window
+  changes. It does:
+
+      arm            r<=4  r<=6  r<=8  r<=12 r<=16
+      ctx 512 (M2)   0.900 0.855 0.690 0.690 0.690
+      ctx 256 (M2)     -   0.890 0.960 0.750 0.750
+      ctx 128 (A1)   0.400 0.400 0.590 0.940 1.085
+      ctx 128 (A2)   0.400 0.615 0.980 0.795 0.980
+
+  Read the bottom two rows: same context, same hardware, two runs of the
+  IDENTICAL configuration. alpha runs 0.40 to 1.085 as the window widens on one
+  of them, and the two disagree by 0.39 at the same window (r<=8). The exponent
+  is set by the fit window, not by the system.
+
+  The window sweep is therefore the PRIMARY diagnostic here, ahead of any
+  goodness-of-fit statistic, and `_selftest` asserts that alpha is unstable so
+  that a future change cannot quietly re-report it as a finding.
+
+WHAT THIS MEANS FOR THE PROJECTION. The affine law stands, so `c < T0/B` is the
+gate again rather than a screen, and "never pays at any rider count" is a
+statement about the law rather than an artefact of one. The structural half of
+the answer is unaffected and is where the remaining leverage is.
+
+    ./.venv/bin/python paper/model/amortization.py [--selftest|--m7|--window]
 """
 from __future__ import annotations
 
@@ -251,6 +273,81 @@ def report(datadir=DATA):
     print()
 
 
+WINDOWS = (4, 6, 8, 12, 16, 24)
+
+
+def window_sweep(arms=None):
+    """alpha as a function of the FIT WINDOW, per arm.
+
+    This is the diagnostic that settled the question. If alpha moves when the
+    window moves, with everything physical held fixed, then alpha is a property
+    of the fit and not of the system -- and no goodness-of-fit statistic
+    computed INSIDE one window can detect that.
+    """
+    if arms is None:
+        arms = [("ctx 512 (M2)", 512, DATA, None),
+                ("ctx 256 (M2)", 256, DATA, None),
+                ("ctx 1024 (M2)", 1024, DATA, None),
+                ("ctx 128 (M7 A1)", 128, M7DATA, "A1_c128.json"),
+                ("ctx 128 (M7 A2)", 128, M7DATA, "A2_c128.json"),
+                ("ctx 192 (M7 B)", 192, M7DATA, "B_c192.json"),
+                ("ctx 256 (M7 C)", 256, M7DATA, "C_c256.json")]
+    out = []
+    for name, S, d, fn in arms:
+        try:
+            t0, lk, pts = load(S, d, fn)
+        except Exception:
+            continue
+        if len(pts) < 4:
+            continue
+        cells = []
+        for cap in WINDOWS:
+            sub = [p for p in pts if p[0] <= cap]
+            cells.append(best_alpha(sub)[0] if len(sub) >= 4 else None)
+        vals = [c for c in cells if c is not None]
+        out.append({"name": name, "ctx": S, "cells": cells,
+                    "swing": (max(vals) - min(vals)) if vals else float("nan"),
+                    "r_max": max(r for r, _ in pts), "n": len(pts)})
+    return out
+
+
+def window_report():
+    rows = window_sweep()
+    print("=" * 78)
+    print(" alpha AS A FUNCTION OF THE FIT WINDOW")
+    print("=" * 78)
+    print()
+    print(" Everything physical is fixed within a row. Only the fit window")
+    print(" changes. The grid floor is 0.40, so a cell reading exactly 0.400")
+    print(" means the fit wanted a smaller exponent still: that window is")
+    print(" degenerate.")
+    print()
+    print(" %-17s %s %8s" % ("arm",
+                             " ".join("r<=%-3d" % c for c in WINDOWS),
+                             "swing"))
+    for r in rows:
+        cells = " ".join("%-6s" % ("%.3f" % c if c is not None else "-")
+                         for c in r["cells"])
+        print(" %-17s %s %8.3f" % (r["name"], cells, r["swing"]))
+    print()
+    if len(rows) >= 2:
+        worst = max(rows, key=lambda r: r["swing"])
+        print(" Largest within-arm swing: %s, %.3f -- with the context, the"
+              % (worst["name"], worst["swing"]))
+        print(" hardware and the data all held fixed.")
+    pair = [r for r in rows if "A1" in r["name"] or "A2" in r["name"]]
+    if len(pair) == 2:
+        i = WINDOWS.index(8)
+        a, b = pair[0]["cells"][i], pair[1]["cells"][i]
+        if a is not None and b is not None:
+            print()
+            print(" Two runs of the IDENTICAL configuration, same window r<=8:")
+            print("   %.3f and %.3f, differing by %.3f." % (a, b, abs(a - b)))
+            print(" alpha is not identified. The affine law is the right")
+            print(" description, and any sharing is below resolution.")
+    print()
+
+
 def m7_report(datadir=M7DATA):
     """The high-concurrency sweep, against the two predictions registered in
     m7_amortization.sbatch BEFORE the run.
@@ -385,28 +482,36 @@ def _selftest(datadir=DATA):
     print("  [%s] ctx 512 has enough below-knee points (%d)"
           % ("ok " if good else "BAD", a["n"]))
 
-    # the finding that corrected the report: affine is rejected at ctx 512
-    good = a["rejects_affine"] and a["power"][0] < 1.0
+    # THE HEADLINE, asserted so it cannot be quietly re-reported: alpha is NOT
+    # identified. It must move substantially when only the fit window moves.
+    rows = window_sweep()
+    good = bool(rows) and max(r["swing"] for r in rows) > 0.25
     ok &= good
-    print("  [%s] affine REJECTED at ctx 512 (F=%.2f, alpha=%.2f) -- c is not "
-          "strictly per-rider" % ("ok " if good else "BAD", a["fstat"],
-                                  a["power"][0]))
+    print("  [%s] alpha is UNSTABLE in the fit window (largest within-arm "
+          "swing %.2f) -- it is not a property of the system"
+          % ("ok " if good else "BAD",
+             max(r["swing"] for r in rows) if rows else float("nan")))
 
-    good = a["concavity_signature"]
-    ok &= good
-    print("  [%s] residuals carry the concavity signature, not one bad point"
-          % ("ok " if good else "BAD"))
+    # and two runs of the same configuration must disagree about it, which is
+    # the other half of why no alpha should be quoted
+    pair = [r for r in rows if "A1" in r["name"] or "A2" in r["name"]]
+    if len(pair) == 2:
+        i = WINDOWS.index(8)
+        va, vb = pair[0]["cells"][i], pair[1]["cells"][i]
+        good = va is not None and vb is not None and abs(va - vb) > 0.15
+        ok &= good
+        print("  [%s] identical configs disagree on alpha at a fixed window "
+              "(%.2f vs %.2f)" % ("ok " if good else "BAD", va or -1, vb or -1))
+    else:
+        print("  [--] A1/A2 pair not both present, skipping the repeat check")
 
-    good = abs(a["c_change_dropping_r1_pct"]) < 10
+    # the goodness-of-fit statistics must NOT be trusted here, and the way to
+    # show that is that they endorse a value the window sweep destroys
+    good = a["rejects_affine"]
     ok &= good
-    print("  [%s] not an r=1 artifact: dropping it moves c by %+.1f%%"
-          % ("ok " if good else "BAD", a["c_change_dropping_r1_pct"]))
-
-    # the ctx-512 alpha<1 must be robust to leave-one-out, or it is one point
-    good = not a["loo_straddles_1"] and a["loo_hi"] < 1.0
-    ok &= good
-    print("  [%s] ctx 512 alpha<1 survives leave-one-out (LOO %.2f-%.2f)"
-          % ("ok " if good else "BAD", a["loo_lo"], a["loo_hi"]))
+    print("  [%s] the F-test still 'rejects' affine at ctx 512 (F=%.2f) while "
+          "alpha is unidentified -- why the window sweep leads"
+          % ("ok " if good else "BAD", a["fstat"]))
 
     # but the models must agree inside the measured range -- that is what
     # stops alpha from being usable for extrapolation
@@ -436,11 +541,17 @@ def main():
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--m7", action="store_true",
                    help="the high-concurrency sweep and its two predictions")
+    p.add_argument("--window", action="store_true",
+                   help="alpha vs the fit window -- the primary diagnostic")
     args = p.parse_args()
     if args.selftest:
         return _selftest()
+    if args.window:
+        window_report()
+        return 0
     if args.m7:
         m7_report()
+        window_report()
         return 0
     report()
     return 0
