@@ -169,12 +169,20 @@ Per-context affine fits, below the knee only, direct (non-differenced)
 estimator, A100/Qwen-32B/L=64/bs=16
 (`paper_runs/20260930/overhead/02_law/A_c{256,512,1024,2048}.json`):
 
-| ctx | pts | `F` ms | `c` ms/rider | `c/S` | knee | max resid | hidden |
-|---|---|---|---|---|---|---|---|
-| 256 | 7 | 12.07 | 0.726 | 0.002834 | 14.0 | 0.45 | 79% |
-| 512 | 8 | 11.85 | 1.073 | 0.002096 | 8.0 | 0.42 | 83% |
-| 1024 | 4 | 10.89 | 2.114 | 0.002065 | 4.4 | 0.57 | 82% |
-| 2048 | 2 | — | — | — | 2.2 | — | — |
+| ctx | `S_eff` | pts | `F` ms | `c` ms/rider | `c/S_eff` | knee | max resid | hidden |
+|---|---|---|---|---|---|---|---|---|
+| 256 | 335 | 7 | 12.07 | 0.726 | 0.002166 | 14.0 | 0.45 | 79% |
+| 512 | 591 | 8 | 11.85 | 1.073 | 0.001816 | 8.0 | 0.42 | 83% |
+| 1024 | 1103 | 4 | 10.89 | 2.114 | 0.001917 | 4.4 | 0.57 | 82% |
+| 2048 | 2127 | 2 | — | — | — | 2.2 | — | — |
+
+> **Correction: `ctx` is the prompt length, but `c` scales with what is actually
+> streamed, which is the *current* sequence length and therefore grows as the
+> request generates.** Taking it from the measured bytes at r=1 gives `S_eff`,
+> a constant **79 tokens above the prompt** in all four sweeps — the average
+> generated length over the steady window. An earlier draft divided by the
+> nominal prompt and drew a conclusion from it that does not survive; see below.
+> The slope is unaffected, since a constant x-offset cannot change it.
 
 ctx 2048 has only two below-knee points and is excluded from fitting — which is
 *precisely why* the campaign ran short-context. The knee is
@@ -182,15 +190,29 @@ ctx 2048 has only two below-knee points and is excluded from fitting — which i
 is what made ≥4 rider points reachable at all on PCIe.
 
 `c` grows with context, and **79–83% of the nominal transfer time hides inside
-compute** at every context — a stable, encouraging number. But `c/S` is *not*
-constant: 0.00283 at ctx 256 against 0.00207 at ctx 1024. The short context runs
-27% high, which is the signature of an **S-independent floor inside `c`**.
-Fitting `c = c₀ + k·S` over the three contexts
+compute** at every context — a stable, encouraging number.
+
+**`c/S_eff` is very nearly constant**, spanning only 19% across a 3.3× context
+range and not monotonically. Fitting `c = c₀ + k·S_eff` over the three contexts
 (`paper/model/c_scaling.py` regenerates this whole subsection):
 
 ```
-    c = 0.205 + 1.841e-3 * S        ms/rider     (A100, Qwen-32B)
+    c = 0.059 + 1.841e-3 * S_eff    ms/rider     (A100, Qwen-32B)
 ```
+
+So on the corrected axis `c` is **almost purely proportional to streamed
+bytes**, with an intercept of 0.06 ms/rider — about 8% of `c` at the shortest
+context.
+
+> **What this retracts.** An earlier draft divided by the nominal prompt, got
+> `c/S` falling 37% from the shortest context, and read that as the signature of
+> a context-independent floor inside `c`, quoting an intercept of 0.205. On the
+> measured context the spread is 19% and non-monotonic, and the intercept is
+> 0.059. **These three points therefore carry almost no evidence about the size
+> of the floor.** The floor is real — the layer axis measures it directly at
+> fixed head geometry — but it must be estimated from that axis and not by
+> extrapolating a 3.3× context sweep back to `S = 0`. The selftest now asserts
+> the corrected claim, and it was that assertion failing that caught the error.
 
 ### 3.2 The four components, and only one of them is link-bound
 
@@ -285,19 +307,22 @@ because the invariant share is exactly what decides condition (1):
 
 | route | `c₀` (invariant) | `k` (per token) | ctx 512 |
 |---|---|---|---|
-| three contexts, 3 jobs, direct estimator | 0.205 | 1.841e-3 | 1.147 |
+| three contexts, 3 jobs, direct estimator | 0.059 | 1.841e-3 | 1.002 |
 | 105-point within-job component fit + M3 | 0.645 | 1.255e-3 | 1.288 |
 | measured | — | — | 1.073 |
 
-Route 1 puts 68% less in the floor and 47% more in the slope. Both land within
+Route 1 puts 91% less in the floor and 47% more in the slope, and after the
+`S_eff` correction its floor is small enough that it should not be read as a
+floor estimate at all (§3.1). It remains useful for the *slope*, which is what
+the projection extrapolates, and that is what the sensitivity below tests. Both land within
 7% of the ctx-512 measurement; **they diverge only on extrapolation**, which is
 exactly where the projection lives. Running the verdict under both:
 
 | route / configuration | `c` | `T0/B` | verdict |
 |---|---|---|---|
-| route 1, as built | 9.45 | 3.37 | never pays |
+| route 1, as built | 9.26 | 3.37 | never pays |
 | route 2, as built | 5.20 | 3.37 | never pays |
-| route 1, block+D2H fixed | 0.62 | 3.37 | PAYS from r = 0.8 |
+| route 1, block+D2H fixed | 0.44 | 3.37 | PAYS from r = 0.7 |
 | route 2, block+D2H fixed | 1.17 | 3.37 | PAYS from r = 0.9 |
 
 **Both verdicts are robust**, and the uncertainty pushes the two cases apart
@@ -465,7 +490,7 @@ property, not by the interconnect.**
 **On whether a better interconnect gives better throughput:**
 
 * **As built: no, and not at any bandwidth.** `c` = 5.17 against `T0/B` = 3.37;
-  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 9.45).
+  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 9.26).
 * **With the per-block loop removed and the blocking D2H fixed: yes, and the
   gain is monotone in bandwidth** — 0.88× (PCIe4) → 1.21× (C2C) → 3.46×
   (infinite). C2C is the first point that wins at all.
@@ -540,6 +565,13 @@ them:
    exceeds the budget, full stop" to "`c` exceeds the budget and the knee is too
    narrow for sharing to close the gap", which puts more weight on the link, not
    less.
+0b. **"`c/S` falls, so `c` has a context-independent floor" — retracted.** It
+   came from dividing by the nominal prompt length when what a rider streams is
+   its *current* sequence length, a constant 79 tokens longer here. On the
+   corrected axis the spread is 19% and non-monotonic and the intercept is 0.06,
+   so the context sweep says almost nothing about the floor. The floor itself
+   stands on the layer axis, which measures it directly. Caught by its own
+   selftest assertion.
 1. "Not affine in `r`" (the ramp hypothesis) — **refuted** as to the ramp; the
    rise is the knee crossing. Note this is a separate question from item 0:
    below the knee `c` does not *rise*, but it is mildly sublinear.

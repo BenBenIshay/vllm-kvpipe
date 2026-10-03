@@ -51,6 +51,22 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
     rather than differencing: at r=16 the two disagree by -2.7% because the
     ramp to a full cohort outlasts a short run, and differencing inflates while
     the direct one is immune.
+
+    EFFECTIVE CONTEXT. `ctx` is the PROMPT length, but what a rider streams
+    each step is its CURRENT sequence length, which grows as it generates. The
+    context that c actually scales with is therefore measured, not nominal, and
+    we take it from the bytes the harness reports at r=1:
+
+        S_eff = stream_bytes_per_step(r=1) / b_tok
+
+    Across the four sweeps this comes out a constant ~79 tokens above the
+    prompt (335/591/1103/2127 for 256/512/1024/2048), which is the average
+    generated length over the steady window. The correction leaves the fitted
+    SLOPE untouched -- a constant x-offset cannot change it -- and moves the
+    INTERCEPT by slope*79, from 0.205 to 0.060 ms/rider. That matters for the
+    one claim the intercept carries, namely the size of c's context-independent
+    floor, and it is why the floor is better estimated from the layer axis than
+    by extrapolating this fit to S=0.
     """
     out = {}
     for S in contexts:
@@ -77,12 +93,20 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
                 continue
             xs.append(n)
             ys.append(t - t0)
+        # effective context from the measured bytes, not the nominal prompt
+        r1 = next((r for r in rows if r["riders"] == 1), None)
+        s_eff = None
+        if r1 and r1.get("stream_gb_per_step"):
+            s_eff = r1["stream_gb_per_step"] * 1e9 / Q32_BTOK
         rec = {"n": len(xs), "t0": t0, "riders": xs,
                "knee": (t0 / link_per_rider) if link_per_rider else None,
-               "link_per_rider": link_per_rider}
+               "link_per_rider": link_per_rider,
+               "s_nominal": S, "s_eff": s_eff}
         if len(xs) >= 3:
             F, c, res = _ols(xs, ys)
-            rec.update(F=F, c=c, resid=res, c_over_S=c / S,
+            rec.update(F=F, c=c, resid=res,
+                       c_over_S=c / (s_eff or S),
+                       c_over_S_nominal=c / S,
                        hidden=1.0 - c / link_per_rider)
         out[S] = rec
     return out
@@ -90,7 +114,8 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
 
 def route1(fits):
     """c = c0 + k*S fitted across contexts. Needs >=3 fitted contexts."""
-    pts = [(S, r["c"]) for S, r in sorted(fits.items()) if "c" in r]
+    pts = [(r.get("s_eff") or S, r["c"])
+           for S, r in sorted(fits.items()) if "c" in r]
     if len(pts) < 3:
         raise SystemExit("route 1 needs >=3 fitted contexts, have %d" % len(pts))
     c0, k, _ = _ols([p[0] for p in pts], [p[1] for p in pts])
@@ -152,16 +177,22 @@ def report():
     print(" 3.1  HOW c SCALES WITH CONTEXT   (A100, Qwen-32B, L=64, bs=16)")
     print("=" * 76)
     print(" below-knee points only, direct estimator, data: %s\n" % DATA)
-    print(" %-5s %4s %8s %9s %11s %7s %8s %7s"
-          % ("ctx", "pts", "F", "c", "c/S", "knee", "maxres", "hidden"))
+    print(" %-5s %6s %4s %8s %9s %11s %7s %8s %7s"
+          % ("ctx", "S_eff", "pts", "F", "c", "c/S_eff", "knee", "maxres",
+             "hidden"))
     for S, r in sorted(fits.items()):
         if "c" not in r:
-            print(" %-5d %4d   excluded: below-knee points are only %s"
-                  % (S, r["n"], r["riders"]))
+            print(" %-5d %6s %4d   excluded: below-knee points are only %s"
+                  % (S, "%.0f" % r["s_eff"] if r.get("s_eff") else "-",
+                     r["n"], r["riders"]))
             continue
-        print(" %-5d %4d %8.2f %9.3f %11.6f %7.1f %8.2f %6.0f%%"
-              % (S, r["n"], r["F"], r["c"], r["c_over_S"], r["knee"],
-                 r["resid"], 100 * r["hidden"]))
+        print(" %-5d %6.0f %4d %8.2f %9.3f %11.6f %7.1f %8.2f %6.0f%%"
+              % (S, r["s_eff"], r["n"], r["F"], r["c"], r["c_over_S"],
+                 r["knee"], r["resid"], 100 * r["hidden"]))
+    print()
+    print(" S_eff is the MEASURED streamed context (prompt plus the average")
+    print(" generated length over the steady window), which is what c scales")
+    print(" with. It sits a constant ~79 tokens above the prompt here.")
     c0, k, pts = route1(fits)
     print("\n c/S is NOT constant, which is the signature of an S-independent")
     print(" floor inside c. Fitting c = c0 + k*S over the fitted contexts:")
@@ -239,13 +270,34 @@ def selftest():
     print("  [%s] hidden fraction stable in 70-90%%: %s"
           % ("ok " if good else "BAD", " ".join("%.0f%%" % (100 * h) for h in hs)))
 
-    # c/S must FALL then flatten -- the floor's signature. If it were flat, c
-    # would be purely per-byte and the report's section 3.1 would be wrong.
+    # c/S_eff is NEARLY CONSTANT, and that is the corrected finding.
+    #
+    # An earlier version of this selftest asserted the opposite -- that c/S
+    # FALLS from the shortest context, which it read as the signature of a
+    # context-independent floor inside c. That was an artifact of dividing by
+    # the NOMINAL prompt length. Against the measured streamed context the
+    # spread collapses from 37% to 13% and stops being monotonic, so these
+    # three points carry almost no evidence for a floor: the fitted intercept
+    # is 0.06 ms/rider, about 8% of c at the shortest context.
+    #
+    # Consequence, and it is why this is asserted rather than just noted: the
+    # floor must be estimated from the LAYER axis, which measures the
+    # per-rider-per-layer term directly at fixed head geometry, and NOT by
+    # extrapolating this fit to S=0 across a 3.3x context range.
     rs = [r["c_over_S"] for _, r in sorted(fits.items()) if "c" in r]
-    good = rs[0] > rs[-1] * 1.15
+    spread = max(rs) / min(rs) - 1
+    good = spread < 0.25
     ok &= good
-    print("  [%s] c/S falls %.0f%% from the shortest context (a floor exists)"
-          % ("ok " if good else "BAD", 100 * (rs[0] / rs[-1] - 1)))
+    print("  [%s] c/S_eff spread is only %.0f%% -- c is nearly proportional to "
+          "streamed bytes" % ("ok " if good else "BAD", 100 * spread))
+
+    c0, k, _ = route1(fits)
+    shortest = min((r["c"] for _, r in fits.items() if "c" in r))
+    frac = c0 / shortest
+    good = frac < 0.20
+    ok &= good
+    print("  [%s] route-1 intercept is %.0f%% of the smallest measured c, so it"
+          " cannot estimate the floor" % ("ok " if good else "BAD", 100 * frac))
 
     # THE HEADLINE: both routes must agree on both verdicts
     rows, _, _, _ = verdict_sensitivity()
