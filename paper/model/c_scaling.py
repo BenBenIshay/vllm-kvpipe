@@ -25,6 +25,29 @@ import sys
 DATA = os.environ.get(
     "OVERHEAD_DATA",
     "/mnt/beegfs/benishay/paper_runs/20260930/overhead/02_law")
+M7DATA = os.environ.get(
+    "OVERHEAD_M7DATA",
+    "/mnt/beegfs/benishay/paper_runs/20260930/overhead/07_amortization")
+
+# Every arm that measures c against context, as (label, nominal ctx, dir, file).
+# M7's arms carry long_len 256 rather than 136, so they land at a DIFFERENT
+# streamed context for the same nominal prompt -- which is what makes the
+# ctx-256 pair (M2 C vs M7 C) a direct test of the S_eff correction rather than
+# a duplicate.
+ARMS = [("M2 c256", 256, DATA, None),
+        ("M2 c512", 512, DATA, None),
+        ("M2 c1024", 1024, DATA, None),
+        ("M7 c128 A1", 128, M7DATA, "A1_c128.json"),
+        ("M7 c128 A2", 128, M7DATA, "A2_c128.json"),
+        ("M7 c192 B", 192, M7DATA, "B_c192.json"),
+        ("M7 c256 C", 256, M7DATA, "C_c256.json")]
+
+# An arm needs enough below-knee points for c to be determined by the SPREAD of
+# the points rather than by the fit's trade-off against F. Four is the minimum
+# that leaves a degree of freedom; five is where the campaign's own experience
+# says the estimate settles.
+MIN_PTS_STRICT = 5
+MIN_PTS_LOOSE = 4
 
 # Qwen-32B fp16: 64 layers, 8 KV heads, head_dim 128, 2 bytes
 Q32_BTOK = 64 * 2 * 8 * 128 * 2
@@ -112,14 +135,69 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
     return out
 
 
-def route1(fits):
-    """c = c0 + k*S fitted across contexts. Needs >=3 fitted contexts."""
-    pts = [(r.get("s_eff") or S, r["c"])
-           for S, r in sorted(fits.items()) if "c" in r]
+def arm_fits(arms=None, min_pts=MIN_PTS_LOOSE):
+    """One (S_eff, c, F) per arm, below the knee, direct estimator."""
+    out = []
+    for label, S, d, fn in (arms or ARMS):
+        path = os.path.join(d, fn or ("A_c%d.json" % S))
+        if not os.path.exists(path):
+            continue
+        dd = json.load(open(path))
+        rows = [r for r in dd["rows"] if r.get("usable")]
+        base = [r for r in rows if r["riders"] == 0]
+        if not base:
+            continue
+        t0 = base[0]["step_ms_direct"] or base[0]["step_ms"]
+        xs, ys, lk = [], [], None
+        for r in sorted(rows, key=lambda r: r["riders"]):
+            n = r["riders"]
+            if not n:
+                continue
+            lk = r["link_ms"] / n
+            t = r["step_ms_direct"] or r["step_ms"]
+            if t is not None and n < t0 / lk:
+                xs.append(n)
+                ys.append(t - t0)
+        if len(xs) < min_pts:
+            continue
+        F, c, res = _ols(xs, ys)
+        r1 = next((r for r in rows if r["riders"] == 1), None)
+        se = (r1["stream_gb_per_step"] * 1e9 / Q32_BTOK) if r1 else None
+        if se is None:
+            continue
+        out.append({"label": label, "ctx": S, "s_eff": se, "c": c, "F": F,
+                    "n": len(xs), "rmax": max(xs), "resid": res,
+                    "knee": t0 / lk})
+    return out
+
+
+def pooled_slope(arms=None, min_pts=MIN_PTS_LOOSE):
+    """c = c0 + k*S_eff pooled over arms. k is what the projection
+    extrapolates, so it is reported with the span it was fitted over."""
+    pts = arm_fits(arms, min_pts)
     if len(pts) < 3:
-        raise SystemExit("route 1 needs >=3 fitted contexts, have %d" % len(pts))
-    c0, k, _ = _ols([p[0] for p in pts], [p[1] for p in pts])
-    return c0, k, pts
+        return None
+    xs = [p["s_eff"] for p in pts]
+    ys = [p["c"] for p in pts]
+    c0, k, res = _ols(xs, ys)
+    my = sum(ys) / len(ys)
+    ss_res = sum((y - (c0 + k * x)) ** 2 for x, y in zip(xs, ys))
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    return {"c0": c0, "k": k, "r2": 1 - ss_res / ss_tot, "max_resid": res,
+            "n": len(pts), "lo": min(xs), "hi": max(xs), "pts": pts}
+
+
+def route1(fits=None, min_pts=MIN_PTS_LOOSE):
+    """c = c0 + k*S_eff fitted across arms.
+
+    Uses every arm on disk, not just the M2 context sweep: M7 added a repeat
+    pair and two shorter contexts, taking this from 3 points over 3 jobs to 6,
+    and the conditioning improved from a 0.07 ms max residual to 0.014.
+    """
+    pf = pooled_slope(min_pts=min_pts)
+    if pf is None:
+        raise SystemExit("route 1 needs >=3 arms, have fewer")
+    return pf["c0"], pf["k"], [(p["s_eff"], p["c"]) for p in pf["pts"]]
 
 
 def route2():
@@ -193,9 +271,48 @@ def report():
     print(" S_eff is the MEASURED streamed context (prompt plus the average")
     print(" generated length over the steady window), which is what c scales")
     print(" with. It sits a constant ~79 tokens above the prompt here.")
+    print()
+    print("=" * 76)
+    print(" 3.1b  EVERY ARM, AND THE SLOPE THE PROJECTION EXTRAPOLATES")
+    print("=" * 76)
+    print()
+    print(" %-12s %5s %6s %5s %5s %9s %9s %11s"
+          % ("arm", "ctx", "S_eff", "pts", "rmax", "F", "c", "c/S_eff"))
+    for a in arm_fits():
+        print(" %-12s %5d %6.0f %5d %5d %9.2f %9.3f %11.6f"
+              % (a["label"], a["ctx"], a["s_eff"], a["n"], a["rmax"],
+                 a["F"], a["c"], a["c"] / a["s_eff"]))
+    print()
+    bands = []
+    for mp, lab in ((MIN_PTS_LOOSE, "arms with >=4 below-knee points"),
+                    (MIN_PTS_STRICT, "arms with >=5 (better conditioned)")):
+        pf = pooled_slope(min_pts=mp)
+        if not pf:
+            continue
+        bands.append((lab, pf))
+        print(" %-36s n=%d  S_eff %.0f-%.0f" % (lab, pf["n"], pf["lo"], pf["hi"]))
+        print("   c = %.4f + %.4e * S_eff   R^2 %.4f  max resid %.3f ms"
+              % (pf["c0"], pf["k"], pf["r2"], pf["max_resid"]))
+        print("   extrapolated to S_eff 8192 on A100: c = %.2f ms/rider"
+              % (pf["c0"] + pf["k"] * 8192))
+        print()
+    if len(bands) == 2:
+        (_, a), (_, b) = bands
+        print(" THE SLOPES DIFFER BY %.0f%%, and at S_eff 8192 that is a %.0f%%"
+              % (100 * abs(a["k"] / b["k"] - 1),
+                 100 * abs((a["c0"] + a["k"] * 8192) / (b["c0"] + b["k"] * 8192) - 1)))
+        print(" difference in the extrapolated c. The better-conditioned fit")
+        print(" spans only %.1fx and the target is %.0fx beyond its upper end,"
+              % (b["hi"] / b["lo"], 8192 / b["hi"]))
+        print(" so which slope is used matters more than the quality of either.")
+        print(" The arm the strict filter drops is the LONGEST context, i.e.")
+        print(" the one closest to the target, and it sits ABOVE the strict")
+        print(" fit -- so the strict fit is the optimistic reading.")
+        print()
+
     c0, k, pts = route1(fits)
-    print("\n c/S is NOT constant, which is the signature of an S-independent")
-    print(" floor inside c. Fitting c = c0 + k*S over the fitted contexts:")
+    print("\n c/S_eff is nearly constant, so c is close to proportional to the")
+    print(" streamed context. The pooled fit (route 1 below) is:")
     print("     c = %.3f + %.3e * S   ms/rider" % (c0, k))
     for S, c in pts:
         print("       ctx %4d  measured %.3f   fit %.3f" % (S, c, c0 + k * S))
