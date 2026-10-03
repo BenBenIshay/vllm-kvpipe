@@ -574,6 +574,19 @@ qualitative change is the one that matters: the configuration as implemented
 failed condition~\ref{eq:overhead:nec}, which no interconnect could repair at
 any bandwidth, and it no longer does.
 
+\paragraph{Establishing that the tests can see this.} The end-to-end
+token-identical test passes with the deferred write enabled, but that alone is
+weak evidence: the suite also passes with it disabled, and the failure mode is
+silent, since a missed scatter leaves the mirror stale and the next step's
+refresh streams incorrect KV without raising anything. A test that passes either
+way is insensitive to the change, so we ran a negative control --- suppress the
+deferred scatter, and require the test to \emph{fail}. It does, on all three
+prompts, with divergence of the kind stale history produces. A positive arm runs
+first and must pass, so that an inconclusive negative arm cannot be mistaken for
+a broken environment. The passing result is therefore evidence of correctness
+rather than of insensitivity.
+% src: paper/data/overhead/09_t2/negctl_negative.log @ e8c8435d0
+
 \paragraph{What was deliberately not done.} The deferred scatter could be a
 single operation rather than $2L$ of them, by unifying the per-layer mirrors
 into one pinned allocation with per-layer views. That is worth roughly 0.4\,ms
