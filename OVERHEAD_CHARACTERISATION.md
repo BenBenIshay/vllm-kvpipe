@@ -203,16 +203,45 @@ is what made ≥4 rider points reachable at all on PCIe.
 compute** at every context — a stable, encouraging number.
 
 **`c/S_eff` is very nearly constant**, spanning only 19% across a 3.3× context
-range and not monotonically. Fitting `c = c₀ + k·S_eff` over the three contexts
-(`paper/model/c_scaling.py` regenerates this whole subsection):
+range and not monotonically, so `c` is close to proportional to streamed bytes.
 
-```
-    c = 0.059 + 1.841e-3 * S_eff    ms/rider     (A100, Qwen-32B)
-```
+### 3.1b Every arm, and the slope the projection extrapolates
 
-So on the corrected axis `c` is **almost purely proportional to streamed
-bytes**, with an intercept of 0.06 ms/rider — about 8% of `c` at the shortest
-context.
+M7 added two shorter contexts and a **repeat pair**, taking this fit from three
+points over three jobs to six and extending the rider axis to 16:
+
+| arm | ctx | `S_eff` | pts | r_max | `F` | `c` | `c/S_eff` |
+|---|---|---|---|---|---|---|---|
+| M2 | 256 | 335 | 7 | 12 | 12.07 | 0.726 | 0.002166 |
+| M2 | 512 | 591 | 8 | 8 | 11.85 | 1.073 | 0.001816 |
+| M2 | 1024 | 1103 | 4 | 4 | 10.89 | 2.114 | 0.001917 |
+| M7 A1 | 128 | 267 | 8 | 16 | 11.66 | 0.616 | 0.002309 |
+| M7 A2 | 128 | 267 | 8 | 16 | 12.85 | 0.607 | 0.002274 |
+| M7 B | 192 | 331 | 7 | 12 | 11.56 | 0.699 | 0.002113 |
+
+The A1/A2 pair is the honest error bar on a single arm: **`c` repeats to 1.5%
+and `F` to 10%**, the latter inside the known ±14% job offset. So `c` and `F`
+are well identified even though α is not (§2).
+
+**But pooling them exposes an extrapolation risk the three-point fit hid:**
+
+| filter | n | `S_eff` span | fit | R² | max resid | `c` at 8192 |
+|---|---|---|---|---|---|---|
+| ≥4 below-knee pts | 6 | 267–1103 | `0.113 + 1.783e-3·S_eff` | 0.9934 | 0.093 | **14.72** |
+| ≥5 (better conditioned) | 5 | 267–591 | `0.236 + 1.420e-3·S_eff` | 0.9979 | **0.014** | **11.87** |
+
+The slopes differ by **26%**, which at `S_eff` 8192 is a **24%** difference in
+the extrapolated `c`. The tighter fit has a max residual of 0.014 ms against
+0.093 — but it spans only 2.2× and **the target is 14× beyond its upper end**,
+so which slope is used matters more than the quality of either. And the arm the
+strict filter drops is the **longest context, the one closest to the target**,
+and it sits **17% above** the strict fit. If that is real, `c` grows slightly
+faster than linearly in context and the strict fit is the optimistic reading; it
+is also the least well determined arm, at four below-knee points.
+
+Both slopes give the same verdicts (§4), so nothing moves. It is reported as a
+band with each fit's span beside it, because a slope quoted without its fit
+range is how a 14× extrapolation gets made silently.
 
 > **What this retracts.** An earlier draft divided by the nominal prompt, got
 > `c/S` falling 37% from the shortest context, and read that as the signature of
@@ -315,24 +344,33 @@ the feature pays above ctx ≈2200 on GH200.
 The two routes to `c`'s split disagree, and the disagreement is worth stating
 because the invariant share is exactly what decides condition (1):
 
-| route | `c₀` (invariant) | `k` (per token) | ctx 512 |
-|---|---|---|---|
-| three contexts, 3 jobs, direct estimator | 0.059 | 1.841e-3 | 1.002 |
-| 105-point within-job component fit + M3 | 0.645 | 1.255e-3 | 1.288 |
-| measured | — | — | 1.073 |
+| route | `c₀` | `k` (per token) | x used | `c` on that arm |
+|---|---|---|---|---|
+| six arms pooled, direct estimator (§3.1b) | 0.113 | 1.783e-3 | `S_eff` = 591 | 1.166 |
+| 105-point within-job component fit + M3 | 0.645 | 1.255e-3 | nominal 512 | 1.288 |
+| **measured** | — | — | — | **1.073** |
 
-Route 1 puts 91% less in the floor and 47% more in the slope, and after the
+Each route is evaluated in the x-variable it was **fitted** in: route 1 in the
+measured streamed context, route 2's component coefficients against the nominal
+prompt, since that is what they were regressed on. Mixing the conventions is
+itself an error — it is how a 13% discrepancy briefly appeared in this very
+table — so they are kept apart rather than forced into one column. Note that
+**both overshoot the arm**, by 9% and 20%, so neither is a tight description of
+a single configuration and the sensitivity below is the honest use of them.
+
+Route 1 puts far less in the floor and ~42% more in the slope, and after the
 `S_eff` correction its floor is small enough that it should not be read as a
 floor estimate at all (§3.1). It remains useful for the *slope*, which is what
-the projection extrapolates, and that is what the sensitivity below tests. Both land within
+the projection extrapolates, and that is what the sensitivity below tests —
+noting that route 1's own slope carries the ±26% band of §3.1b. Both land within
 7% of the ctx-512 measurement; **they diverge only on extrapolation**, which is
 exactly where the projection lives. Running the verdict under both:
 
 | route / configuration | `c` | `T0/B` | verdict |
 |---|---|---|---|
-| route 1, as built | 9.26 | 3.37 | never pays |
+| route 1, as built | 8.86 | 3.37 | never pays |
 | route 2, as built | 5.20 | 3.37 | never pays |
-| route 1, block+D2H fixed | 0.44 | 3.37 | PAYS from r = 0.7 |
+| route 1, block+D2H fixed | 0.51 | 3.37 | PAYS from r = 0.7 |
 | route 2, block+D2H fixed | 1.17 | 3.37 | PAYS from r = 0.9 |
 
 **Both verdicts are robust**, and the uncertainty pushes the two cases apart
@@ -487,7 +525,7 @@ property, not by the interconnect.**
 **On whether a better interconnect gives better throughput:**
 
 * **As built: no, and not at any bandwidth.** `c` = 5.17 against `T0/B` = 3.37;
-  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 9.26).
+  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 8.86).
 * **With the per-block loop removed and the blocking D2H fixed: yes, and the
   gain is monotone in bandwidth** — 0.88× (PCIe4) → 1.21× (C2C) → 3.46×
   (infinite). C2C is the first point that wins at all.
