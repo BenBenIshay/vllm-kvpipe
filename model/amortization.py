@@ -141,6 +141,23 @@ def analyse(S, datadir=DATA, nboot=2000, seed=7, fname=None):
     F2, c2, _ = lsq(sub, 1.0)
     drop_r1_pct = 100 * (c2 / c1 - 1)
 
+    # LEAVE-ONE-OUT ON ALPHA. The bootstrap says how much the data constrain
+    # alpha; LOO says whether any SINGLE point is carrying it. These are
+    # different questions and the second one changed the reading: at ctx 128 the
+    # LOO range straddles 1, so the sign of the effect there is not robust,
+    # while at ctx 256 and 512 it does not come near 1.
+    loo = []
+    for i in range(len(pts)):
+        sub = pts[:i] + pts[i + 1:]
+        if len(sub) < 4:
+            continue
+        b = best_alpha(sub)
+        if b:
+            loo.append((pts[i][0], b[0]))
+    loo_alphas = [x for _, x in loo]
+    loo_lo = min(loo_alphas) if loo_alphas else float("nan")
+    loo_hi = max(loo_alphas) if loo_alphas else float("nan")
+
     random.seed(seed)
     boots = []
     for _ in range(nboot):
@@ -158,6 +175,8 @@ def analyse(S, datadir=DATA, nboot=2000, seed=7, fname=None):
         "fstat": fstat, "rejects_affine": fstat > 5.0,
         "residuals": res, "concavity_signature": concave_sig,
         "c_change_dropping_r1_pct": drop_r1_pct,
+        "loo": loo, "loo_lo": loo_lo, "loo_hi": loo_hi,
+        "loo_straddles_1": bool(loo_alphas) and (loo_lo < 1.0 < loo_hi),
         "alpha_median": q(.5), "alpha_ci": (q(.05), q(.95)),
         "p_alpha_lt_1": (sum(1 for x in boots if x < 1.0) / len(boots)) if boots else float("nan"),
     }
@@ -190,6 +209,10 @@ def report(datadir=DATA):
               % "  ".join("r%d:%+.2f" % (k, e) for k, e in a["residuals"]))
         print("   concavity signature (neg both ends, pos middle): %s"
               % ("YES" if a["concavity_signature"] else "no"))
+        print("   leave-one-out alpha %.2f to %.2f -> %s"
+              % (a["loo_lo"], a["loo_hi"],
+                 "STRADDLES 1, sign not robust" if a["loo_straddles_1"]
+                 else "stays on one side of 1"))
         print("   dropping r=1 moves c by %+.1f%% -> %s"
               % (a["c_change_dropping_r1_pct"],
                  "not an endpoint artifact"
@@ -273,6 +296,10 @@ def m7_report(datadir=M7DATA):
         print("    concavity signature: %-3s   dropping r=1 moves c %+.1f%%"
               % ("YES" if a["concavity_signature"] else "no",
                  a["c_change_dropping_r1_pct"]))
+        print("    LOO alpha %.2f to %.2f -> %s"
+              % (a["loo_lo"], a["loo_hi"],
+                 "STRADDLES 1, sign not robust" if a["loo_straddles_1"]
+                 else "stays on one side of 1"))
         print()
 
     if not rows:
@@ -374,6 +401,12 @@ def _selftest(datadir=DATA):
     ok &= good
     print("  [%s] not an r=1 artifact: dropping it moves c by %+.1f%%"
           % ("ok " if good else "BAD", a["c_change_dropping_r1_pct"]))
+
+    # the ctx-512 alpha<1 must be robust to leave-one-out, or it is one point
+    good = not a["loo_straddles_1"] and a["loo_hi"] < 1.0
+    ok &= good
+    print("  [%s] ctx 512 alpha<1 survives leave-one-out (LOO %.2f-%.2f)"
+          % ("ok " if good else "BAD", a["loo_lo"], a["loo_hi"]))
 
     # but the models must agree inside the measured range -- that is what
     # stops alpha from being usable for extrapolation
