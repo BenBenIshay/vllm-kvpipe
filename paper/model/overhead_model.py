@@ -102,6 +102,23 @@ COEFF = {
     # Pre-T1 that column would read ~0.25x. The two arms' per-rider slopes
     # agree to 3% (0.00317 vs 0.00308) while differing 4x in block count
     # throughout, which is what per-RIDER means.
+    # POST-T2, MEASURED. The blocking pageable mirror write was 0.142 ms per
+    # layer (d2h_per_layer_8x128) and 85% of F. T2 made the copy async into
+    # pinned staging and deferred the host-side scatter to the next step behind
+    # one event wait. Bracketed before/after, both arms numerically valid:
+    #
+    #   ctx 512    F 11.48 -> 4.74 ms   saved 6.74, drift 0.19 (35x ratio)
+    #   ctx 2048   F  9.70 -> 4.69 ms   saved 5.01
+    #
+    # per layer on L=64 that is 0.1655 -> 0.0737 mean. Subtracting the 0.026
+    # exposed async host work leaves the D2H part at 0.0477 against 0.142, so
+    # T2 removed 66% of it -- NOT all of it, which matters: Phase 0's 8.47 ms
+    # was the ceiling (that arm skipped the scatter entirely) and T2 realised
+    # 80% of it, the shortfall being the 2L CPU index_copy_ calls it still does.
+    "f_per_layer_post_t2": (0.0737, "ms/layer",
+                            "M9, mean of ctx 512 (0.0741) and ctx 2048 "
+                            "(0.0733); REPLACES d2h_per_layer + exposed, and "
+                            "is 66% off the D2H part rather than all of it"),
     "t1_per_rider": (0.00313, "ms/rider",
                      "M8, mean of T1_c512_bs16 (0.00317, resid 0.00055) and "
                      "T1_c512_bs64 (0.00308, resid 0.00045), 5 rider points "
@@ -170,7 +187,17 @@ Q32 = Model("Qwen-32B fp16", 64, 65.53, 8, 128)
 L70 = Model("Llama-70B fp8", 80, 72.7, 8, 128)
 
 
-def F_ms(m: Model, hw: HW, exposed_per_layer: float, d2h_fixed: bool) -> float:
+def F_ms(m: Model, hw: HW, exposed_per_layer: float, d2h_fixed: bool,
+         t2: bool = False) -> float:
+    """Fixed cost, paid once any rider exists.
+
+    `t2=True` uses the MEASURED post-T2 per-layer cost rather than modelling the
+    mirror write as removed. That distinction matters: `d2h_fixed=True` assumes
+    the whole blocking copy goes away, which no implementation achieves, while
+    T2 measurably removes 66% of it.
+    """
+    if t2:
+        return m.L * COEFF["f_per_layer_post_t2"][0]
     d2h = 0.0 if d2h_fixed else m.d2h_per_layer()
     return m.L * (d2h + exposed_per_layer)
 
@@ -200,11 +227,11 @@ def c_ms(m: Model, hw: HW, S: int, bs: int, d2h_fixed: bool,
 
 def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
                d2h_fixed: bool, bs: int = 16, drop_per_block: bool = False,
-               t1: bool = False) -> dict:
+               t1: bool = False, t2: bool = False) -> dict:
     if b_res is None:
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
-    F = F_ms(m, hw, exposed, d2h_fixed)
+    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2)
     parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     per_resident = t0 / b_res
@@ -225,7 +252,8 @@ def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
 
 def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
          d2h_fixed: bool, b_res: float | None = None, bs: int = 16,
-         drop_per_block: bool = False, t1: bool = False) -> float:
+         drop_per_block: bool = False, t1: bool = False,
+         t2: bool = False) -> float:
     """Throughput gain from admitting r riders on top of B residents.
 
         gain = (1 + r/B) / (1 + (F + c*r)/T0)
@@ -237,7 +265,7 @@ def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
     if b_res is None:
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
-    F = F_ms(m, hw, exposed, d2h_fixed)
+    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2)
     parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     return (1.0 + r / b_res) / (1.0 + (F + c * r) / t0)
@@ -305,6 +333,50 @@ def core_question(S: int = 8192) -> None:
     print(" against T0/B = %.2f. Bandwidth alone cannot satisfy c < T0/B,"
           % inf["t0_over_b"])
     print(" so the verdict as built does not depend on the interconnect.\n")
+
+
+def delivered(S: int = 8192) -> dict:
+    """The projection with T1 and T2 as BUILT AND MEASURED, not as proposed.
+
+    Both coefficients here are measurements on this code: T1's 0.00313 ms/rider
+    from a 5-point rider sweep confirmed by a 4x block-size change, and T2's
+    0.0737 ms/layer from a bracketed before/after. Neither is an estimate of a
+    change that might be made.
+    """
+    m, hw = L70, GH200
+    out = {}
+    for lab, kw in (("as built", {}),
+                    ("T1 only", {"t1": True}),
+                    ("T1 + T2", {"t1": True, "t2": True})):
+        be = break_even(m, hw, S, None, HIDING[2][1], False, **kw)
+        r = min(be["knee"], 64.0)
+        be["gain"] = gain(m, hw, S, r, HIDING[2][1], False, **kw)
+        be["label"] = lab
+        out[lab] = be
+    return out
+
+
+def delivered_table() -> None:
+    d = delivered()
+    print("=" * 78)
+    print(" WHAT WAS BUILT: T1 AND T2 AS MEASURED")
+    print("=" * 78)
+    print()
+    any_v = next(iter(d.values()))
+    print(" Llama-70B fp8, ctx 8192, GH200 C2C 419 GB/s")
+    print(" B_cap %.1f residents, T0 %.1f ms, T0/B %.2f ms, knee %.1f riders"
+          % (any_v["b_res"], any_v["t0"], any_v["t0"] / any_v["b_res"],
+             any_v["knee"]))
+    print()
+    print(" %-12s %8s %8s %9s %9s %s"
+          % ("state", "c", "F", "r_be", "gain", "verdict"))
+    for lab in ("as built", "T1 only", "T1 + T2"):
+        v = d[lab]
+        print(" %-12s %8.3f %8.2f %9s %8.2fx %s"
+              % (lab, v["c"], v["F"],
+                 "-" if v["r_be"] is None else "%.1f" % v["r_be"],
+                 v["gain"], v["verdict"]))
+    print()
 
 
 def projection_table() -> None:
@@ -464,6 +536,27 @@ def _selftest() -> int:
     print("  [%s] the block-table term is now %.5f ms/rider and carries no S"
           % ("ok " if good else "BAD", after["parts"]["per_block"]))
 
+    # T2 IS BUILT AND MEASURED. It must cut F substantially but NOT to the
+    # idealised "d2h_fixed" floor, because it removes 66% of the blocking copy
+    # rather than all of it -- conflating the two would overstate the result.
+    d = delivered()
+    f_built, f_t2 = d["as built"]["F"], d["T1 + T2"]["F"]
+    f_ideal = F_ms(L70, GH200, HIDING[2][1], True)
+    good = f_t2 < 0.6 * f_built and f_t2 > f_ideal
+    ok &= good
+    print("  [%s] T2 cuts F %.1f -> %.1f, above the idealised floor %.1f"
+          % ("ok " if good else "BAD", f_built, f_t2, f_ideal))
+
+    # and the pair must flip the target from losing to paying
+    good = (d["as built"]["r_be"] is None
+            and d["T1 + T2"]["r_be"] is not None
+            and d["T1 + T2"]["r_be"] <= d["T1 + T2"]["knee"])
+    ok &= good
+    print("  [%s] T1+T2 turns the target from 'never pays' into paying from "
+          "r=%.1f (knee %.1f)"
+          % ("ok " if good else "BAD",
+             d["T1 + T2"]["r_be"] or -1, d["T1 + T2"]["knee"]))
+
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
@@ -476,6 +569,7 @@ def main() -> int:
     if a.selftest:
         return _selftest()
     core_question()
+    delivered_table()
     projection_table()
     return 0
 

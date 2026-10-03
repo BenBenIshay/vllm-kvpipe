@@ -14,8 +14,14 @@ The question this campaign existed to answer:
 > **Does a better interconnect, which lets us admit more riders, end up giving
 > better throughput?**
 
-The answer is **yes, but only after two host-side fixes, and as the code stands
-today the interconnect is not what is stopping it.**
+The answer is **yes, but only after two host-side fixes, and at the time this
+was measured the interconnect was not what was stopping it.**
+
+> **Both fixes have since been built and measured — see §9.** `c` at the target
+> is now **1.259 ms** rather than 5.173, and `F` is **5.90** rather than 13.44,
+> so the target has gone from *never pays at any bandwidth* to **paying from 2.8
+> riders at 1.06×**. §1–§9 describe the system as characterised, which is the
+> baseline those changes are measured against; read §10 for the current state.
 
 Concretely, at the paper's own target — Llama-70B fp8, ctx 8192, GH200-class
 HBM, residents set by capacity (7.2, not a chosen 16):
@@ -558,7 +564,154 @@ host loops.
 
 ---
 
-## 9. Provenance
+## 9. What was then built, and what it measured
+
+The campaign was measurement only. Its two named artifacts were then
+implemented, and this section reports what they actually bought — measured on
+this code, not projected.
+
+### How T2 was decided, since two measurements disagreed
+
+`SKIP_D2H` differencing put the blocking mirror write at 9.10 ms (§6), but an
+earlier commit had made exactly that copy asynchronous, measured **1.6 ms**, and
+reverted it on cost. Rather than pick, a **probe arm** priced the
+synchronisation on its own: it keeps both copies and only makes them
+non-blocking into pinned staging, skipping the scatter, so launch count and byte
+volume are held fixed.
+
+| arm | `F` |
+|---|---|
+| `real_a` | 11.31 |
+| **`probe`** (async, no scatter) | **2.84** |
+| `skip` (no write at all) | 1.86 |
+| `real_b` | 11.06 |
+
+```
+real − probe   = 8.47 ms   the synchronisation cost = the realisable prize
+probe − skip   = 0.98 ms   the async copy a correct fix still pays
+real_a − real_b = 0.25 ms  drift, a 33.5× ratio against the effect
+```
+
+So the prize is **8.47 ms, not 1.6**, and the two measurements are of different
+code: the async prefetch chain now puts far more behind the same drain, and the
+per-row host loop that the reverting commit named as its own cost driver has
+since been vectorised away. `c` moved only 14% across the arms, as a per-*layer*
+cost must. The standing rule was to abandon the work below 2 ms; it cleared that
+by 4×.
+
+### T1 — the block-table rebuild, now O(r)
+
+The rebuild did one Python-level tensor element assignment per rider **block**
+per step. The allocator already guarantees each request one contiguous extent
+(and `_issue_runs` already relied on it), so a request's *compact* ids are
+contiguous too and its whole row is one slice assignment from a preallocated
+range. Measured, on the Class A host timer:
+
+| | pre-T1 | post-T1 | |
+|---|---|---|---|
+| ctx 512 | 0.275 ms/rider | **0.00313** | 87× |
+| **ctx 8192 (target)** | **3.917 ms/rider** | **0.00313** | **1234×** |
+
+`bt_ms = 0.0216 + 0.00317·riders`, max residual 0.00055 ms — fitted in *riders*,
+with no block term. **The term lost its dependence on context, which was the
+claim**, and that is shown three ways rather than fitted once:
+
+* **riders**: linear to r = 12, no block term
+* **block size**: a 4× block-count cut (bs 16→64) moves the timer **2–6%** at
+  every rider count, where before it would have moved ~4×; the two arms' slopes
+  agree to 3% while differing 4× in block count throughout
+* **context**: 132 blocks at ctx 2048 against 36 at ctx 512 — a 3.7× change —
+  and the timer is **identical** (0.0240 vs 0.0243 ms)
+
+### T2 — the mirror write, deferred
+
+`write_token` now copies into pinned staging with `non_blocking=True` and the
+host-side scatter is deferred to the next step behind one event wait, so 2·L
+*blocking* copies per step become 2·L async ones. Bracketed before/after, both
+arms numerically valid:
+
+| | `F` blocking | `F` async | saved |
+|---|---|---|---|
+| ctx 512 | 11.48 | **4.74** | **6.74 ms** |
+| ctx 2048 | 9.70 | 4.69 | 5.01 ms |
+
+Bracket drift **0.19 ms** against a 6.74 ms effect, a 35× ratio; `c` spread 16%,
+consistent with a per-layer cost; every row passed the purity gate.
+
+**It realises 80% of Phase 0's 8.47 ms ceiling, and the shortfall is
+principled**: the probe arm skipped the scatter entirely and T2 still performs
+it, just later. Per layer, 0.1655 → 0.0737 ms, so after subtracting the 0.026
+of exposed async host work the blocking-D2H part goes 0.142 → 0.048 — **T2
+removes 66% of it, not all of it.** The model carries that as its own
+coefficient rather than reusing the idealised "D2H removed" figure, and a
+selftest asserts the post-T2 `F` stays *above* that floor so the two cannot be
+conflated.
+
+### The delivered projection
+
+Llama-70B fp8, ctx 8192, GH200 at the measured 419 GB/s; 7.2 residents from
+capacity, `T0/B` = 3.37 ms, knee 3.8 riders:
+
+| state | `c` | `F` | break-even | gain | verdict |
+|---|---|---|---|---|---|
+| as built | 5.173 | 13.44 | — | 0.65× | never pays: `c` ≥ `T0/B` |
+| **T1 only** | **1.259** | 13.44 | 6.4 | 0.87× | break-even past the knee |
+| **T1 + T2** | **1.259** | **5.90** | **2.8** | **1.06×** | **pays from r = 2.8** |
+
+Three things this says that the pre-implementation projection did not.
+
+1. **T1 alone is not enough.** It fixes condition (1) — `c` goes under the
+   budget — but break-even then lands at 6.4 riders against a knee of 3.8. The
+   pair is required; neither alone turns the target positive.
+2. **The gain is 1.06×, not the 1.21× projected in §5.** That projection assumed
+   the blocking D2H went away entirely. Measured, 34% of it remains, `F` = 5.90
+   still dominates, and at a knee of only 3.8 riders there is no room to amortise
+   it. The optimistic row of §5 was optimistic by exactly the amount T2 does not
+   remove.
+3. **It is now positive rather than impossible**, which is the qualitative
+   change: the as-built case failed condition (1), which no interconnect could
+   fix at any bandwidth (§5). That is no longer the situation.
+
+### Verification
+
+| check | result |
+|---|---|
+| `run_suite.sh` with T2 on | **9/9**, including the token-identical end-to-end test |
+| `run_suite.sh` with T2 off | 9/9 — the baseline, and see the caveat below |
+| `build_step_equiv_test.py` | **18/18**: 14 T1 cases bitwise against the pre-change algorithm (carried verbatim so it cannot drift), plus 4 for T2 |
+| fast path actually taken | `build_fast_path: 1` on every recorded step inside the real engine |
+| purity gate | every retained row; one arm discarded in full, see below |
+| `overhead_model.py` | 12/12, including two assertions that T2 must cut `F` substantially but stay above the idealised floor |
+
+**The suite passing with T2 both on and off does not by itself show the suite
+could *catch* a T2 bug**, and T2's failure mode is silent — a missed flush leaves
+the mirror stale, `_issue_runs` streams wrong KV at the next step, and tokens
+come out quietly wrong rather than the run crashing. A negative control that
+suppresses the flush and *requires* the token-identical test to fail is
+therefore part of the evidence, and is in flight at the time of writing. Until
+it reports, the claim here is that the suite passes with T2 on — not that it
+would have caught the bug.
+
+**One arm was discarded entirely.** At ctx 2048 with `block_size` 64 the gate
+rejected all three rows for prefill leakage: block rounding inflates each
+request's allocation from 2256 to 2304 tokens, 16 residents then need 36,864
+against a pool between the two, and it tips into eviction and recompute. Its own
+baseline shows it (61.42 ms against 53.76 at bs 16). So the published ctx-2048
+configuration has no headroom for a coarser block size either, not only none for
+longer sequences. Nothing here rests on that arm; it was the fourth and
+redundant confirmation of T1.
+
+### What was deliberately not built
+
+The proposal's unified-mirror layout — one pinned allocation per K/V with
+per-layer views, so the deferred scatter is a single `index_copy_` instead of
+2·L. It is worth roughly 0.4 ms of an ~8 ms win and is the only structural
+change in the proposal, touching every `host_k` call site. Skipped as a poor
+risk trade; available as a follow-up if that 0.4 ms ever matters.
+
+---
+
+## 10. Provenance
 
 * Model + projection: `paper/model/overhead_model.py` (`--selftest`, 8 checks,
   PASS). `core_question()` prints §0 and §5; `projection_table()` prints the
