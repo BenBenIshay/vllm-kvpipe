@@ -1,0 +1,638 @@
+{
+  "fit": {
+    "per_rider_ms": 22.214354103585656,
+    "knee_riders": 2.4295961329699742,
+    "overhead_ms": 16.946185591223184,
+    "compute_step_ms": 53.97190882649738,
+    "r_best": 2,
+    "gain_at_r_best": 0.8561763810539954
+  },
+  "model": "Qwen/Qwen2.5-32B-Instruct",
+  "ctx": 2048,
+  "batch": 16,
+  "link_gbps": 25.1,
+  "async": true,
+  "short_len": 8,
+  "long_len": 136,
+  "connector": false,
+  "rig": "co_located_local_prefill",
+  "force_riders": true,
+  "dtype": "float16",
+  "repeats": 3,
+  "gpu_mem_util": 0.9,
+  "block_size": 16,
+  "k_window": 4,
+  "xfer_mode": "real",
+  "rungd_layers": 0,
+  "numerically_valid": true,
+  "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
+  "n_rows_usable": 0,
+  "n_rows": 4,
+  "rows": [
+    {
+      "riders": 0,
+      "step_ms": 53.97190882649738,
+      "stream_gb_per_step": 0.0,
+      "writeback_gb_per_step": 0.0,
+      "nominal_gb_per_step": 0.0,
+      "h2d_launches_per_step": 0.0,
+      "tiers": {
+        "hbm": 16
+      },
+      "usable": false,
+      "n_reps": 3,
+      "n_impure": 3,
+      "reps": [
+        {
+          "riders_requested": 0,
+          "step_ms": 53.97190882649738,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 140,
+              "n_steady": 134,
+              "prefill_steps": 5,
+              "prefill_tokens": 32749,
+              "max_waiting": 12,
+              "running_min": 16,
+              "running_max": 16,
+              "running_mode": 16,
+              "hbm_max": 16,
+              "cpu_max": 0,
+              "hbm_mode": 16,
+              "cpu_mode": 0
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 0.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 0.0,
+          "h2d_launches_per_step": 0.0,
+          "tiers_short": {
+            "hbm": 16
+          },
+          "tiers_long": {
+            "hbm": 16
+          },
+          "wall_short_s": 10.34026780538261,
+          "wall_long_s": 17.248672135174274
+        },
+        {
+          "riders_requested": 0,
+          "step_ms": 54.02826159843244,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 140,
+              "n_steady": 134,
+              "prefill_steps": 5,
+              "prefill_tokens": 32749,
+              "max_waiting": 12,
+              "running_min": 16,
+              "running_max": 16,
+              "running_mode": 16,
+              "hbm_max": 16,
+              "cpu_max": 0,
+              "hbm_mode": 16,
+              "cpu_mode": 0
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 0.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 0.0,
+          "h2d_launches_per_step": 0.0,
+          "tiers_short": {
+            "hbm": 16
+          },
+          "tiers_long": {
+            "hbm": 16
+          },
+          "wall_short_s": 10.4207126442343,
+          "wall_long_s": 17.33633012883365
+        },
+        {
+          "riders_requested": 0,
+          "step_ms": 53.65158966742456,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 140,
+              "n_steady": 134,
+              "prefill_steps": 5,
+              "prefill_tokens": 32749,
+              "max_waiting": 12,
+              "running_min": 16,
+              "running_max": 16,
+              "running_mode": 16,
+              "hbm_max": 16,
+              "cpu_max": 0,
+              "hbm_mode": 16,
+              "cpu_mode": 0
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 32749 tokens over 5 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=12 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 0.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 0.0,
+          "h2d_launches_per_step": 0.0,
+          "tiers_short": {
+            "hbm": 16
+          },
+          "tiers_long": {
+            "hbm": 16
+          },
+          "wall_short_s": 10.4345658197999,
+          "wall_long_s": 17.301969297230244
+        }
+      ],
+      "dT_ms": 0.0,
+      "dT_per_rider_ms": 0.0,
+      "link_ms": 0.0,
+      "eta": NaN
+    },
+    {
+      "riders": 2,
+      "step_ms": 70.91809441772057,
+      "stream_gb_per_step": 1.115160576,
+      "writeback_gb_per_step": 0.0,
+      "nominal_gb_per_step": 1.115160576,
+      "h2d_launches_per_step": 256.0,
+      "tiers": {
+        "hbm": 16,
+        "cpu": 2
+      },
+      "usable": false,
+      "n_reps": 3,
+      "n_impure": 3,
+      "reps": [
+        {
+          "riders_requested": 2,
+          "step_ms": 25.57972962677013,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 143,
+              "n_steady": 137,
+              "prefill_steps": 6,
+              "prefill_tokens": 36843,
+              "max_waiting": 14,
+              "running_min": 7,
+              "running_max": 18,
+              "running_mode": 18,
+              "hbm_max": 16,
+              "cpu_max": 2,
+              "hbm_mode": 16,
+              "cpu_mode": 2
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 1115160576.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 1115160576.0,
+          "h2d_launches_per_step": 256.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "wall_short_s": 18.078975716605783,
+          "wall_long_s": 21.35318110883236
+        },
+        {
+          "riders_requested": 2,
+          "step_ms": 70.61253962456249,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 143,
+              "n_steady": 137,
+              "prefill_steps": 6,
+              "prefill_tokens": 36843,
+              "max_waiting": 14,
+              "running_min": 7,
+              "running_max": 18,
+              "running_mode": 18,
+              "hbm_max": 16,
+              "cpu_max": 2,
+              "hbm_mode": 16,
+              "cpu_mode": 2
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 1115160576.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 1115160576.0,
+          "h2d_launches_per_step": 256.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "wall_short_s": 12.303969517350197,
+          "wall_long_s": 21.342374589294195
+        },
+        {
+          "riders_requested": 2,
+          "step_ms": 71.22364921087865,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 143,
+              "n_steady": 137,
+              "prefill_steps": 6,
+              "prefill_tokens": 36843,
+              "max_waiting": 14,
+              "running_min": 7,
+              "running_max": 18,
+              "running_mode": 18,
+              "hbm_max": 16,
+              "cpu_max": 2,
+              "hbm_mode": 16,
+              "cpu_mode": 2
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 36843 tokens over 6 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=14 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 1115160576.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 1115160576.0,
+          "h2d_launches_per_step": 256.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 2
+          },
+          "wall_short_s": 12.333220468834043,
+          "wall_long_s": 21.44984756782651
+        }
+      ],
+      "dT_ms": 16.946185591223184,
+      "dT_per_rider_ms": 8.473092795611592,
+      "link_ms": 44.42870820717131,
+      "eta": 0.6185757751001215
+    },
+    {
+      "riders": 4,
+      "step_ms": 101.16918322455604,
+      "stream_gb_per_step": 2.28950016,
+      "writeback_gb_per_step": 0.0,
+      "nominal_gb_per_step": 2.28950016,
+      "h2d_launches_per_step": 526.0,
+      "tiers": {
+        "hbm": 16,
+        "cpu": 4
+      },
+      "usable": false,
+      "n_reps": 3,
+      "n_impure": 3,
+      "reps": [
+        {
+          "riders_requested": 4,
+          "step_ms": 101.16918322455604,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 40937 tokens over 8 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 149,
+              "n_steady": 143,
+              "prefill_steps": 8,
+              "prefill_tokens": 40937,
+              "max_waiting": 16,
+              "running_min": 2,
+              "running_max": 20,
+              "running_mode": 20,
+              "hbm_max": 16,
+              "cpu_max": 4,
+              "hbm_mode": 16,
+              "cpu_mode": 4
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 40937 tokens over 7 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 2289500160.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 2289500160.0,
+          "h2d_launches_per_step": 526.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 4
+          },
+          "wall_short_s": 13.750207690522075,
+          "wall_long_s": 26.699863143265247
+        },
+        {
+          "riders_requested": 4,
+          "step_ms": 100.67382709530648,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 40937 tokens over 8 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 149,
+              "n_steady": 143,
+              "prefill_steps": 8,
+              "prefill_tokens": 40937,
+              "max_waiting": 16,
+              "running_min": 2,
+              "running_max": 20,
+              "running_mode": 20,
+              "hbm_max": 16,
+              "cpu_max": 4,
+              "hbm_mode": 16,
+              "cpu_mode": 4
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 40937 tokens over 7 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 2289500160.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 2289500160.0,
+          "h2d_launches_per_step": 526.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 4
+          },
+          "wall_short_s": 13.81363452039659,
+          "wall_long_s": 26.69988438859582
+        },
+        {
+          "riders_requested": 4,
+          "step_ms": 102.12700514239259,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 40937 tokens over 8 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 149,
+              "n_steady": 143,
+              "prefill_steps": 8,
+              "prefill_tokens": 40937,
+              "max_waiting": 16,
+              "running_min": 2,
+              "running_max": 20,
+              "running_mode": 20,
+              "hbm_max": 16,
+              "cpu_max": 4,
+              "hbm_mode": 16,
+              "cpu_mode": 4
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 40937 tokens over 7 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=16 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 2289500160.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 2289500160.0,
+          "h2d_launches_per_step": 526.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 4
+          },
+          "wall_short_s": 13.707157652825117,
+          "wall_long_s": 26.77941431105137
+        }
+      ],
+      "dT_ms": 47.19727439805865,
+      "dT_per_rider_ms": 11.799318599514663,
+      "link_ms": 91.21514581673307,
+      "eta": 0.4825719569326118
+    },
+    {
+      "riders": 6,
+      "step_ms": 152.32304633536842,
+      "stream_gb_per_step": 3.463839744,
+      "writeback_gb_per_step": 0.0,
+      "nominal_gb_per_step": 3.463839744,
+      "h2d_launches_per_step": 796.0,
+      "tiers": {
+        "hbm": 16,
+        "cpu": 6
+      },
+      "usable": false,
+      "n_reps": 3,
+      "n_impure": 3,
+      "reps": [
+        {
+          "riders_requested": 6,
+          "step_ms": 152.32304633536842,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 45031 tokens over 10 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 155,
+              "n_steady": 149,
+              "prefill_steps": 10,
+              "prefill_tokens": 45031,
+              "max_waiting": 18,
+              "running_min": 2,
+              "running_max": 22,
+              "running_mode": 22,
+              "hbm_max": 16,
+              "cpu_max": 6,
+              "hbm_mode": 16,
+              "cpu_mode": 6
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 45030 tokens over 8 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 3463839744.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 3463839744.0,
+          "h2d_launches_per_step": 796.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 6
+          },
+          "wall_short_s": 15.016077306121588,
+          "wall_long_s": 34.513427237048745
+        },
+        {
+          "riders_requested": 6,
+          "step_ms": 152.10633304377552,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 45031 tokens over 10 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 155,
+              "n_steady": 149,
+              "prefill_steps": 10,
+              "prefill_tokens": 45031,
+              "max_waiting": 18,
+              "running_min": 2,
+              "running_max": 22,
+              "running_mode": 22,
+              "hbm_max": 16,
+              "cpu_max": 6,
+              "hbm_mode": 16,
+              "cpu_mode": 6
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 45030 tokens over 8 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 3463839744.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 3463839744.0,
+          "h2d_launches_per_step": 796.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 6
+          },
+          "wall_short_s": 15.05899048037827,
+          "wall_long_s": 34.52860110998154
+        },
+        {
+          "riders_requested": 6,
+          "step_ms": 153.86492227844428,
+          "purity": {
+            "ok": false,
+            "long": {
+              "ok": false,
+              "violations": [
+                "prefill leaked into the window: 45031 tokens over 10 steps (need --connector for decode-node emulation)",
+                "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+              ],
+              "n_steps": 155,
+              "n_steady": 149,
+              "prefill_steps": 10,
+              "prefill_tokens": 45031,
+              "max_waiting": 18,
+              "running_min": 2,
+              "running_max": 22,
+              "running_mode": 22,
+              "hbm_max": 16,
+              "cpu_max": 6,
+              "hbm_mode": 16,
+              "cpu_mode": 6
+            },
+            "short_contamination": [
+              "prefill leaked into the window: 45030 tokens over 8 steps (need --connector for decode-node emulation)",
+              "requests queued: max_waiting=18 (wall time includes queue drain, so the step estimate is not a step)"
+            ]
+          },
+          "stream_bytes_per_step": 3463839744.0,
+          "writeback_bytes_per_step": 0.0,
+          "nominal_bytes_per_step": 3463839744.0,
+          "h2d_launches_per_step": 796.0,
+          "tiers_short": {
+            "hbm": 16,
+            "cpu": 3
+          },
+          "tiers_long": {
+            "hbm": 16,
+            "cpu": 6
+          },
+          "wall_short_s": 14.902302779257298,
+          "wall_long_s": 34.597012830898166
+        }
+      ],
+      "dT_ms": 98.35113750887103,
+      "dT_per_rider_ms": 16.391856251478504,
+      "link_ms": 138.00158342629481,
+      "eta": 0.2873187751400017
+    }
+  ]
+}

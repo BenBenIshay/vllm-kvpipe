@@ -1,5 +1,28 @@
 # Overhead characterisation — live progress log
 
+> **CAMPAIGN COMPLETE (M0–M6). The answer is in
+> `paper/OVERHEAD_CHARACTERISATION.md`, mirrored next to this file.**
+>
+> This log is chronological and weighted toward the `F`/D2H discovery, which
+> buried the core question. The report is organised the other way round, with
+> `c` as the spine. The short version:
+>
+> * `c` is **constant in `r`** (no superlinearity, no `r_max` in range) and
+>   **affine in `S`** with a floor — `c = 0.205 + 1.841e-3·S` ms/rider on
+>   A100/Qwen-32B.
+> * `c` has four components and **a faster link divides only one of them.** At
+>   ctx 512 on PCIe that one is ~half of `c`; at ctx 8192 on C2C it is **9.2%**,
+>   because per-block host work scales as `S` while the link term scales as
+>   `S/X`.
+> * Throughput needs `c < T0/B` **before** `F` matters at all. As built,
+>   `c` = 5.17 against `T0/B` = 3.37, and **an infinite link still leaves 4.70**
+>   — so no interconnect wins as the code stands.
+> * Remove `build_step`'s per-block loop and `write_token`'s blocking D2H and
+>   bandwidth converts into throughput monotonically: 0.88× (PCIe4) → **1.21×
+>   (C2C)** → 3.46× (infinite). **C2C is the first bandwidth point that wins.**
+> * What the link really buys is **the knee** (`r* ∝ X`), not the per-rider
+>   bandwidth term: PCIe6 satisfies `c < T0/B` and still loses on reachability.
+
 Campaign: decompose `F` (the per-step cost of using the host path) into its
 static / per-rider / per-byte / per-block parts, then project it onto NVLink-C2C.
 Plan: `~/.claude/plans/fluttering-dreaming-kite.md`. Measurement only — no
