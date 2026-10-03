@@ -30,6 +30,24 @@ import torch
 from vllm.v1.hybrid_phase_timers import PT
 
 
+def _runs_from_sorted(srt: list[int]) -> list[tuple[int, int, int]]:
+    """Maximal contiguous runs of a SORTED block list, as
+    (host_start, compact_start, length). Correct for any allocation pattern;
+    contiguity only makes the runs longer."""
+    runs: list[tuple[int, int, int]] = []
+    if not srt:
+        return runs
+    start = prev = srt[0]
+    cstart = 0
+    for i, hb in enumerate(srt[1:], 1):
+        if hb != prev + 1:
+            runs.append((start, cstart, prev - start + 1))
+            start, cstart = hb, i
+        prev = hb
+    runs.append((start, cstart, prev - start + 1))
+    return runs
+
+
 class RungdHostPool:
     def __init__(
         self,
@@ -166,13 +184,48 @@ class RungdHostPool:
             print("*** RungdHostPool: SKIP_D2H=1 -- host mirror not updated, "
                   "OUTPUT IS NUMERICALLY INVALID. Timing measurement only.",
                   flush=True)
+        # PHASE 0 PROBE, timing only. SKIP_D2H above prices the mirror write
+        # by removing it, which bounds the prize from ABOVE because it also
+        # removes the CPU scatter that any correct fix must still do. This arm
+        # instead keeps the copy and only makes it NON-BLOCKING -- same launch
+        # count, same bytes, pinned destination -- and skips the scatter. So
+        #
+        #   real  - probe  = the SYNCHRONISATION cost, i.e. the realisable prize
+        #   probe - skip   = the async copy plus scatter a fix still pays
+        #
+        # which is the number that decides whether the real fix is worth its
+        # ordering risk. Two measurements disagree about it: SKIP_D2H
+        # differencing says 9.10 ms on this code, while commit c609d93c7 made
+        # this copy async, measured 1.6 ms and reverted on cost. They measure
+        # different code -- the async prefetch chain now puts more behind the
+        # same drain, and the per-row Python loop that commit named as its cost
+        # driver has since been vectorised away.
+        #
+        # The mirror goes stale, so this is numerically invalid by construction
+        # and double-gated like the layer-subset knob.
+        self._d2h_probe = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_PROBE", "0") == "1"
+            and _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_PROBE_UNSAFE", "0") == "1"
+        )
+        if _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_PROBE", "0") == "1" \
+                and not self._d2h_probe:
+            raise RuntimeError(
+                "VLLM_KVPIPE_RUNGD_D2H_PROBE=1 also needs "
+                "VLLM_KVPIPE_RUNGD_D2H_PROBE_UNSAFE=1: it leaves the host "
+                "mirror stale and the output numerically invalid."
+            )
+        if self._d2h_probe:
+            print("*** RungdHostPool: D2H_PROBE=1 -- mirror write is async "
+                  "into pinned staging and NOT scattered. OUTPUT IS "
+                  "NUMERICALLY INVALID. Timing measurement only.", flush=True)
+        self._probe_k: torch.Tensor | None = None
+        self._probe_v: torch.Tensor | None = None
         self._async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_ASYNC", "0") == "1"
             and self.k >= 2 and torch.cuda.is_available()
         )
         self._copy_stream = torch.cuda.Stream() if self._async else None
         self._events: dict[int, torch.cuda.Event] = {}
-        self._active_host_cpu: torch.Tensor | None = None
         self.free_list: list[int] = list(range(self.h_max))
         # Item 1b: per-request CONTIGUOUS host extents (DirectKV's pool is
         # "contiguous per-request, no scatter/gather" for exactly this reason).
@@ -204,9 +257,14 @@ class RungdHostPool:
         # Resident tensors (layer_name -> [2, nblk, bs, nkv, hd]) for seeding.
         self.resident: dict[str, torch.Tensor] = {}
         # Per-step state (set by build_step).
-        self._active_host: list[int] = []            # sorted host block ids
         self._compact: dict[int, int] = {}           # host block id -> [0:W)
+        # req_id -> (host_base, compact_base), the extent fast path's whole
+        # per-request mapping. Empty when the general path ran.
+        self._req_cbase: dict[str, tuple[int, int]] = {}
         self._w_cur = 0
+        # Preallocated so a block-table row is a VIEW, not an allocation. It
+        # only ever needs to index the rolling region, which is w_max blocks.
+        self._ar = torch.arange(self.w_max, dtype=torch.int32)
 
     # -- allocation ---------------------------------------------------------
     def ensure_req(self, req_id: str, num_logical_blocks: int) -> list[int]:
@@ -484,61 +542,165 @@ class RungdHostPool:
                 for ln in self.layers}
 
     # -- per-step compaction ------------------------------------------------
+    @property
+    def _active_host(self) -> list[int]:
+        """The sorted active host-block ids, materialised on demand.
+
+        This used to be built eagerly every step, along with a `torch.tensor`
+        copy of it that nothing ever read. Both were O(W) per step -- that is,
+        per rider BLOCK -- which is exactly the cost this path was rebuilt to
+        remove, so they are now derived from the runs only if someone asks.
+        """
+        out: list[int] = []
+        for hs, _cs, ln in self._runs:
+            out.extend(range(hs, hs + ln))
+        return out
+
+    @_active_host.setter
+    def _active_host(self, value: list[int]) -> None:
+        # Kept so the pre-existing __init__ assignment and any direct setter
+        # still work; the runs are the real state.
+        self._runs = _runs_from_sorted(list(value))
+
+    def _plan_extents(self, active_req_ids: list[str]):
+        """(runs, per-request compact bases, W) in O(r log r), or None.
+
+        Returns None when the fast path does not apply, which is the signal to
+        fall back to the general block-by-block construction.
+
+        The fast path rests on a guarantee the allocator already makes and that
+        `_issue_runs` already relies on: with `blocks_per_req > 0` a request is
+        given ONE contiguous extent, `base .. base+n-1` (see `ensure_req`). Two
+        consequences follow, and they are what make this O(r) instead of
+        O(r*S/bs):
+
+          * the sorted union of the cohort's blocks is the concatenation of r
+            sorted ranges, so it never has to be enumerated block by block; and
+          * a request's COMPACT ids are then also contiguous, so its whole
+            block-table row is one arithmetic range rather than one dictionary
+            lookup per block.
+
+        Contiguity and disjointness are CHECKED, not assumed. Disjointness
+        matters because the old code took a set union: if two requests shared a
+        block, deduplication would make W smaller than the sum of the extent
+        lengths, and the compact numbering computed here would drift from the
+        numbering the dictionary produced.
+        """
+        exts: list[tuple[int, int, int]] = []      # (host_start, length, row)
+        for row, rid in enumerate(active_req_ids):
+            blks = self.req_blocks.get(rid)
+            if not blks:
+                return None                        # a cohort member with no
+                                                   # blocks: let the general
+                                                   # path handle the shape
+            n = len(blks)
+            if blks[-1] - blks[0] != n - 1:
+                return None                        # not one ascending run
+            exts.append((blks[0], n, row))
+        if not exts:
+            return [], {}, 0
+        exts.sort()
+        runs: list[tuple[int, int, int]] = []
+        bases: dict[int, int] = {}                 # row -> compact base
+        w = 0
+        for hs, ln, row in exts:
+            if w and hs < runs[-1][0] + runs[-1][2]:
+                return None                        # overlapping extents
+            bases[row] = w
+            if runs and hs == runs[-1][0] + runs[-1][2]:
+                hs0, cs0, ln0 = runs[-1]           # adjacent: extend the run
+                runs[-1] = (hs0, cs0, ln0 + ln)
+            else:
+                runs.append((hs, w, ln))
+            w += ln
+        return runs, bases, w
+
     def build_step(
         self, active_req_ids: list[str], seq_lens: list[int]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compact the active cohort's host blocks into [0:W) and return
         (block_table [n_req, max_blk], seqused [n_req]) in active order."""
         _t = PT.now()
-        host_set: set[int] = set()
-        for r in active_req_ids:
-            host_set.update(self.req_blocks.get(r, []))
-        self._active_host = sorted(host_set)
-        self._compact = {b: i for i, b in enumerate(self._active_host)}
-        self._w_cur = len(self._active_host)
-        # Fresh per-step: the compact host-block set + a clean prefetch chain.
-        self._active_host_cpu = torch.tensor(self._active_host, dtype=torch.long)
         self._events = {}
-        # Maximal contiguous runs -> contiguous slice copies replace the gather.
-        runs: list[tuple[int, int, int]] = []
-        if self._active_host:
-            start = prev = self._active_host[0]
-            cstart = 0
-            for i, hb in enumerate(self._active_host[1:], 1):
-                if hb != prev + 1:
-                    runs.append((start, cstart, prev - start + 1))
-                    start, cstart = hb, i
-                prev = hb
-            runs.append((start, cstart, prev - start + 1))
-        self._runs = runs
+        n_req = len(active_req_ids)
+        plan = self._plan_extents(active_req_ids)
+        fast = plan is not None
+
+        if fast:
+            self._runs, row_cbase, self._w_cur = plan
+            # compact_of() needs (host_base -> compact_base) per request; with
+            # contiguous extents that is all it needs, so the per-BLOCK
+            # dictionary is not built at all on this path.
+            self._compact = {}
+            self._req_cbase = {
+                rid: (self.req_blocks[rid][0], row_cbase[row])
+                for row, rid in enumerate(active_req_ids)
+            }
+        else:
+            host_set: set[int] = set()
+            for r in active_req_ids:
+                host_set.update(self.req_blocks.get(r, []))
+            srt = sorted(host_set)
+            self._compact = {b: i for i, b in enumerate(srt)}
+            self._req_cbase = {}
+            self._w_cur = len(srt)
+            self._runs = _runs_from_sorted(srt)
+
         if self._w_cur > self.w_max:
             raise RuntimeError(
                 f"rolling region W={self._w_cur} exceeds w_max={self.w_max}"
             )
         max_blk = max((len(self.req_blocks.get(r, [])) for r in active_req_ids),
                       default=1)
-        # NAMED ARTIFACT: one Python-level tensor element assignment per rider
-        # block, every step (R=8 at ctx 2048 / block 16 is 1024 __setitem__
-        # calls). Timed separately because it is per-BLOCK host work that a
-        # faster link does not touch and that a vectorised build would remove,
-        # so the projection must not carry it as if it were intrinsic.
+
+        # WAS A NAMED ARTIFACT: one Python-level tensor element assignment per
+        # rider block, every step -- 1024 __setitem__ calls at R=8 / ctx 2048 /
+        # block 16, measured at 0.00765 ms per block, and 3.9 ms per rider at
+        # ctx 8192, which was 76% of the whole per-rider cost at the projection
+        # target. The fast path below is one slice assignment per REQUEST, so
+        # the term loses its dependence on context rather than shrinking by a
+        # constant: O(r) instead of O(r*S/bs).
         _tbt = PT.now()
-        bt = torch.zeros(len(active_req_ids), max_blk, dtype=torch.int32)
-        for row, r in enumerate(active_req_ids):
-            for j, hb in enumerate(self.req_blocks.get(r, [])):
-                bt[row, j] = self._compact[hb]
+        bt = torch.zeros(n_req, max_blk, dtype=torch.int32)
+        if fast:
+            # `self._ar` is a preallocated arange, so the row is a VIEW and the
+            # assignment allocates nothing.
+            for row, rid in enumerate(active_req_ids):
+                n = len(self.req_blocks[rid])
+                cb = row_cbase[row]
+                bt[row, :n] = self._ar[cb:cb + n]
+        else:
+            # General path: still O(blocks), but built as Python ints and
+            # handed to torch ONCE rather than one tensor __setitem__ per
+            # block, which is the expensive part.
+            cm = self._compact
+            rows = [[cm[hb] for hb in self.req_blocks.get(r, ())]
+                    for r in active_req_ids]
+            for row, vals in enumerate(rows):
+                if vals:
+                    bt[row, :len(vals)] = torch.tensor(vals, dtype=torch.int32)
         PT.add("build_step_bt_python", _tbt)
         seq = torch.tensor(seq_lens, dtype=torch.int32)
-        PT.context(n_active=len(active_req_ids), w_blocks=self._w_cur,
+        PT.context(n_active=n_req, w_blocks=self._w_cur,
                    n_runs=len(self._runs), max_blk=int(max_blk),
                    layers=len(self.layers), block_size=self.block_size,
-                   xfer_mode=self._xfer_mode)
+                   xfer_mode=self._xfer_mode, build_fast_path=int(fast))
         PT.add("build_step", _t)
         return bt, seq
 
     def compact_of(self, req_id: str, position: int) -> tuple[int, int]:
-        """(compact rolling block id, offset) for a token position of a req."""
-        hb = self.req_blocks[req_id][position // self.block_size]
+        """(compact rolling block id, offset) for a token position of a req.
+
+        Called once per rider per step from the runner, so it is on the hot
+        path. On the extent fast path it is arithmetic: the request's blocks
+        are contiguous and so are its compact ids, so the compact id is the
+        request's compact base plus the block offset within the request.
+        """
+        j = position // self.block_size
+        cb = self._req_cbase.get(req_id)
+        if cb is not None:
+            return cb[1] + j, position % self.block_size
+        hb = self.req_blocks[req_id][j]
         return self._compact[hb], position % self.block_size
 
     # -- per-layer streaming + write ---------------------------------------
@@ -686,6 +848,25 @@ class RungdHostPool:
         PT.add("stream_layer", _t)
         return kslot, vslot
 
+    def _probe_staging(self, like: torch.Tensor):
+        """Pinned staging for the probe arm, allocated once and grown only.
+
+        Pinned allocation is expensive, so it must not happen per step. The
+        cohort size changes rarely in steady state, and shrinking is never
+        worth a reallocation.
+        """
+        n = like.shape[0]
+        if (self._probe_k is None or self._probe_k.shape[0] < n
+                or self._probe_k.shape[1:] != like.shape[1:]
+                or self._probe_k.dtype != like.dtype):
+            shape = (max(n, 1),) + tuple(like.shape[1:])
+            self._probe_k = torch.empty(shape, dtype=like.dtype,
+                                        device="cpu", pin_memory=True)
+            self._probe_v = torch.empty(shape, dtype=like.dtype,
+                                        device="cpu", pin_memory=True)
+            PT.count("d2h_probe_realloc")
+        return self._probe_k, self._probe_v
+
     def write_token(
         self,
         layer_idx: int,
@@ -733,7 +914,16 @@ class RungdHostPool:
         # one, and a faster link does not remove it. Timed on its own because
         # the earlier profiler charged this call the model's own compute and
         # produced a "21 ms" figure that was worth ~4 ms.
-        if not self._skip_d2h:
+        if self._d2h_probe:
+            # Same two copies, same bytes, pinned destination, NON-BLOCKING,
+            # and no scatter. Prices the synchronisation on its own.
+            _td = PT.now()
+            pk, pv = self._probe_staging(keys)
+            pk[:n].copy_(keys, non_blocking=True)
+            pv[:n].copy_(values, non_blocking=True)
+            PT.add("write_token_d2h_probe", _td)
+            PT.count("write_token_d2h_probe_calls")
+        elif not self._skip_d2h:
             _td = PT.now()
             k_cpu, v_cpu = keys.to("cpu"), values.to("cpu")
             PT.add("write_token_d2h_blocking", _td)

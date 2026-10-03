@@ -346,6 +346,14 @@ def main() -> int:
                         "the host does not work here: it reads 21.4 ms per step "
                         "for two copies of one token's KV, which is the host "
                         "blocked on the GPU, not a cost. NUMERICALLY INVALID.")
+    p.add_argument("--d2h-probe", action="store_true",
+                   help="PHASE 0: make write_token's mirror copy NON-BLOCKING "
+                        "into pinned staging and skip the scatter. Same launch "
+                        "count and bytes as --real, so real-minus-probe is the "
+                        "synchronisation cost on its own -- the prize a correct "
+                        "async fix could actually realise, as distinct from "
+                        "--skip-d2h which removes the scatter too and so only "
+                        "bounds it from above. NUMERICALLY INVALID.")
     p.add_argument("--rungd-layers", type=int, default=0,
                    help="restrict the rider host path to the first N layers so "
                         "the per-layer slope can be measured inside one model "
@@ -402,10 +410,14 @@ def main() -> int:
     os.environ["VLLM_KVPIPE_RUNGD_XFER_MODE"] = a.xfer_mode
     if a.skip_d2h:
         os.environ["VLLM_KVPIPE_RUNGD_SKIP_D2H"] = "1"
+    if a.d2h_probe:
+        os.environ["VLLM_KVPIPE_RUNGD_D2H_PROBE"] = "1"
+        os.environ["VLLM_KVPIPE_RUNGD_D2H_PROBE_UNSAFE"] = "1"
     if a.rungd_layers > 0:
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS"] = str(a.rungd_layers)
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS_UNSAFE"] = "1"
-    if a.xfer_mode != "real" or a.rungd_layers > 0 or a.skip_d2h:
+    if (a.xfer_mode != "real" or a.rungd_layers > 0 or a.skip_d2h
+            or a.d2h_probe):
         print("!" * 66)
         print("! NUMERICALLY INVALID ARM: "
               f"xfer_mode={a.xfer_mode} layers={a.rungd_layers or 'all'}")
@@ -710,10 +722,12 @@ def main() -> int:
            "k_window": a.k_window or 4,
            "xfer_mode": a.xfer_mode,
            "skip_d2h": bool(a.skip_d2h),
+           "d2h_probe": bool(a.d2h_probe),
            "rungd_layers": a.rungd_layers or 0,
            "numerically_valid": (a.xfer_mode == "real"
                                  and a.rungd_layers == 0
-                                 and not a.skip_d2h),
+                                 and not a.skip_d2h
+                                 and not a.d2h_probe),
            "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
            # CODE PROVENANCE. Each arm of a sweep is a fresh process, so editing
            # the harness while a job runs means later arms pick up the change and
