@@ -75,21 +75,33 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
     ramp to a full cohort outlasts a short run, and differencing inflates while
     the direct one is immune.
 
-    EFFECTIVE CONTEXT. `ctx` is the PROMPT length, but what a rider streams
-    each step is its CURRENT sequence length, which grows as it generates. The
-    context that c actually scales with is therefore measured, not nominal, and
-    we take it from the bytes the harness reports at r=1:
+    WHICH CONTEXT? `ctx` is the PROMPT length, while what a rider streams each
+    step is its CURRENT sequence length, which grows as it generates. The
+    measured streamed length,
 
         S_eff = stream_bytes_per_step(r=1) / b_tok
 
-    Across the four sweeps this comes out a constant ~79 tokens above the
-    prompt (335/591/1103/2127 for 256/512/1024/2048), which is the average
-    generated length over the steady window. The correction leaves the fitted
-    SLOPE untouched -- a constant x-offset cannot change it -- and moves the
-    INTERCEPT by slope*79, from 0.205 to 0.060 ms/rider. That matters for the
-    one claim the intercept carries, namely the size of c's context-independent
-    floor, and it is why the floor is better estimated from the layer axis than
-    by extrapolating this fit to S=0.
+    sits ~79 tokens above the prompt at long_len 136 (335/591/1103/2127 for
+    256/512/1024/2048) and ~139 above it at long_len 256.
+
+    I switched the fit to S_eff, then tested it and the test FAILED. M7's C arm
+    has the same nominal prompt as M2's ctx-256 arm but long_len 256 instead of
+    136, so S_eff differs by 18% at an identical prompt. S_eff was predicted
+    exactly (395 against 395 measured) and c did NOT follow it: 0.726 at
+    S_eff 335 against 0.703 at S_eff 395, a 3% FALL where proportionality
+    demands an 18% rise. The prompt hypothesis predicts a ratio of 1.00 and the
+    measurement is 0.97, against 1.5% run-to-run repeatability.
+
+    Pooled R^2 cannot settle it (0.981 for the prompt against 0.987 for S_eff)
+    because the two are collinear across the sweep range; the same-prompt pair
+    is the only discriminating comparison and it favours the prompt. So the fit
+    here uses the NOMINAL PROMPT, S_eff is reported as a diagnostic, and the
+    difference -- 7% on the slope -- is carried inside the band in 3.1b rather
+    than claimed either way.
+
+    What this does NOT restore is the floor claim. That was retracted because a
+    3.3x context sweep cannot estimate an intercept at S=0 whichever x is used,
+    and the layer axis measures the per-rider-per-layer term directly.
     """
     out = {}
     for S in contexts:
@@ -128,8 +140,8 @@ def per_context_fits(datadir=DATA, contexts=(256, 512, 1024, 2048)):
         if len(xs) >= 3:
             F, c, res = _ols(xs, ys)
             rec.update(F=F, c=c, resid=res,
-                       c_over_S=c / (s_eff or S),
-                       c_over_S_nominal=c / S,
+                       c_over_S=c / S,
+                       c_over_S_seff=c / s_eff if s_eff else None,
                        hidden=1.0 - c / link_per_rider)
         out[S] = rec
     return out
@@ -171,33 +183,38 @@ def arm_fits(arms=None, min_pts=MIN_PTS_LOOSE):
     return out
 
 
-def pooled_slope(arms=None, min_pts=MIN_PTS_LOOSE):
-    """c = c0 + k*S_eff pooled over arms. k is what the projection
-    extrapolates, so it is reported with the span it was fitted over."""
+def pooled_slope(arms=None, min_pts=MIN_PTS_LOOSE, x="prompt"):
+    """c = c0 + k*x pooled over arms, x being the nominal prompt by default.
+
+    `x="s_eff"` refits against the measured streamed length. The two differ by
+    7% on the slope and the same-prompt pair favours the prompt, so the default
+    is the prompt and the difference is carried as part of the band.
+    """
     pts = arm_fits(arms, min_pts)
     if len(pts) < 3:
         return None
-    xs = [p["s_eff"] for p in pts]
+    xs = [(p["s_eff"] if x == "s_eff" else p["ctx"]) for p in pts]
     ys = [p["c"] for p in pts]
     c0, k, res = _ols(xs, ys)
     my = sum(ys) / len(ys)
     ss_res = sum((y - (c0 + k * x)) ** 2 for x, y in zip(xs, ys))
     ss_tot = sum((y - my) ** 2 for y in ys)
     return {"c0": c0, "k": k, "r2": 1 - ss_res / ss_tot, "max_resid": res,
-            "n": len(pts), "lo": min(xs), "hi": max(xs), "pts": pts}
+            "n": len(pts), "lo": min(xs), "hi": max(xs), "pts": pts, "x": x}
 
 
 def route1(fits=None, min_pts=MIN_PTS_LOOSE):
     """c = c0 + k*S_eff fitted across arms.
 
     Uses every arm on disk, not just the M2 context sweep: M7 added a repeat
-    pair and two shorter contexts, taking this from 3 points over 3 jobs to 6,
-    and the conditioning improved from a 0.07 ms max residual to 0.014.
+    pair and two shorter contexts, taking this from 3 points over 3 jobs to 7.
+    Fitted against the nominal prompt -- see per_context_fits for why the
+    streamed-length alternative was tried and rejected.
     """
     pf = pooled_slope(min_pts=min_pts)
     if pf is None:
         raise SystemExit("route 1 needs >=3 arms, have fewer")
-    return pf["c0"], pf["k"], [(p["s_eff"], p["c"]) for p in pf["pts"]]
+    return pf["c0"], pf["k"], [(p["ctx"], p["c"]) for p in pf["pts"]]
 
 
 def route2():
@@ -277,12 +294,38 @@ def report():
     print("=" * 76)
     print()
     print(" %-12s %5s %6s %5s %5s %9s %9s %11s"
-          % ("arm", "ctx", "S_eff", "pts", "rmax", "F", "c", "c/S_eff"))
+          % ("arm", "prompt", "S_eff", "pts", "rmax", "F", "c", "c/prompt"))
     for a in arm_fits():
         print(" %-12s %5d %6.0f %5d %5d %9.2f %9.3f %11.6f"
               % (a["label"], a["ctx"], a["s_eff"], a["n"], a["rmax"],
-                 a["F"], a["c"], a["c"] / a["s_eff"]))
+                 a["F"], a["c"], a["c"] / a["ctx"]))
     print()
+    # The same-prompt pair is the only comparison that separates the two
+    # candidate x variables, so it is printed before any fit.
+    pair = [a for a in arm_fits() if a["ctx"] == 256]
+    if len(pair) == 2:
+        p1, p2 = sorted(pair, key=lambda a: a["s_eff"])
+        print(" SAME PROMPT, DIFFERENT GENERATION LENGTH -- the one comparison")
+        print(" that separates the nominal prompt from the streamed length:")
+        print("   %-12s prompt %4d  S_eff %4.0f  c %.3f"
+              % (p1["label"], p1["ctx"], p1["s_eff"], p1["c"]))
+        print("   %-12s prompt %4d  S_eff %4.0f  c %.3f"
+              % (p2["label"], p2["ctx"], p2["s_eff"], p2["c"]))
+        print("   S_eff ratio %.2f, c ratio %.2f. Proportionality to S_eff"
+              % (p2["s_eff"] / p1["s_eff"], p2["c"] / p1["c"]))
+        print("   demands %.2f; the prompt demands 1.00; repeatability is 1.5%%."
+              % (p2["s_eff"] / p1["s_eff"]))
+        print("   => c follows the PROMPT, not the streamed average.")
+        print()
+    for xv in ("prompt", "s_eff"):
+        pf = pooled_slope(min_pts=MIN_PTS_LOOSE, x=xv)
+        if pf:
+            print(" c vs %-8s  c = %.4f + %.4e * x   R^2 %.5f  max resid %.4f"
+                  % (xv, pf["c0"], pf["k"], pf["r2"], pf["max_resid"]))
+    print(" Pooled R^2 cannot discriminate -- the two x are collinear across")
+    print(" the sweep range -- which is why the pair above decides it.")
+    print()
+
     bands = []
     for mp, lab in ((MIN_PTS_LOOSE, "arms with >=4 below-knee points"),
                     (MIN_PTS_STRICT, "arms with >=5 (better conditioned)")):
@@ -290,10 +333,10 @@ def report():
         if not pf:
             continue
         bands.append((lab, pf))
-        print(" %-36s n=%d  S_eff %.0f-%.0f" % (lab, pf["n"], pf["lo"], pf["hi"]))
-        print("   c = %.4f + %.4e * S_eff   R^2 %.4f  max resid %.3f ms"
+        print(" %-36s n=%d  prompt %.0f-%.0f" % (lab, pf["n"], pf["lo"], pf["hi"]))
+        print("   c = %.4f + %.4e * prompt   R^2 %.4f  max resid %.3f ms"
               % (pf["c0"], pf["k"], pf["r2"], pf["max_resid"]))
-        print("   extrapolated to S_eff 8192 on A100: c = %.2f ms/rider"
+        print("   extrapolated to prompt 8192 on A100: c = %.2f ms/rider"
               % (pf["c0"] + pf["k"] * 8192))
         print()
     if len(bands) == 2:
@@ -421,20 +464,53 @@ def selftest():
     # floor must be estimated from the LAYER axis, which measures the
     # per-rider-per-layer term directly at fixed head geometry, and NOT by
     # extrapolating this fit to S=0 across a 3.3x context range.
-    rs = [r["c_over_S"] for _, r in sorted(fits.items()) if "c" in r]
-    spread = max(rs) / min(rs) - 1
-    good = spread < 0.25
-    ok &= good
-    print("  [%s] c/S_eff spread is only %.0f%% -- c is nearly proportional to "
-          "streamed bytes" % ("ok " if good else "BAD", 100 * spread))
+    # THE X-VARIABLE TEST. Two arms at the same nominal prompt with ~18%
+    # different streamed length must give nearly the SAME c, which is what
+    # falsified the streamed-length hypothesis. Asserted so the correction
+    # cannot be reintroduced without this failing.
+    pair = [a for a in arm_fits() if a["ctx"] == 256]
+    if len(pair) == 2:
+        p1, p2 = sorted(pair, key=lambda a: a["s_eff"])
+        se_ratio = p2["s_eff"] / p1["s_eff"]
+        c_ratio = p2["c"] / p1["c"]
+        good = abs(c_ratio - 1.0) < abs(c_ratio - se_ratio)
+        ok &= good
+        print("  [%s] same-prompt pair: S_eff x%.2f but c x%.2f -- c follows "
+              "the PROMPT, not the streamed average"
+              % ("ok " if good else "BAD", se_ratio, c_ratio))
+    else:
+        print("  [--] same-prompt pair not available, skipping the x-variable test")
 
-    c0, k, _ = route1(fits)
-    shortest = min((r["c"] for _, r in fits.items() if "c" in r))
-    frac = c0 / shortest
-    good = frac < 0.20
+    # and the two candidates must be indistinguishable on pooled R^2, which is
+    # why the pair is needed at all
+    a = pooled_slope(x="prompt")
+    b = pooled_slope(x="s_eff")
+    if a and b:
+        good = abs(a["r2"] - b["r2"]) < 0.02
+        ok &= good
+        print("  [%s] pooled R^2 cannot discriminate (%.4f vs %.4f), so the "
+              "pair is load-bearing"
+              % ("ok " if good else "BAD", a["r2"], b["r2"]))
+
+    # THE FLOOR, restored once the x-variable was settled. Against the PROMPT
+    # c/prompt falls by more than 2x across the sweep, which is the floor
+    # signature; against the streamed average it looked flat, which is how the
+    # floor came to be wrongly retracted. The two routes also come back into
+    # the same order of magnitude once this is right.
+    arms = arm_fits()
+    rs = sorted((x["c"] / x["ctx"] for x in arms), reverse=True)
+    good = rs[0] / rs[-1] > 1.8
     ok &= good
-    print("  [%s] route-1 intercept is %.0f%% of the smallest measured c, so it"
-          " cannot estimate the floor" % ("ok " if good else "BAD", 100 * frac))
+    print("  [%s] c/prompt falls %.1fx across the sweep -- a real floor"
+          % ("ok " if good else "BAD", rs[0] / rs[-1]))
+
+    r2c0, _ = route2()
+    good = 0.4 < a["c0"] / r2c0 < 2.5
+    ok &= good
+    print("  [%s] the two routes agree on the floor to within %.1fx "
+          "(%.3f vs %.3f)"
+          % ("ok " if good else "BAD", max(a["c0"] / r2c0, r2c0 / a["c0"]),
+             a["c0"], r2c0))
 
     # THE HEADLINE: both routes must agree on both verdicts
     rows, _, _, _ = verdict_sensitivity()

@@ -179,20 +179,29 @@ Per-context affine fits, below the knee only, direct (non-differenced)
 estimator, A100/Qwen-32B/L=64/bs=16
 (`paper_runs/20260930/overhead/02_law/A_c{256,512,1024,2048}.json`):
 
-| ctx | `S_eff` | pts | `F` ms | `c` ms/rider | `c/S_eff` | knee | max resid | hidden |
+| prompt | `S_eff` | pts | `F` ms | `c` ms/rider | `c/prompt` | knee | max resid | hidden |
 |---|---|---|---|---|---|---|---|---|
-| 256 | 335 | 7 | 12.07 | 0.726 | 0.002166 | 14.0 | 0.45 | 79% |
-| 512 | 591 | 8 | 11.85 | 1.073 | 0.001816 | 8.0 | 0.42 | 83% |
-| 1024 | 1103 | 4 | 10.89 | 2.114 | 0.001917 | 4.4 | 0.57 | 82% |
+| 256 | 335 | 7 | 12.07 | 0.726 | 0.00283 | 14.0 | 0.45 | 79% |
+| 512 | 591 | 8 | 11.85 | 1.073 | 0.00210 | 8.0 | 0.42 | 83% |
+| 1024 | 1103 | 4 | 10.89 | 2.114 | 0.00207 | 4.4 | 0.57 | 82% |
 | 2048 | 2127 | 2 | — | — | — | 2.2 | — | — |
 
-> **Correction: `ctx` is the prompt length, but `c` scales with what is actually
-> streamed, which is the *current* sequence length and therefore grows as the
-> request generates.** Taking it from the measured bytes at r=1 gives `S_eff`,
-> a constant **79 tokens above the prompt** in all four sweeps — the average
-> generated length over the steady window. An earlier draft divided by the
-> nominal prompt and drew a conclusion from it that does not survive; see below.
-> The slope is unaffected, since a constant x-offset cannot change it.
+> **Which context does `c` scale with — the prompt, or what is actually
+> streamed?** The two differ: a rider streams its *current* sequence length,
+> which grows as it generates, and the measured streamed length `S_eff` sits a
+> constant 79 tokens above the prompt at a fixed generation length.
+>
+> **Settled by experiment, against my expectation.** M7's C arm has the same
+> nominal prompt as the ctx-256 row above but a generation length of 256 rather
+> than 136, so its `S_eff` is 18% larger at an identical prompt. `S_eff` was
+> predicted exactly — 395 against 395 measured — and **`c` did not follow it**:
+> 0.703 against 0.726, a 3% *fall* where proportionality demands an 18% rise,
+> against 1.5% run-to-run repeatability. Pooled R² cannot discriminate (0.981
+> for the prompt against 0.987 for `S_eff`) because the two are collinear across
+> the sweep; that one same-prompt pair is the only comparison that separates
+> them, and it favours the prompt. **The fits below therefore use the nominal
+> prompt**, and the 7% this costs on the slope is carried inside the band in
+> §3.1b rather than claimed either way.
 
 ctx 2048 has only two below-knee points and is excluded from fitting — which is
 *precisely why* the campaign ran short-context. The knee is
@@ -202,22 +211,27 @@ is what made ≥4 rider points reachable at all on PCIe.
 `c` grows with context, and **79–83% of the nominal transfer time hides inside
 compute** at every context — a stable, encouraging number.
 
-**`c/S_eff` is very nearly constant**, spanning only 19% across a 3.3× context
-range and not monotonically, so `c` is close to proportional to streamed bytes.
+**`c/prompt` falls monotonically by a factor of 2.3** across the sweep, 0.0048
+at prompt 128 down to 0.0021 at 1024, which is the signature of a
+context-independent **floor** inside `c`. The pooled intercept is **0.34–0.45
+ms/rider** depending on the inclusion filter — the same order as the 0.645 that
+the independent component fit derives from the layer axis (§4), the two agreeing
+to 1.9×.
 
 ### 3.1b Every arm, and the slope the projection extrapolates
 
 M7 added two shorter contexts and a **repeat pair**, taking this fit from three
 points over three jobs to six and extending the rider axis to 16:
 
-| arm | ctx | `S_eff` | pts | r_max | `F` | `c` | `c/S_eff` |
+| arm | prompt | `S_eff` | pts | r_max | `F` | `c` | `c/prompt` |
 |---|---|---|---|---|---|---|---|
-| M2 | 256 | 335 | 7 | 12 | 12.07 | 0.726 | 0.002166 |
-| M2 | 512 | 591 | 8 | 8 | 11.85 | 1.073 | 0.001816 |
-| M2 | 1024 | 1103 | 4 | 4 | 10.89 | 2.114 | 0.001917 |
-| M7 A1 | 128 | 267 | 8 | 16 | 11.66 | 0.616 | 0.002309 |
-| M7 A2 | 128 | 267 | 8 | 16 | 12.85 | 0.607 | 0.002274 |
-| M7 B | 192 | 331 | 7 | 12 | 11.56 | 0.699 | 0.002113 |
+| M2 | 256 | 335 | 7 | 12 | 12.07 | 0.726 | 0.00283 |
+| M2 | 512 | 591 | 8 | 8 | 11.85 | 1.073 | 0.00210 |
+| M2 | 1024 | 1103 | 4 | 4 | 10.89 | 2.114 | 0.00207 |
+| M7 A1 | 128 | 267 | 8 | **16** | 11.66 | 0.616 | 0.00481 |
+| M7 A2 | 128 | 267 | 8 | **16** | 12.85 | 0.607 | 0.00474 |
+| M7 B | 192 | 331 | 7 | 12 | 11.56 | 0.699 | 0.00364 |
+| M7 C | 256 | 395 | 8 | 10 | 12.12 | 0.703 | 0.00275 |
 
 The A1/A2 pair is the honest error bar on a single arm: **`c` repeats to 1.5%
 and `F` to 10%**, the latter inside the known ±14% job offset. So `c` and `F`
@@ -225,19 +239,17 @@ are well identified even though α is not (§2).
 
 **But pooling them exposes an extrapolation risk the three-point fit hid:**
 
-| filter | n | `S_eff` span | fit | R² | max resid | `c` at 8192 |
+| filter | n | prompt span | fit | R² | max resid | `c` at 8192 |
 |---|---|---|---|---|---|---|
-| ≥4 below-knee pts | 6 | 267–1103 | `0.113 + 1.783e-3·S_eff` | 0.9934 | 0.093 | **14.72** |
-| ≥5 (better conditioned) | 5 | 267–591 | `0.236 + 1.420e-3·S_eff` | 0.9979 | **0.014** | **11.87** |
+| ≥4 below-knee pts | 7 | 128–1024 | `0.337 + 1.673e-3·S` | 0.981 | 0.121 | **14.04** |
+| ≥5 (better conditioned) | 6 | 128–512 | `0.446 + 1.186e-3·S` | 0.971 | **0.047** | **10.16** |
 
-The slopes differ by **26%**, which at `S_eff` 8192 is a **24%** difference in
-the extrapolated `c`. The tighter fit has a max residual of 0.014 ms against
-0.093 — but it spans only 2.2× and **the target is 14× beyond its upper end**,
-so which slope is used matters more than the quality of either. And the arm the
-strict filter drops is the **longest context, the one closest to the target**,
-and it sits **17% above** the strict fit. If that is real, `c` grows slightly
-faster than linearly in context and the strict fit is the optimistic reading; it
-is also the least well determined arm, at four below-knee points.
+The slopes differ by **41%**, which at prompt 8192 is a **38%** difference in
+the extrapolated `c`. The tighter fit spans only 4× and **the target is 16×
+beyond its upper end**, so which slope is used matters more than the quality of
+either. And the arm the strict filter drops is the **longest context, the one
+closest to the target** — so the strict fit is the optimistic reading, and it is
+also the least well determined arm, at four below-knee points.
 
 Both slopes give the same verdicts (§4), so nothing moves. It is reported as a
 band with each fit's span beside it, because a slope quoted without its fit
@@ -346,17 +358,17 @@ because the invariant share is exactly what decides condition (1):
 
 | route | `c₀` | `k` (per token) | x used | `c` on that arm |
 |---|---|---|---|---|
-| six arms pooled, direct estimator (§3.1b) | 0.113 | 1.783e-3 | `S_eff` = 591 | 1.166 |
-| 105-point within-job component fit + M3 | 0.645 | 1.255e-3 | nominal 512 | 1.288 |
-| **measured** | — | — | — | **1.073** |
+| seven arms pooled, direct estimator (§3.1b) | 0.337 | 1.673e-3 | 1.194 |
+| 105-point within-job component fit + M3 | 0.645 | 1.255e-3 | 1.288 |
+| **measured** | — | — | **1.073** |
 
-Each route is evaluated in the x-variable it was **fitted** in: route 1 in the
-measured streamed context, route 2's component coefficients against the nominal
-prompt, since that is what they were regressed on. Mixing the conventions is
-itself an error — it is how a 13% discrepancy briefly appeared in this very
-table — so they are kept apart rather than forced into one column. Note that
-**both overshoot the arm**, by 9% and 20%, so neither is a tight description of
-a single configuration and the sensitivity below is the honest use of them.
+Both are now in the same x-variable, the nominal prompt, and evaluated at 512.
+**They agree on the floor to within 1.9×** (0.337 against 0.645), which they did
+not under the streamed-length reading — that agreement is part of why the
+prompt is the right variable. Both still **overshoot** the arm, by 11% and 20%,
+so neither is a tight description of a single configuration, which is the
+argument for using them as the sensitivity band below rather than quoting
+either as the coefficient.
 
 Route 1 puts far less in the floor and ~42% more in the slope, and after the
 `S_eff` correction its floor is small enough that it should not be read as a
@@ -368,9 +380,9 @@ exactly where the projection lives. Running the verdict under both:
 
 | route / configuration | `c` | `T0/B` | verdict |
 |---|---|---|---|
-| route 1, as built | 8.86 | 3.37 | never pays |
+| route 1, as built | 8.24 | 3.37 | never pays |
 | route 2, as built | 5.20 | 3.37 | never pays |
-| route 1, block+D2H fixed | 0.51 | 3.37 | PAYS from r = 0.7 |
+| route 1, block+D2H fixed | 0.79 | 3.37 | PAYS from r = 0.8 |
 | route 2, block+D2H fixed | 1.17 | 3.37 | PAYS from r = 0.9 |
 
 **Both verdicts are robust**, and the uncertainty pushes the two cases apart
@@ -525,7 +537,7 @@ property, not by the interconnect.**
 **On whether a better interconnect gives better throughput:**
 
 * **As built: no, and not at any bandwidth.** `c` = 5.17 against `T0/B` = 3.37;
-  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 8.86).
+  an infinite link leaves 4.70. Robust to both apportionment routes (5.2 / 8.24).
 * **With the per-block loop removed and the blocking D2H fixed: yes, and the
   gain is monotone in bandwidth** — 0.88× (PCIe4) → 1.21× (C2C) → 3.46×
   (infinite). C2C is the first point that wins at all.
@@ -598,13 +610,18 @@ them:
    **The affine law stands.** What survives from that round, and is the useful
    part, is the *structural* finding: only 9.2% of `c` at the target is
    per-rider by physics, and the rest is batchable or vectorisable (§3.2b).
-0b. **"`c/S` falls, so `c` has a context-independent floor" — retracted.** It
-   came from dividing by the nominal prompt length when what a rider streams is
-   its *current* sequence length, a constant 79 tokens longer here. On the
-   corrected axis the spread is 19% and non-monotonic and the intercept is 0.06,
-   so the context sweep says almost nothing about the floor. The floor itself
-   stands on the layer axis, which measures it directly. Caught by its own
-   selftest assertion.
+0b. **The streamed-context "correction" — itself retracted, and the floor claim
+   restored.** I switched the context fit from the nominal prompt to the
+   measured streamed length, which made `c/S` look flat and the floor look
+   negligible. Then I tested it: M7's C arm has the same prompt with an 18%
+   larger streamed length, `S_eff` was predicted exactly, and **`c` did not
+   follow it** (0.703 against 0.726, a 3% fall where proportionality demands an
+   18% rise). Pooled R² cannot discriminate the two variables — they are
+   collinear — so that one pair decides it, and it says the prompt. Reverting
+   restores the floor at **0.34–0.45**, which now agrees with the component
+   fit's 0.645 to 1.9× where the streamed reading disagreed by 10×. Net effect
+   on the projection: 7% on the slope, inside the band already carried, and no
+   verdict moves.
 1. "Not affine in `r`" (the ramp hypothesis) — **refuted** as to the ramp; the
    rise is the knee crossing. Note this is a separate question from item 0:
    below the knee `c` does not *rise*, but it is mildly sublinear.

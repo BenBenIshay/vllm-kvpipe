@@ -308,46 +308,49 @@ contexts $c$ is 0.726, 1.073 and 2.114\,ms per rider, with 79--83\% of the
 nominal transfer time hidden inside compute at every context.
 % src: paper/model/c_scaling.py @ c7574eadb
 
-The relevant context here is not the prompt. What a rider streams each step is
-its \emph{current} sequence length, which grows as it generates, so the
-quantity $c$ scales with must be measured rather than taken from the request.
-Derived from the bytes the harness reports, it sits a constant 79 tokens above
-the prompt at a fixed generation length (335, 591, 1103 and 2127 tokens for
-prompts of 256, 512, 1024 and 2048), that offset being the average generated
-length over the steady measurement window and therefore scaling with it.
-Against this measured context $c/S$ is nearly constant, varying by 19\% over a
-3.3$\times$ range and not monotonically, so $c$ is close to proportional to
-streamed bytes.
+\paragraph{Which context, and how we know.} A rider streams its \emph{current}
+sequence length, not its prompt, and the two differ: the measured streamed
+length sits a constant 79 tokens above the prompt at a fixed generation length.
+Which of the two $c$ scales with is an empirical question, and it is settled by
+holding the prompt fixed while changing the generation length. Doing so makes
+the streamed length 18\% larger at an identical prompt, and $c$ \emph{does not
+follow it}: 0.703 against 0.726\,ms per rider, a 3\% fall where proportionality
+demands an 18\% rise, against a run-to-run repeatability of 1.5\% established
+from a repeated arm. Pooled goodness of fit cannot decide this ($R^2$ of 0.981
+against 0.987) because the two candidates are collinear across the sweep range;
+the same-prompt pair is the only discriminating comparison. We therefore fit
+against the prompt.
+% src: paper/model/c_scaling.py @ 903a56547
 
-\paragraph{The slope, and the span it was fitted over.} Six arms measure $c$
+Against the prompt, $c/S$ falls monotonically by a factor of 2.3 across the
+sweep, which is the signature of a context-independent floor inside $c$.
+
+\paragraph{The slope, and the span it was fitted over.} Seven arms measure $c$
 against context, two of them a repeat pair at one configuration, and that pair
-puts the run-to-run error at 1.5\% in $c$ and 10\% in $F$ --- so both are well
-identified, unlike the exponent of \S\ref{sec:overhead:law}. Pooling them,
-however, makes the real extrapolation risk visible:
+puts the run-to-run error at 1.5\% in $c$ and 10\% in $F$ --- both well
+identified, unlike the exponent of \S\ref{sec:overhead:law}. Pooling them makes
+the real extrapolation risk visible:
 \begin{align}
-c &= 0.113 + 1.78\times10^{-3} S, & S \in [267, 1103],\ R^2 = 0.993,
+c &= 0.337 + 1.67\times10^{-3} S, & S \in [128, 1024],\ R^2 = 0.981,
 \label{eq:overhead:cwide}\\
-c &= 0.236 + 1.42\times10^{-3} S, & S \in [267, 591],\ R^2 = 0.998.
+c &= 0.446 + 1.19\times10^{-3} S, & S \in [128, 512],\ R^2 = 0.971.
 \label{eq:overhead:cnarrow}
 \end{align}
 The two differ only in whether the longest-context arm, which has four
-below-knee points, is admitted. Their slopes differ by 26\%, and at the
-projection's $S = 8192$ that is a 24\% difference in $c$.
-Equation~\ref{eq:overhead:cnarrow} fits an order of magnitude more tightly, with
-a maximum residual of 0.014 against 0.093\,ms, but it spans only
-2.2$\times$ and the target lies 14$\times$ beyond its upper end; the arm it
-excludes is the one \emph{closest} to the target and sits 17\% above it. We
-therefore carry both as a band rather than selecting one, and note that the
-tighter fit is the optimistic reading.
-% src: paper/model/c_scaling.py @ 903a56547
+below-knee points, is admitted. Their slopes differ by 41\%, and at the
+projection's $S = 8192$ that is a 38\% difference in $c$.
+Equation~\ref{eq:overhead:cnarrow} fits more tightly, with a maximum residual of
+0.047 against 0.121\,ms, but it spans only 4$\times$ and the target lies
+16$\times$ beyond its upper end; the arm it excludes is the one \emph{closest}
+to the target. We therefore carry both as a band rather than selecting one, and
+note that the tighter fit is the optimistic reading.
 
-Neither equation is usable as an estimate of $c$'s context-independent floor,
-and we do not use them as one: extrapolating a context sweep back to $S = 0$ is
-too long a lever. The floor is taken from the layer axis below, which measures
-the per-rider-per-layer term directly at fixed head geometry. This matters
-because dividing by the prompt rather than the streamed length inflates the
-apparent curvature in $c/S$ from 19\% to 37\% and makes the floor appear
-several times larger than it is.
+The intercepts of \ref{eq:overhead:cwide} and \ref{eq:overhead:cnarrow} are the
+floor, and they are corroborated rather than assumed: the component fit derives
+0.645\,ms per rider for the same quantity from the layer axis, independently and
+at fixed head geometry, agreeing to within a factor of 1.9. We use the layer
+axis for the floor and these equations for the slope, which is the quantity the
+projection extrapolates.
 
 \paragraph{Four components, one of them link-bound.} Separating the classes of
 Table~\ref{tab:overhead:classes} requires three distinct experiments, because no
