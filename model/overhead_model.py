@@ -183,6 +183,90 @@ def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
     return out
 
 
+def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
+         d2h_fixed: bool, b_res: float | None = None, bs: int = 16,
+         drop_per_block: bool = False) -> float:
+    """Throughput gain from admitting r riders on top of B residents.
+
+        gain = (1 + r/B) / (1 + (F + c*r)/T0)
+
+    Numerator: the extra requests served. Denominator: the longer step they
+    cost. Valid only BELOW the knee -- above it the step is the transfer and
+    this formula no longer describes the step time.
+    """
+    if b_res is None:
+        b_res = m.b_cap(hw, S)
+    t0 = m.t0_ms(hw)
+    F = F_ms(m, hw, exposed, d2h_fixed)
+    parts = c_ms(m, hw, S, bs, d2h_fixed)
+    c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
+    return (1.0 + r / b_res) / (1.0 + (F + c * r) / t0)
+
+
+def link_sweep(m: Model, S: int, exposed: float, d2h_fixed: bool,
+               drop_per_block: bool, bs: int = 16, hbm_gbs: float = 4000,
+               hbm_gb: float = 96) -> list:
+    """THE CORE QUESTION, isolated: hold the model, the context and the host
+    fixes constant, and change ONLY the link bandwidth.
+
+    Each row is evaluated at r = the knee, the most riders that regime admits.
+    `INFINITE` is the ceiling: what no interconnect can beat.
+    """
+    rows = []
+    for x, nm in ((25.1, "PCIe4 x16"), (64.0, "PCIe5 x16"),
+                  (128.0, "PCIe6 x16"), (419.0, "NVLink-C2C"),
+                  (900.0, "2x C2C"), (1e5, "INFINITE")):
+        hw = HW(nm, hbm_gbs, x, hbm_gb)
+        be = break_even(m, hw, S, None, exposed, d2h_fixed, bs,
+                        drop_per_block)
+        r = min(be["knee"], 64.0)
+        rows.append({
+            "link_gbs": x, "name": nm, "c": be["c"],
+            "c_link": be["parts"]["link"],
+            "link_share": be["parts"]["link"] / be["c"],
+            "knee": be["knee"], "r_be": be["r_be"],
+            "t0_over_b": be["t0"] / be["b_res"],
+            "gain": gain(m, hw, S, r, exposed, d2h_fixed, None, bs,
+                         drop_per_block),
+            "wins": be["r_be"] is not None and be["r_be"] <= be["knee"],
+        })
+    return rows
+
+
+def core_question(S: int = 8192) -> None:
+    """Printed first, because it is the question the campaign existed for."""
+    print("=" * 78)
+    print(" DOES A FASTER LINK, ADMITTING MORE RIDERS, GIVE MORE THROUGHPUT?")
+    print("=" * 78)
+    m = L70
+    print("\n %s, ctx %d, GH200-class HBM. Rows differ ONLY in link speed."
+          % (m.name, S))
+    print(" B_cap = %.1f residents, T0 = %.1f ms, T0/B = %.2f ms -- what one"
+          % (m.b_cap(GH200, S), m.t0_ms(GH200),
+             m.t0_ms(GH200) / m.b_cap(GH200, S)))
+    print(" rider must cost LESS than, or no rider count ever helps.\n")
+    for drop, dfix, exp, lab in (
+            (False, False, HIDING[2][1], "as built"),
+            (True, True, HIDING[2][1],
+             "per-block loop removed + D2H fixed")):
+        print(" %s" % lab)
+        print("   %-12s %8s %8s %7s %7s %7s %8s"
+              % ("link", "c", "c_link", "share", "knee", "r_be", "gain"))
+        for row in link_sweep(m, S, exp, dfix, drop):
+            print("   %-12s %8.3f %8.3f %6.1f%% %7.1f %7s %7.2fx%s"
+                  % (row["name"], row["c"], row["c_link"],
+                     100 * row["link_share"], row["knee"],
+                     "-" if row["r_be"] is None else "%.1f" % row["r_be"],
+                     row["gain"], "" if row["wins"] else "   no win"))
+        print()
+    inf = link_sweep(m, S, HIDING[2][1], False, False)[-1]
+    print(" The ceiling, as built: an INFINITE link still leaves c = %.2f"
+          % inf["c"])
+    print(" against T0/B = %.2f. Bandwidth alone cannot satisfy c < T0/B,"
+          % inf["t0_over_b"])
+    print(" so the verdict as built does not depend on the interconnect.\n")
+
+
 def projection_table() -> None:
     print("=" * 78)
     print(" MEASURED LAW -> C2C PROJECTION, as an interval")
@@ -293,6 +377,36 @@ def _selftest() -> int:
     print("  [%s] GH200 F band spans %.1fx (%.1f to %.1f ms)"
           % ("ok " if good else "BAD", hi / lo, lo, hi))
 
+    # THE CORE CLAIM 1: as built, no link speed satisfies c < T0/B, so the
+    # verdict cannot be changed by the interconnect. If this ever flips, the
+    # report's headline is wrong.
+    rows = link_sweep(L70, 8192, HIDING[2][1], False, False)
+    good = not any(r["wins"] for r in rows)
+    ok &= good
+    print("  [%s] as built, NO link wins -- infinite link leaves c=%.2f vs "
+          "T0/B=%.2f" % ("ok " if good else "BAD", rows[-1]["c"],
+                         rows[-1]["t0_over_b"]))
+
+    # THE CORE CLAIM 2: with the two host fixes the gain is monotone in
+    # bandwidth, and C2C is the FIRST point that wins -- PCIe6 is not enough.
+    fx = link_sweep(L70, 8192, HIDING[2][1], True, True)
+    mono = all(fx[i]["gain"] <= fx[i + 1]["gain"] for i in range(len(fx) - 1))
+    first = next((r["name"] for r in fx if r["wins"]), None)
+    good = mono and first == "NVLink-C2C"
+    ok &= good
+    print("  [%s] fixed: gain monotone in bandwidth (%.2fx -> %.2fx), first "
+          "winner %s" % ("ok " if good else "BAD", fx[0]["gain"],
+                         fx[-1]["gain"], first))
+
+    # and PCIe6 must fail on the KNEE, not on c < T0/B -- that is what shows
+    # the link's real contribution is raising the knee, not shrinking c.
+    p6 = next(r for r in fx if r["name"] == "PCIe6 x16")
+    good = (p6["c"] < p6["t0_over_b"]) and (p6["r_be"] > p6["knee"])
+    ok &= good
+    print("  [%s] PCIe6 fails on the KNEE not on c<T0/B (c=%.2f<%.2f, "
+          "r_be=%.1f>knee=%.1f)" % ("ok " if good else "BAD", p6["c"],
+                                    p6["t0_over_b"], p6["r_be"], p6["knee"]))
+
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
@@ -304,6 +418,7 @@ def main() -> int:
     a = p.parse_args()
     if a.selftest:
         return _selftest()
+    core_question()
     projection_table()
     return 0
 
