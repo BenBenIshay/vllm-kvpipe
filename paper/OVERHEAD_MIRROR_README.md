@@ -8,7 +8,10 @@ files, and `/mnt/beegfs/benishay/vllm-kvpipe/paper/` will not show any of them.
 That is why these copies exist. If a file here looks stale, the branch is the
 source of truth.
 
-Branch head as of this copy: **`51feaba0c`**. Not pushed — there are no GitHub
+Branch head as of this copy: **`ae4b51d00`** on **`perblock-d2h-opt`** (the
+optimisation work). The characterisation campaign's own baseline is
+**`a90ed1b49`** on `overhead-characterisation`, which is what the optimisation
+results are measured against. Not pushed — there are no GitHub
 credentials in the run environment — so **this directory is the copy that
 survives if the worktree is deleted.**
 
@@ -16,8 +19,8 @@ survives if the worktree is deleted.**
 
 | file | what it is |
 |---|---|
-| `OVERHEAD_CHARACTERISATION.md` | **The report.** How `c` scales, and whether a faster link buys throughput. Start here. |
-| `OPT_PROPOSAL_PERBLOCK_D2H.md` | **The optimisation proposal, awaiting your review.** No code written. Four decisions at the end. |
+| `OVERHEAD_CHARACTERISATION.md` | **The report.** How `c` scales, and whether a faster link buys throughput. Start here; **§9 is what was then built and what it measured.** |
+| `OPT_PROPOSAL_PERBLOCK_D2H.md` | The optimisation proposal, now **EXECUTED**. Kept as the design record; its four decisions are resolved in a table at the top, with a note on what it got wrong. |
 | `09-overhead.tex` | **The paper chapter.** Deliberately *not* `\input` into `main.tex` — that is a page-budget decision, one line when you want it. In the branch it is at `paper/tex/sections/09-overhead.tex`. |
 | `OVERHEAD_PROGRESS.md` | The chronological campaign log. Superseded by the report; kept for the dead ends and corrections. |
 
@@ -34,14 +37,18 @@ under `../02_law` etc.):
 | `overhead_fit.py` | the model-selection fit with bootstrap CIs and the knee / model / job-offset filters. |
 | `lint_section.py` | structural lint for the paper sections (no pdflatex on this cluster). |
 | `m7_amortization.sbatch` | the M7 sweep itself, with both predictions registered in its header. |
+| `t1_effect.py` | T1's effect on the block-table rebuild, from the Class A host timer. |
+| `t2_effect.py` | T2's bracketed before/after on `F`. |
+| `phase0.py` | the probe arm that priced the synchronisation and decided T2. |
+| `make_manifest.py` | regenerates `paper/data/overhead/MANIFEST.json`. |
 
 ## Raw data
 
 `00_baseline/ 00b_ramp/ 01_perturbation/ 02_law/ 03_d2h/ 04_stall/
-07_amortization/` — the harness JSONs, plus the sbatch `.out` logs at this
+07_amortization/ 08_opt/ 09_t2/` — the harness JSONs, plus the sbatch `.out` logs at this
 level. The branch also carries these under `paper/data/overhead/` with a
 `MANIFEST.json` giving each record's config, source commit, purity verdict and
-a sha256 prefix (62 records; 0 from a modified tree; 1 non-connector run, which
+a sha256 prefix (75 records; 0 from a modified tree; 1 non-connector run, which
 is the deliberate M0 control).
 
 ## Two items that need you
