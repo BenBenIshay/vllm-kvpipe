@@ -1,27 +1,57 @@
 # Overhead characterisation — live progress log
 
-> **CAMPAIGN COMPLETE (M0–M6). The answer is in
-> `paper/OVERHEAD_CHARACTERISATION.md`, mirrored next to this file.**
+> **COMPLETE THROUGH M9, and both host costs are now FIXED, not just named.**
+> Last updated 2026-10-04. The answer is in
+> `paper/OVERHEAD_CHARACTERISATION.md` (§9 is the optimisation results),
+> mirrored next to this file along with the paper section and every script.
 >
-> This log is chronological and weighted toward the `F`/D2H discovery, which
-> buried the core question. The report is organised the other way round, with
-> `c` as the spine. The short version:
+> This log is chronological; the report is organised with `c` as the spine.
+> **Where the two disagree, the report wins** — three claims below were
+> retracted after this banner first went up, and the entries for M7–M9 at the
+> end of the file carry the corrections.
 >
-> * `c` is **constant in `r`** (no superlinearity, no `r_max` in range) and
->   **affine in `S`** with a floor — `c = 0.205 + 1.841e-3·S` ms/rider on
->   A100/Qwen-32B.
-> * `c` has four components and **a faster link divides only one of them.** At
->   ctx 512 on PCIe that one is ~half of `c`; at ctx 8192 on C2C it is **9.2%**,
->   because per-block host work scales as `S` while the link term scales as
->   `S/X`.
-> * Throughput needs `c < T0/B` **before** `F` matters at all. As built,
->   `c` = 5.17 against `T0/B` = 3.37, and **an infinite link still leaves 4.70**
->   — so no interconnect wins as the code stands.
-> * Remove `build_step`'s per-block loop and `write_token`'s blocking D2H and
->   bandwidth converts into throughput monotonically: 0.88× (PCIe4) → **1.21×
->   (C2C)** → 3.46× (infinite). **C2C is the first bandwidth point that wins.**
+> **What the characterisation established**
+>
+> * Throughput needs `c < T0/B` **before `F` matters at all** — that condition
+>   contains neither `r` nor `F`, so if it fails no rider count helps. As
+>   characterised, `c` = 5.17 against `T0/B` = 3.37, and **an infinite link
+>   still left 4.70**: no interconnect could fix it at any bandwidth.
+> * `c` is four components and **the link divides only one.** At ctx 512 on
+>   PCIe that one is ~half of `c`; at ctx 8192 on C2C it is **9.2%**, because
+>   per-block host work scales as `S` while the transfer scales as `S/X`.
 > * What the link really buys is **the knee** (`r* ∝ X`), not the per-rider
 >   bandwidth term: PCIe6 satisfies `c < T0/B` and still loses on reachability.
+>
+> **What has since been built and measured** (branch `perblock-d2h-opt`)
+>
+> | state | `c` | `F` | break-even | gain |
+> |---|---|---|---|---|
+> | as characterised | 5.173 | 13.44 | — | 0.65× |
+> | T1 only | **1.259** | 13.44 | 6.4 | 0.87× |
+> | **T1 + T2** | **1.259** | **5.90** | **2.8** | **1.06×** |
+>
+> So the target went from *failing the necessary condition* to **paying from
+> 2.8 riders against a knee of 3.8**. `run_suite` 9/9, and a negative control
+> that suppresses T2's flush makes the token-identical test **FAIL 3/3** — so
+> the 9/9 is evidence rather than merely true.
+>
+> **THREE RETRACTIONS, newest first.** Each was a claim I made confidently and
+> then had to withdraw; the pattern in all three was believing a fit before
+> testing the variable or the window it was fitted in.
+>
+> 1. **"The gain at C2C is 1.21×"** — that assumed the blocking D2H removed
+>    entirely. Measured, T2 removes **66%** of it, so the gain is **1.06×**.
+> 2. **"`c = 0.205 + 1.841e-3·S`, and `c/S` falling shows a floor"** — wrong
+>    x-variable. `c` tracks the **prompt**, not the streamed length; tested by
+>    holding the prompt fixed and changing generation length, where `S_eff`
+>    rose 18% and `c` *fell* 3%. Pooled over seven arms against the prompt:
+>    `c = 0.337 + 1.673e-3·S`, slope banded 1.19–1.67e-3.
+> 3. **"Riders share part of `c`, α̂ = 0.69"** — α is **unidentified**, not
+>    sublinear. On one arm at one context it runs 0.40 → 1.085 purely as the
+>    fit window widens, and two runs of the identical configuration disagree by
+>    0.39 at the same window. An F-test, a bootstrap, a residual-sign check and
+>    leave-one-out all endorsed 0.69, and all four condition on the window.
+>    **The affine law stands.**
 
 Campaign: decompose `F` (the per-step cost of using the host path) into its
 static / per-rider / per-byte / per-block parts, then project it onto NVLink-C2C.
@@ -1306,3 +1336,220 @@ limit exceeds depth). **Nothing has run on a GPU yet** — the worktree's venv
 copy (8.6 GB, needed so the editable finder resolves `vllm` to this tree rather
 than the main one) has been running ~70 minutes, currently inside `torch`. No
 measurement can start until it finishes and the tree-identity gate passes.
+
+---
+
+# M7 — pin the rider-sharing exponent (2026-10-03, job 2179995, ~2 h nova07)
+
+Ben asked whether I was treating `c` as one rider's cost while ignoring
+amortisation across many — whether *none* of `c`'s blocks can be shared. Good
+question, and my answer changed twice before settling.
+
+**The design.** The knee goes as `1/S`, so shortening the prompt widens the rider
+axis on the A100 we already hold: ctx 128 gives a knee of ~17 against ctx 512's
+8, reaching r = 16 instead of 8. Four arms, with **ctx 128 run twice adjacent in
+time** because α is a shape parameter and its run-to-run spread is what decides
+whether a context trend is real. Two predictions registered in the sbatch header
+before the run.
+
+**Result: α is UNIDENTIFIED.** Not sublinear, not constant — unidentifiable.
+
+| arm | r≤4 | r≤6 | r≤8 | r≤12 | r≤16 | swing |
+|---|---|---|---|---|---|---|
+| ctx 512 | 0.900 | 0.855 | 0.690 | 0.690 | 0.690 | 0.21 |
+| ctx 256 | — | 0.890 | 0.960 | 0.750 | 0.750 | 0.21 |
+| ctx 1024 | 0.400 | 0.400 | 0.400 | 0.400 | 0.400 | degenerate |
+| **ctx 128 A1** | 0.400 | 0.400 | 0.590 | 0.940 | **1.085** | **0.69** |
+| **ctx 128 A2** | 0.400 | 0.615 | 0.980 | 0.795 | **0.980** | **0.58** |
+| ctx 192 | 0.400 | 0.740 | 0.640 | 0.960 | 0.960 | 0.56 |
+
+A1 and A2 are **two runs of the identical configuration**. α moves 0.40 → 1.085
+on one of them as the fit window widens, and the two disagree by **0.39 at the
+same window**. Cause: at the first rider point `F` is ~95% of `ΔT`, so `F` and
+`c·r^α` trade off with almost no leverage on the exponent.
+
+**Why five checks missed it, which is the transferable part.** An F-test (10.28),
+a bootstrap (P(α<1) = 98%), a residual-sign check, leave-one-out (0.52–0.74) and
+a drop-the-r=1 check all endorsed α = 0.69. **All five condition on the fit
+window and the points inside it**, so none can see the estimate move wholesale
+when the window changes. A goodness-of-fit statistic computed inside one window
+cannot detect a model unidentified across windows. `amortization.py --window` is
+now the primary diagnostic, ahead of the F-test, and its selftest asserts α *is*
+unstable so the finding cannot be quietly reinstated.
+
+**What survives, and it answers the actual question.** Only **one** of `c`'s four
+components is per-rider by *physics*: the bytes on the wire, 9.2% of `c` at the
+target. The 2·L·r launches and the r pageable D2H calls are **batchable**
+(batching moves them out of `c` into `F`), and the per-block loop is
+**vectorisable**. So sharing is an available engineering lever, not an observed
+effect — and what batching returns is capped by the knee, since it helps in
+proportion to `r`.
+
+**Second retraction, from the same job.** The last arm was a registered test of
+something I had already "fixed": I had switched the context fit from the nominal
+prompt to the measured streamed length, on the reasoning that a rider streams its
+*current* sequence length. The C arm holds the prompt at 256 and raises
+generation length, making `S_eff` 18% larger at an identical prompt. `S_eff` was
+predicted **exactly** (395 vs 395) and **`c` did not follow it** — 0.703 against
+0.726, a 3% *fall* where proportionality demands +18%, against 1.5%
+repeatability. Pooled R² cannot discriminate the two variables (0.981 vs 0.987,
+collinear), so that one same-prompt pair is the whole evidence. Reverted to the
+prompt, which also **restores the floor** I had wrongly retracted: against the
+prompt `c/S` falls 2.3× and the intercept 0.34–0.45 agrees with the component
+fit's independent 0.645 to 1.9×, where the streamed reading disagreed 10×.
+
+`c` and `F` *are* well identified: across seven arms `c` repeats to **1.5%** and
+`F` to **10%**. Slope banded **1.19–1.67e-3** depending on whether the
+longest-context arm (4 below-knee points) is admitted — a 41% spread, 38% in `c`
+extrapolated to the target, and the better-conditioned fit is the *optimistic*
+one because the arm it drops is closest to the target.
+
+**Slice B not run.** It existed to attribute α to a component via the `minbytes`
+arm; with no α to attribute it was 1.75 GPU-hours for a secondary benefit.
+
+---
+
+# M8 — T1 built, and Phase 0 decides T2 (2026-10-03, job 2179997)
+
+Ben reviewed `OPT_PROPOSAL_PERBLOCK_D2H.md` and said execute. Phase 0 first per
+the proposal's own recommendation, T1 unconditionally, T2 gated on the number.
+
+**Phase 0 reversed the earlier verdict.** `SKIP_D2H` differencing said 9.10 ms,
+but commit `c609d93c7` had made exactly that copy async, measured **1.6 ms** and
+reverted on cost. A probe arm priced the synchronisation alone — same launches,
+same bytes, non-blocking into pinned staging, no scatter:
+
+```
+real_a 11.31   probe 2.84   skip 1.86   real_b 11.06
+real − probe   = 8.47 ms   the synchronisation = the realisable prize
+probe − skip   = 0.98 ms   the async copy a fix still pays
+real_a − real_b = 0.25 ms  drift — a 33.5× ratio against the effect
+```
+
+So **8.47 ms, not 1.6**, clearing the 2 ms abandon threshold by 4×. The two are
+measurements of different code: the async prefetch chain now puts far more behind
+the same drain, and the per-row host loop that commit blamed has since been
+vectorised away. `c` moved 14%, as a per-*layer* cost must.
+
+**T1 measured.** `bt_ms = 0.0216 + 0.00317·riders`, residual 0.00055 ms — fitted
+in riders with no block term. 0.275 → **0.00313** ms/rider at ctx 512 (87×), and
+since the coefficient carries no `S`, 3.917 → 0.00313 at the target (**1234×**).
+Shown three ways, not fitted once: riders linear to 12; a 4× block-count cut
+moving the timer **2–6%** at every rider count where it would have moved ~4×,
+with the two arms' slopes agreeing to 3% while differing 4× in block count; and
+3.7× more blocks at ctx 2048 leaving the timer identical (0.0240 vs 0.0243).
+
+`c` at the target: **5.173 → 1.259** against `T0/B` = 3.37. Condition (1) passes,
+having failed by 53%.
+
+**Three process failures worth recording.**
+
+* **The T1 timer would have measured nothing.** `build_step_bt_python` is a `PT`
+  timer and `PT` is a no-op unless `VLLM_KVPIPE_PHASE_TIMERS` is set. Caught
+  before the job got past the suite.
+* **My fix for that introduced a worse bug.** Realising the knee doesn't bound a
+  CPU timer, I raised riders to 12 — at ctx 2048, where the published config sits
+  at 98.5% of the KV pool. Rearranged so the answer doesn't matter.
+* **`block_size` 64 alone tips ctx 2048 over.** Block rounding inflates each
+  request from 2256 to 2304 tokens; 16 residents then need 36,864 against a pool
+  between the two. The gate rejected all three rows of that arm for prefill
+  leakage, visible in its own baseline (61.42 vs 53.76 ms). My analysis was
+  reading it anyway — the phase JSONL carries no purity verdict — so
+  `t1_effect.py` now reads each arm's companion record and discards it outright.
+  **So the published ctx-2048 configuration has no headroom for a coarser block
+  size either, not only none for longer sequences.**
+
+Also: the first step at each new cohort size costs **0.224 ms**, within 15% of
+the *pre*-T1 prediction. Read as steady-state it would have said T1 did nothing.
+
+---
+
+# M9 — T2 built, and a negative control (2026-10-03, jobs 2179998/2180000)
+
+`write_token` now copies into pinned staging with `non_blocking=True` and the
+host-side scatter is deferred to the next step behind one event wait, so 2·L
+*blocking* copies become 2·L async ones.
+
+**Measured, bracketed, both arms numerically valid:**
+
+| | `F` blocking | `F` async | saved |
+|---|---|---|---|
+| ctx 512 | 11.48 | **4.74** | **6.74 ms** |
+| ctx 2048 | 9.70 | 4.69 | 5.01 ms |
+
+Drift **0.19 ms** against 6.74 — a 35× ratio; `c` spread 16%, per-layer as
+expected; every row passed the gate. That is **80% of Phase 0's ceiling**, and
+the shortfall is principled: the probe skipped the scatter, T2 still performs it
+a step later. Per layer 0.1655 → 0.0737, so the blocking component goes 0.142 →
+0.048 — **66% of it, not all.** Carried as its own coefficient, with a selftest
+asserting post-T2 `F` stays *above* the idealised floor so the two can't be
+conflated.
+
+**The ordering obligation.** `_issue_runs` re-streams the mirror host-to-device
+on the hot path next step, so a missed flush feeds attention stale KV and the
+tokens come out quietly wrong rather than crashing. Safe by construction —
+`build_step` runs once per step before any `_issue_runs` and flushes first, and
+nothing prefetches across a step boundary. **One** idempotent flush keyed on a
+dirty flag covers eight touch points, rather than the three separate sync guards
+the reverted attempt accumulated.
+
+**Inserting those guards went badly.** By text pattern: `seed_layer` got a
+duplicate, and two landed in the *wrong* methods — `has_stash` instead of
+`stash_from_host`, and **`_launch_prefetch` instead of `writeback_layer`**.
+`_launch_prefetch` is per-layer hot path, so that would have run 64 flushes a
+step. Three intended sites got nothing. What caught it was mapping every flush
+call back to its enclosing `def` rather than trusting the edit; the repair is
+driven by that mapping and the final placement verified the same way.
+
+**The negative control, which was the most valuable test here.** The suite passed
+9/9 with T2 **on and off** — which shows T2 breaks nothing but says nothing about
+whether the suite could *catch* a missed flush, and that failure is silent. So:
+suppress the flush and require the token-identical test to fail.
+
+```
+flush intact     -> REAL CORRECTNESS PASS
+flush suppressed -> REAL CORRECTNESS FAIL, 3/3 prompts diverged
+  vanilla -> ' Julius Caesar, a Roman general and statesman,'
+  pool    -> ' Julius Caesar Augustus, cano\nPlease implement'
+```
+
+**My first version of that control was wrong twice**, and either alone would
+have produced a confident empty claim. It read the **exit code**, but the test's
+`main()` has no `sys.exit` and always exits 0 — the suite greps stdout — so it
+read a run that never compared tokens as a pass. And the suppression **leaked**:
+returning early without clearing grew the pending list by one entry per layer per
+step, so the server failed its completions from the leak rather than from stale
+KV, and the test reported *inconclusive*. Now it drops the pending rows, reads
+the verdict string, and runs a **positive arm first** — without which an
+inconclusive negative arm cannot be told from a broken environment.
+
+**Not built:** the unified-mirror layout. ~0.4 ms of an ~8 ms win and the only
+change touching a layout every mirror access shares.
+
+---
+
+# Where this leaves the feature (2026-10-04)
+
+| state | `c` | `F` | break-even | gain |
+|---|---|---|---|---|
+| as characterised | 5.173 | 13.44 | — | 0.65× |
+| T1 only | 1.259 | 13.44 | 6.4 | 0.87× |
+| **T1 + T2** | **1.259** | **5.90** | **2.8** | **1.06×** |
+
+**T1 alone is not enough** — it satisfies condition (1) but leaves break-even at
+6.4 riders against a knee of 3.8. And the gain is **1.06×, not the 1.21×** the
+proposal projected, because that assumed the D2H removed entirely. The
+qualitative change is what matters: as characterised the configuration failed a
+condition no interconnect could repair at any bandwidth, and it no longer does.
+
+**Open, and unchanged by this work.** The hiding fraction of the remaining async
+host work bands `F` over **18×** on GH200 (2.1–37.4 ms), and at the 8B's hiding
+even the optimised configuration would lose. One run on **any GPU faster than an
+A100** closes it — no C2C link, no 70B checkpoint, under an hour. It is the
+highest-value measurement left.
+
+**For Ben.** Two items need a decision, both in the mirror README: the `128` I
+added to `check_tables.py`'s bandwidth allowlist (alternative: have the guard
+skip sections `main.tex` doesn't `\input`), and the pre-existing
+`baseline_integrity_20260912.log` that `06-evaluation.tex` and
+`B-correctness.tex` cite but which is **not in version control**.
