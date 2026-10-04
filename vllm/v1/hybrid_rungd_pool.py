@@ -239,10 +239,41 @@ class RungdHostPool:
         #
         # Set VLLM_KVPIPE_RUNGD_D2H_ASYNC=0 to get the old blocking path back,
         # which is what the before/after measurement needs.
-        # T3 kill switch. The batched gather is the default; set this to 0 to
-        # get the per-run loop back, which is what the before/after needs.
+        # T3, DISABLED BY DEFAULT: IT IS A LARGE REGRESSION AS IMPLEMENTED.
+        #
+        # The idea was sound -- the per-layer gather issues 2*L*r contiguous
+        # copies and the sources are evenly spaced, so one strided copy per
+        # tensor would cut launches to 2*L. It is also CORRECT: the suite is
+        # 9/9 with it on and the launch count does drop to 128 from 1024 at
+        # eight riders, 861 of 861 steps taking the batched path.
+        #
+        # But it is 6x SLOWER, measured:
+        #
+        #   ctx 512    c 0.845 -> 35.771 ms/rider   (25.1 GB/s -> 4.3)
+        #   ctx 2048   c 3.081 -> 231.700           (25.1 GB/s -> 2.3)
+        #
+        # torch's copy_ from a STRIDED pinned host view into a contiguous device
+        # tensor does not become a 2D DMA; it materialises the source on the
+        # host first. Those 2.3-4.3 GB/s rates are the band this repo already
+        # documents for host-side gathers -- the old scattered path at 6.4 GB/s,
+        # "the binding constraint on the whole path", and preload_layer's
+        # block-by-block loop at "~2.9 GB/s flat across contexts, which is
+        # Python overhead, not memory bandwidth". So T3 reintroduces exactly the
+        # CPU staging copy the block-major layout was built to remove, and the
+        # per-run loop is fast BECAUSE each of its 2*L*r copies is a contiguous
+        # DMA at full link rate.
+        #
+        # The launch count was never the binding cost; contiguity is. Cutting
+        # launches is only worth doing if every copy stays contiguous, which
+        # means making the extents ADJACENT so the runs merge naturally rather
+        # than striding across the gaps between them. That is an allocator
+        # change and is not attempted here.
+        #
+        # Kept behind a flag rather than deleted because the correctness proof
+        # and the equivalence test are valid, and a real cudaMemcpy2D binding
+        # would make the idea work.
         self._batch_gather = (
-            _os.environ.get("VLLM_KVPIPE_RUNGD_BATCH_GATHER", "1") == "1"
+            _os.environ.get("VLLM_KVPIPE_RUNGD_BATCH_GATHER", "0") == "1"
         )
         self._d2h_async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_ASYNC", "1") == "1"
