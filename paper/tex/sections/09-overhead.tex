@@ -417,9 +417,19 @@ own enabling technology matters least.}
 \emph{Claim under test: a faster link admits more riders, and more riders raise
 throughput.}
 
+Three quantities carry the argument from here. $T_0$ is the \emph{rider-free}
+step time, the decode step with $B$ residents and no riders, against which every
+overhead in this section is differenced. $B$ is how many HBM-resident requests
+\emph{fit} --- a capacity, $(M - W)/\beta S$ for HBM $M$ and weights $W$, not a
+chosen batch size. And $T_0/B$ is then the \emph{per-rider step-time budget}: the
+largest average step-time increase a rider may cause and still improve
+throughput. Its units are milliseconds per rider, the same as $c$, which is what
+makes the comparison below meaningful.
+
 Admitting $r$ riders alongside $B$ residents multiplies served requests by
 $1 + r/B$ and step time by $1 + \Delta T/T_0$, so a throughput gain requires
-$r\,(T_0/B - c) > F$. This separates into two requirements of different kind:
+$\Delta T / r < T_0/B$, or equivalently $r\,(T_0/B - c) > F$. This separates into
+two requirements of different kind:
 \begin{align}
 c &< T_0/B, \label{eq:overhead:nec}\\
 F/(T_0/B - c) &< r \le r^{*}. \label{eq:overhead:reach}

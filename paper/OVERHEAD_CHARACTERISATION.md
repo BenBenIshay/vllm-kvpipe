@@ -23,6 +23,20 @@ was measured the interconnect was not what was stopping it.**
 > riders at 1.06×**. §1–§9 describe the system as characterised, which is the
 > baseline those changes are measured against; read §10 for the current state.
 
+### Notation
+
+| | |
+|---|---|
+| `r` | rider count — requests whose KV lives in host memory and is re-streamed each step |
+| `S` | context length in tokens |
+| `X` | CPU–GPU link bandwidth |
+| `L` | layer count; `b_tok` bytes of KV per token; `bs` KV block size |
+| **`T0`** | **the rider-free step time** — the decode step with `B` residents and *zero* riders. Everything is differenced against it: `ΔT(r) = T_step(r) − T0`. Measured 49.29 ms (Qwen-32B, A100, ctx 512); 24.2 ms modelled for the 70B on GH200, where it is weight-read bound. |
+| **`B`** | **how many HBM-resident requests fit** — a *capacity*, not a chosen batch size: `(HBM − weights − overhead)/(b_tok·S)`. 7.2 at the target. |
+| **`T0/B`** | **the per-rider step-time budget**: the largest average step-time increase per rider that still improves throughput. See §1 for where it comes from. Crucially it is in **ms per rider**, the same units as `c`, which is what makes the two directly comparable. |
+| `F`, `c` | the fixed and per-rider parts of `ΔT`: `ΔT = F + c·r` |
+| `r*` | the knee, `T0·X/(b_tok·S)` — above it the step *is* the transfer |
+
 Concretely, at the paper's own target — Llama-70B fp8, ctx 8192, GH200-class
 HBM, residents set by capacity (7.2, not a chosen 16):
 
@@ -78,10 +92,16 @@ which splits into two conditions of **different kind**:
   (2)  r  >  F/(T0/B - c)    and that r must be reachable, i.e. <= the knee.
 ```
 
-Condition (1) is the one that has been missing from the discussion. `T0/B` is
-what one resident contributes to throughput. If a rider costs more step time
-than that, **no rider count helps** — the gain curve never crosses 1, and `F`
-is irrelevant. This is why `c`, not `F`, is the core question: `F` sets *where*
+Condition (1) is the one that has been missing from the discussion. **`T0/B` is
+the per-rider step-time budget**: rearranging the line above, gain > 1 is
+exactly `ΔT/r < T0/B`, so a rider may lengthen the step by up to `T0/B` and
+still pay for itself. (It is *not* "what a resident contributes to throughput",
+which would be `1/T0` requests per unit time — a different quantity in different
+units. The useful property of `T0/B` is that it is in ms per rider, so it is
+directly comparable with `c`.) Since `ΔT/r = F/r + c` and `F/r` vanishes as
+riders are added, `c < T0/B` is necessary: if a rider costs more step time than
+that, **no rider count helps** — the gain curve never crosses 1, and `F` is
+irrelevant. This is why `c`, not `F`, is the core question: `F` sets *where*
 break-even is, but `c` sets *whether there is one*.
 
 > **Condition (1) is exact only if `ΔT` is affine in `r`, and §2 establishes
