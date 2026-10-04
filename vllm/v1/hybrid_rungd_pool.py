@@ -239,6 +239,11 @@ class RungdHostPool:
         #
         # Set VLLM_KVPIPE_RUNGD_D2H_ASYNC=0 to get the old blocking path back,
         # which is what the before/after measurement needs.
+        # T3 kill switch. The batched gather is the default; set this to 0 to
+        # get the per-run loop back, which is what the before/after needs.
+        self._batch_gather = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_BATCH_GATHER", "1") == "1"
+        )
         self._d2h_async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_ASYNC", "1") == "1"
             and torch.cuda.is_available()
@@ -305,6 +310,21 @@ class RungdHostPool:
         # req_id -> (host_base, compact_base), the extent fast path's whole
         # per-request mapping. Empty when the general path ran.
         self._req_cbase: dict[str, tuple[int, int]] = {}
+        # T3. (host_start, stride, length, count) when this step's runs are
+        # evenly spaced and equal length, which makes the whole per-layer
+        # gather ONE strided copy per tensor instead of one per run. None when
+        # the pattern is irregular and the per-run loop has to be used.
+        #
+        # Why the pattern is usually regular: ensure_req pops consecutive
+        # extent slots, so the bases are evenly spaced by blocks_per_req, and a
+        # homogeneous cohort uses the same number of blocks in each. Why the
+        # runs do not simply MERGE instead: an extent is sized for
+        # max_model_len but a request only uses ceil(S/bs) of it, so there is a
+        # gap between one request's used blocks and the next extent's base.
+        # Measured: n_runs == rider count exactly, and 2*L*r launches per step.
+        self._batch_plan: tuple[int, int, int, int] | None = None
+        self.batched_steps = 0
+        self.unbatched_steps = 0
         self._w_cur = 0
         # Preallocated so a block-table row is a VIEW, not an allocation. It
         # only ever needs to index the rolling region, which is w_max blocks.
@@ -671,6 +691,54 @@ class RungdHostPool:
             w += ln
         return runs, bases, w
 
+    def _plan_batched_gather(self):
+        """(host_start, stride, length, count), or None.
+
+        The per-layer gather copies each run from the host mirror into the
+        rolling slot. The DESTINATIONS are contiguous and cumulative by
+        construction, so if the SOURCES are evenly spaced and all runs are the
+        same length, the whole gather is one strided copy per tensor rather
+        than one per run -- 2L launches per step instead of 2*L*r.
+
+        Every condition is checked rather than assumed, because getting this
+        wrong would stream the wrong KV with no error:
+
+          * all runs the same length, so one `length` describes them all;
+          * compact starts exactly cumulative, i.e. run i lands at i*length,
+            which is what lets the destination be one reshaped view;
+          * host starts evenly spaced by a constant stride;
+          * stride >= length, so the source windows do not overlap;
+          * the last window inside the mirror.
+        """
+        runs = self._runs
+        if len(runs) < 2:
+            return None                    # nothing to batch
+        n0 = runs[0][2]
+        stride = runs[1][0] - runs[0][0]
+        if stride < n0:
+            return None
+        for i, (hs, cs, n) in enumerate(runs):
+            if n != n0 or cs != i * n0:
+                return None
+            if hs != runs[0][0] + i * stride:
+                return None
+        if runs[0][0] + (len(runs) - 1) * stride + n0 > self.h_max:
+            return None
+        return (runs[0][0], stride, n0, len(runs))
+
+    def _strided_views(self, host: torch.Tensor, slot: torch.Tensor):
+        """(dst, src) views for the batched gather, shaped [count, length, ...]."""
+        hs0, stride, n0, cnt = self._batch_plan
+        s0 = host.stride(0)
+        src = host.as_strided(
+            (cnt, n0) + tuple(host.shape[1:]),
+            (stride * s0, s0) + tuple(host.stride()[1:]),
+            hs0 * s0,
+        )
+        dst = slot.narrow(0, 0, cnt * n0).view(
+            (cnt, n0) + tuple(slot.shape[1:]))
+        return dst, src
+
     def build_step(
         self, active_req_ids: list[str], seq_lens: list[int]
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -710,6 +778,11 @@ class RungdHostPool:
             raise RuntimeError(
                 f"rolling region W={self._w_cur} exceeds w_max={self.w_max}"
             )
+        self._batch_plan = self._plan_batched_gather()
+        if self._batch_plan is not None:
+            self.batched_steps += 1
+        else:
+            self.unbatched_steps += 1
         max_blk = max((len(self.req_blocks.get(r, [])) for r in active_req_ids),
                       default=1)
 
@@ -787,6 +860,22 @@ class RungdHostPool:
         nominal = 0
         launches = 0
         mode = self._xfer_mode
+        if (mode == "real" and self._batch_plan is not None
+                and self._batch_gather):
+            # T3: one strided copy per tensor for the whole cohort.
+            _hs0, _stride, n0, cnt = self._batch_plan
+            dk, sk = self._strided_views(hk, kslot)
+            dv, sv = self._strided_views(hv, vslot)
+            dk.copy_(sk, non_blocking=True)
+            dv.copy_(sv, non_blocking=True)
+            full = 2 * cnt * n0 * kslot[0].numel() * kslot.element_size()
+            self.stream_bytes += full
+            self.stream_bytes_nominal += full
+            self.stream_runs += 2
+            PT.count("h2d_launches", 2)
+            PT.count("h2d_batched_steps")
+            PT.add("issue_runs", _t)
+            return
         for hs, cs, n in self._runs:
             if n <= 0:
                 continue
@@ -984,6 +1073,7 @@ class RungdHostPool:
             return 0
         if self._wt_event is not None:
             self._wt_event.synchronize()
+        _tf = PT.now()
         rows = 0
         for li, host_pos, n in self._wt_pending:
             ln = self.layers[li]
@@ -999,6 +1089,10 @@ class RungdHostPool:
         self.wt_flushes += 1
         self.wt_deferred_rows += rows
         PT.count("wt_flush_rows", rows)
+        # Attributing the post-T2 residual F needs this split: the async copy
+        # launches are timed in write_token_d2h_async, and the deferred scatter
+        # here. Without both, "65% of F is residual D2H" cannot be acted on.
+        PT.add("wt_flush_scatter", _tf)
         return rows
 
     def _probe_staging(self, like: torch.Tensor):

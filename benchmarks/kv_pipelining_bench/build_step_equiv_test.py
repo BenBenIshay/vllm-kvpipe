@@ -84,6 +84,12 @@ class Stub:
         self.wt_deferred_rows = 0
         self.host_k = {}
         self.host_v = {}
+        # T3 state: build_step now also plans the batched gather.
+        self.h_max = w_max
+        self._batch_plan = None
+        self._batch_gather = True
+        self.batched_steps = 0
+        self.unbatched_steps = 0
 
     # bind the real implementations. `_active_host` is a property, so it has
     # to be a CLASS attribute to work at all -- which is itself worth asserting,
@@ -93,6 +99,7 @@ class Stub:
     compact_of = RungdHostPool.compact_of
     _active_host = RungdHostPool._active_host
     flush_token_writes = RungdHostPool.flush_token_writes
+    _plan_batched_gather = RungdHostPool._plan_batched_gather
 
 
 def extents(spec, bpr):

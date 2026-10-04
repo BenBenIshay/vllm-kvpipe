@@ -346,6 +346,13 @@ def main() -> int:
                         "the host does not work here: it reads 21.4 ms per step "
                         "for two copies of one token's KV, which is the host "
                         "blocked on the GPU, not a cost. NUMERICALLY INVALID.")
+    p.add_argument("--no-batch-gather", action="store_true",
+                   help="restore the per-run H2D loop (T3 off), which is what "
+                        "the before/after needs. T3 batches the whole cohort's "
+                        "per-layer gather into ONE strided copy per tensor when "
+                        "the runs are evenly spaced and equal length, cutting "
+                        "launches from 2*L*r to 2*L. Numerically VALID either "
+                        "way -- both move the same bytes.")
     p.add_argument("--no-d2h-async", action="store_true",
                    help="restore the OLD blocking mirror write (T2 off). The "
                         "async deferred write is the default; this is what the "
@@ -415,6 +422,8 @@ def main() -> int:
     os.environ["VLLM_KVPIPE_RUNGD_XFER_MODE"] = a.xfer_mode
     if a.skip_d2h:
         os.environ["VLLM_KVPIPE_RUNGD_SKIP_D2H"] = "1"
+    if a.no_batch_gather:
+        os.environ["VLLM_KVPIPE_RUNGD_BATCH_GATHER"] = "0"
     if a.no_d2h_async:
         os.environ["VLLM_KVPIPE_RUNGD_D2H_ASYNC"] = "0"
     if a.d2h_probe:
@@ -731,6 +740,7 @@ def main() -> int:
            "skip_d2h": bool(a.skip_d2h),
            "d2h_probe": bool(a.d2h_probe),
            "d2h_async": not bool(a.no_d2h_async),
+           "batch_gather": not bool(a.no_batch_gather),
            "rungd_layers": a.rungd_layers or 0,
            "numerically_valid": (a.xfer_mode == "real"
                                  and a.rungd_layers == 0
