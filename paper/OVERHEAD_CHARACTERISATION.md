@@ -83,15 +83,53 @@ was measured the interconnect was not what was stopping it.**
 > accident. T2 did not introduce the hazard — it removed the sync that was
 > hiding it.
 >
-> **T6** orders the deferred scatter after the mirror's *readers* rather than
-> after the main stream, which is why it is nearly free: at the top of a step the
-> newest such DMA was issued a layer before the end of the previous step and has
-> long since retired. Waiting on the main stream instead would hand back exactly
-> the sync T2 removed. Both stream families are covered —
-> `_copy_stream.synchronize()` for the prefetches and a re-recorded event for
-> the main-stream event-miss fallback — because one event cannot stand for two
-> streams. `VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC=1` disables it as a negative
-> control, since the intermittency means a fix cannot be validated without one.
+> ### T6 closes the window, and it costs the whole benefit
+>
+> **T6** orders the deferred scatter after the mirror's *readers* — the H2D
+> copies — rather than after the main stream, on the reasoning that at the top of
+> a step the newest such DMA was issued a layer before the end of the previous
+> step and has long since retired. **Measured, that reasoning is wrong**:
+>
+> | run | async | T6 | `F` | `c` |
+> |---|---|---|---|---|
+> | archived (3 runs) | on | off | 4.3–5.0 | 0.883–1.004 |
+> | `ASYNC_off` | off | — | 4.98 | 7.196 |
+> | **`T6_on`** | **on** | **on** | **4.60** | **7.024** |
+>
+> With T6 the overlapped path performs like the *un*-overlapped one. The reason
+> is visible in `_launch_prefetch`: it begins with
+> `copy_stream.wait_stream(current_stream())`, so every queued copy is gated
+> behind main-stream progress and the copy stream therefore *always* has
+> outstanding work. That is simultaneously why the hazard counter reads 100% and
+> why `copy_stream.synchronize()` is close to a full device sync. The hazard is
+> intrinsic to the host running a step ahead of the device, and **any host-side
+> ordering pays for the whole gap.**
+>
+> So T6 stays behind a flag and is not defaulted on.
+>
+> ### And the causal chain is NOT established
+>
+> Two things are confirmed: the hazard window exists on every step, and the
+> async path diverges intermittently. What is *not* confirmed is that the first
+> causes the second, and on closer reading it probably does not.
+>
+> The row the scatter overwrites holds the **current** token. At step N−1 the
+> streamed window only needs tokens up to t−1; token t's KV comes from the
+> resident GPU cache, written by the attention kernel. So whatever the in-flight
+> prefetch reads in that row is masked out by `seq_len` and never consumed —
+> which makes the race, as far as this analysis goes, **benign**.
+>
+> That leaves the divergence unexplained, and it is the thing that matters. It
+> also means the hazard counter, for all its 3456/3456, measured a real window
+> around a value nobody reads. Every hypothesis so far — including this one — has
+> been tested against single runs, which is worthless for an intermittent fault,
+> so the next step is a failure **rate** per configuration before any further
+> attribution.
+>
+> **Current standing of the result:** the feature's positive numbers were all
+> taken on a path that produces wrong output, the only known way to make that
+> path correct costs the entire benefit, and the root cause is open. That is a
+> blocker on the headline claim, not a caveat to it.
 
 ### Notation
 
