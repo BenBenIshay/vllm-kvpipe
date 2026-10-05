@@ -11,16 +11,18 @@
 >    small cost share. The overlap is **load-bearing**: `c` = 0.92 with it against
 >    **7.20** without, which fails the gate by more than 2×. That leaves much less
 >    launch-side headroom than the earlier sections imply.
-> 3. **The remaining optimisations are exhausted, and one of them falsified the
->    law.** T4 (batching the per-layer D2H) is 18% *slower* and was killed
->    unbuilt. T5 (whole-extent runs) **fires in the engine** — launches 1024 → 128
->    at r=8 — **and `c` went up 5%**, against a predicted 36% cut. So
->    `b_per_rider_layer`, 51% of `c`, **is not the launch count**; most likely it
->    is the per-layer attention pass over the streamed window, which no host
->    change and no interconnect removes. T6 (ordering the mirror write) is correct
->    and costs the entire overlap. **The 1.32× floor I computed by treating the
->    launch term as removable does not stand; the realistic ceiling is nearer
->    1.1–1.2×.**
+> 3. **Host-side optimisation is exhausted, because `c` is 62% LINK — see §0b.**
+>    Differencing the `real` / `minbytes` / `nobus` arms attributes `c` directly:
+>    **62% bytes, 10% launch issuing, 12% d2h, 17% unidentified.** The law had
+>    claimed launches were 42–51%, overstating them **6×**, which is why T3, T4
+>    and T5 all failed — each attacked a tenth of the cost. The code-side terms
+>    left are d2h (at floor, T4 measured) and the 17% residual.
+> 6. **So the interconnect buys MORE than this report projected, not less.** With
+>    the corrected split, `c` at C2C is **1.098** rather than 1.259 and the gain
+>    **1.079×**; at a doubled link `c` is **0.733** and the gain **1.43×**. Being
+>    more link-bound also makes it *worse* below PCIe6 — which sharpens the
+>    original answer rather than softening it: the interconnect is what decides
+>    this, and C2C is the first point where it decides in our favour.
 > 4. **The gain is bought with latency**, and at the target the post-admission ITL
 >    (34.9 ms) exceeds the design's own `HBM/BW` precondition (~32 ms).
 > 5. **The correctness scare was the test, not the feature.** `hybrid_rungd_real`
@@ -404,6 +406,98 @@ Three things to read off that table, in order of importance:
    other side.
 
 Everything below is the derivation and the evidence.
+
+---
+
+## 0b. CORRECTION, 2026-10-05: `c` is 62% link-bound, not 31% — and the archive said so in M1
+
+This is the most consequential finding of the session, it reverses the
+pessimistic reading of §9d, and **it required no new GPU time** — the decisive
+arm was measured in M1 and its implication was never drawn.
+
+### The measurement
+
+`VLLM_KVPIPE_RUNGD_XFER_MODE` has three settings, all keeping every gather,
+hook, event and stream ordering identical, and all run with the same timer
+state so the *differences* are valid:
+
+| arm | what it does | `c` (ctx 512, L=64) |
+|---|---|---|
+| `real` | the real path | 1.166 |
+| `minbytes` | one block row per copy — **same launches**, almost no bytes | 0.597 |
+| `nobus` | views built, **no copy issued at all** | 0.509 |
+
+Differencing them attributes `c` directly, with no fitting:
+
+```
+  bytes (link)      = real - minbytes = 0.569   49% of c
+  launch issuing    = minbytes - nobus = 0.088    8% of c
+  survives nobus                       = 0.509   44% of c
+```
+
+### What that does to the law's decomposition
+
+| part | measured | the law said | error |
+|---|---|---|---|
+| link / bytes | 0.569 | 0.398 | **understated 1.43×** |
+| launch issuing | 0.088 | 0.536 | **OVERSTATED 6.1×** |
+| per-block | — | 0.245 | (removed by T1) |
+| d2h per rider | — | 0.109 | — |
+| residual | 0.155 | *no such term* | — |
+
+The reconstruction closes: with T1's per-block term removed, these parts sum to
+**0.924** against today's measured **0.913** — **98.8% agreement**.
+
+So today's `c` at ctx 512 is:
+
+| part | share |
+|---|---|
+| **link / bytes** | **62%** |
+| d2h per rider | 12% |
+| residual, unidentified | 17% |
+| launch issuing | 10% |
+| block table | 0.3% |
+
+### Why the fit got it wrong, and why that was predictable
+
+`b_tok = L · 2 · n_kv · d_h · b`, so **the bytes a rider streams are proportional
+to `L`.** A transfer-bound per-rider cost therefore has exactly the shape
+`r · L` — indistinguishable from a per-rider-per-layer *launch* cost. The two
+candidate terms are **collinear in `L`**, the fit split one physical cost across
+both, and it put most of it in the wrong one.
+
+### Three consequences
+
+1. **T3, T4 and T5 were all doomed from the start.** Each attacked the launch
+   count, which is **10% of `c`**. T5's predicted effect was ~0.08 ms against a
+   drift of 0.054 — **its null result was already implied by this M1 arm**, and I
+   spent a day of GPU time rediscovering it. §9d's "the launch term is 51% of
+   `c`" came from the law, not from a measurement, and the measurement
+   contradicting it was already in the archive.
+2. **The "mystery term" is 17%, not 51%.** Still unidentified, but a much smaller
+   prize, and identifying it is no longer on the critical path.
+3. **A faster interconnect buys *more* than this report projected**, because the
+   link share is double what the law used:
+
+| link GB/s | `c` as modelled | `c` corrected | gain |
+|---|---|---|---|
+| PCIe4 25 | 8.74 | 11.80 | 0.76× |
+| PCIe5 64 | 3.90 | 4.88 | 0.80× |
+| PCIe6 128 | 2.34 | 2.65 | 0.85× |
+| **C2C 419** | 1.259 | **1.098** | **1.079×** |
+| **2× C2C 900** | 1.004 | **0.733** | **1.430×** |
+
+Being more link-bound cuts both ways — the corrected `c` is *worse* below PCIe6
+and *better* at and above C2C — which sharpens rather than softens the original
+answer: **the interconnect is the thing that decides this, and C2C is the first
+point where it decides in our favour.**
+
+> **What is not revised.** `F` is unaffected: it is fixed cost, and the three
+> arms differ only in `c`. The gate `c < T0/B` and the knee are unchanged in
+> form. And the coefficients were all taken with the §0 data race open, so the
+> absolute magnitudes remain provisional — but this correction rests on
+> *differences between arms that share that defect*, which is exactly the class
+> of statement the defect does not touch.
 
 ---
 
