@@ -279,6 +279,24 @@ def measure_step(llm, prompts, a, r: int) -> dict:
     }
 
 
+def _git_head() -> str:
+    """Short HEAD of the tree this ran from, or "" if unavailable.
+
+    The artifact has to say which code produced it. The .venv is an editable
+    install, so a job that loads the engine after an edit silently picks up new
+    code; without this, a result cannot be tied to a revision after the fact.
+    """
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -744,6 +762,19 @@ def main() -> int:
     out = {"fit": out_fit, "model": a.model, "ctx": a.ctx, "batch": a.batch,
            "link_gbps": a.link_gbps, "async": a.rungd_async,
            "whole_extent": a.whole_extent, "rungd_bpr": a.rungd_bpr,
+           # EVERY VLLM_KVPIPE_* var, not just the ones with CLI flags. This
+           # closes a provenance gap that cost a day's measurements: the mirror
+           # -ordering flag had no flag and no artifact field, so when its
+           # DEFAULT was flipped mid-session the arms of one bracket ran
+           # different code and nothing in the output said so -- T6_fix_b,
+           # named for the ordered arm, had actually run unordered. Capturing
+           # the environment rather than the parsed arguments means a knob
+           # added later, or set by hand, or changed in its default, is still
+           # recorded. The analysis can then group by configuration instead of
+           # by filename.
+           "kvpipe_env": {k: v for k, v in sorted(os.environ.items())
+                          if k.startswith("VLLM_KVPIPE_")},
+           "git_head": _git_head(),
            "short_len": a.short_len, "long_len": a.long_len,
            "connector": bool(a.connector),
            "rig": ("decode_node_pd_emulated" if a.connector
