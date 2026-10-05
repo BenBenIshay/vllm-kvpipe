@@ -11,11 +11,16 @@
 >    small cost share. The overlap is **load-bearing**: `c` = 0.92 with it against
 >    **7.20** without, which fails the gate by more than 2×. That leaves much less
 >    launch-side headroom than the earlier sections imply.
-> 3. **The remaining optimisations are nearly exhausted.** T4 (batching the
->    per-layer D2H) is 18% *slower* and was killed unbuilt; T5 (whole-extent runs)
->    is worth −89.5% host but its sign **flips with context**; T6 (ordering the
->    mirror write) is correct and costs the entire overlap, so it is flag-gated
->    off. The realistic floor is `c` ≈ 1.07 and `F` ≈ 3–4, worth about **1.32×**.
+> 3. **The remaining optimisations are exhausted, and one of them falsified the
+>    law.** T4 (batching the per-layer D2H) is 18% *slower* and was killed
+>    unbuilt. T5 (whole-extent runs) **fires in the engine** — launches 1024 → 128
+>    at r=8 — **and `c` went up 5%**, against a predicted 36% cut. So
+>    `b_per_rider_layer`, 51% of `c`, **is not the launch count**; most likely it
+>    is the per-layer attention pass over the streamed window, which no host
+>    change and no interconnect removes. T6 (ordering the mirror write) is correct
+>    and costs the entire overlap. **The 1.32× floor I computed by treating the
+>    launch term as removable does not stand; the realistic ceiling is nearer
+>    1.1–1.2×.**
 > 4. **The gain is bought with latency**, and at the target the post-admission ITL
 >    (34.9 ms) exceeds the design's own `HBM/BW` precondition (~32 ms).
 > 5. **The correctness scare was the test, not the feature.** `hybrid_rungd_real`
@@ -1147,7 +1152,44 @@ prize was real (−98.8% host) — it is simply not reachable through a staging
 copy, because every layer produces its KV at a different time in a different
 tensor and aggregating it costs a touch per layer either way.
 
-**T5 helps at short context and hurts at long, and that flip is the finding.**
+> ### T5 MEASURED IN THE ENGINE: it fires, and it buys nothing
+>
+> Everything in this subsection below this box was a projection from the
+> off-engine pricing. The in-engine measurement contradicts it, and the
+> contradiction is worth more than the projection was.
+>
+> Same job, back-to-back, ctx 512, Qwen-32B on A100:
+>
+> | arm | `n_runs` @ r=8 | launches | `w_blocks` | `F` | `c` |
+> |---|---|---|---|---|---|
+> | T5 off | 8 | 1024 | 264 | 5.27 | **0.899** |
+> | T5 on | **1** | **128** | 328 | 5.75 | **0.948** |
+>
+> The mechanism fired exactly as designed — verified in the phase JSONL *before*
+> any timing was read, which is the gate T1 nearly failed and T3 did fail. The
+> launch count is now independent of the rider count. And `c` went **up 5%** where
+> the model predicted a **36% cut**.
+>
+> **So `b_per_rider_layer` — 0.536 ms/rider, 51% of `c` at this config — is not
+> the launch count.** Removing seven eighths of the launches did not move it.
+>
+> Leading interpretation, untested: it is the extra **attention pass over the
+> streamed window**. That scales with the window (∝ r), runs once per layer
+> (hence the `r·L` shape the fit found), is GPU compute rather than host work,
+> and T5 makes it slightly *worse* by enlarging the window with slack — 264 → 328
+> blocks, +24%, the right sign and order for the +5% observed. Confirming it needs
+> a sweep of window size at **fixed** rider count, which this campaign has not
+> run.
+>
+> **Two consequences.** The "launches fixed in the allocator → 1.19×" rung in the
+> ladder below **does not exist**. And if the interpretation holds, the dominant
+> term in `c` is irreducible by any host-side change *and* by any interconnect,
+> putting the ceiling nearer **1.1–1.2×** than the 1.32× floor computed from
+> treating it as removable. T5 stays default-off: correct, mechanism working, not
+> worth enabling.
+
+**T5 was projected to help at short context and hurt at long — the flip below is
+the model's reasoning, now superseded by the box above.**
 `_plan_extents` has always merged adjacent runs, and the merge has never fired:
 consecutive extents *are* adjacent, but a decode request grows a block every
 `block_size` tokens, so an extent sized for its final length always has unused
