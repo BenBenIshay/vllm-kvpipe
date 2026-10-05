@@ -102,6 +102,19 @@ case "$SLICE" in
 
 A)
     echo
+    echo "######## NOTE: slice A is SUPERSEDED, kept for the record ########"
+    echo "# The four-arm correctness grid below cannot settle this. The race is"
+    echo "# intermittent: the negative control (NO_MIRROR_SYNC=1, race restored"
+    echo "# in full) PASSED on its first two attempts on the very node that had"
+    echo "# failed twice. Output divergence is the wrong instrument."
+    echo "#"
+    echo "# What settled it is mirror_hazard_steps, a query()-based counter"
+    echo "# sampled before T6's synchronise: it read 84 of 84 flush steps, so"
+    echo "# the reader had not retired on ANY step. See paper/model/t6_effect.py."
+    echo "#"
+    echo "# This slice also ran once with its arms on DIFFERENT code, because I"
+    echo "# edited the pool while it was in flight. That run was discarded."
+    echo
     echo "######## 1. ISOLATE THE RACE: does it need T2? ########"
     echo "# Each of these is the token-identical end-to-end test. The pattern"
     echo "# across the four says where the race lives."
@@ -143,12 +156,28 @@ A)
     ;;
 
 B)
-    # T5 = whole-extent runs. Measured ONLY with async off, because the async
-    # path is incorrect and a timing taken on it is not a measurement of
-    # anything. ctx 512 + long_len 136 = 648 tokens = 41 blocks at bs 16, so
-    # --rungd-bpr 41 is the tight extent; with the runner's default (141, sized
-    # for max_model_len) the pool's slack guard refuses the whole-extent path
-    # and the run silently measures the per-run one, so the bpr is not optional.
+    # T5 = whole-extent runs, measured with async ON and T6's ordering in place.
+    #
+    # THIS WAS WRITTEN THE OTHER WAY ROUND AND WAS WRONG. The first version
+    # measured T5 with --no-rungd-async, reasoning that the async path is
+    # incorrect so a timing taken on it measures nothing. But async turned out
+    # to be LOAD-BEARING, not incidental: c is 0.883-1.004 with it and 7.196
+    # without, because the side stream hides ~88% of the per-rider transfer
+    # behind compute. With async off the gate fails by more than 2x and there is
+    # no operating point to optimise, so measuring T5 there would price it in a
+    # regime nobody can run. T6 makes the overlapped path correct, so the right
+    # configuration is async ON plus the ordering -- which is now the default.
+    #
+    # ctx 512 + long_len 136 = 648 tokens = 41 blocks at bs 16, so --rungd-bpr
+    # 41 is the tight extent; with the runner's default (141, sized for
+    # max_model_len) the pool's slack guard refuses the whole-extent path and
+    # the run silently measures the per-run one, so the bpr is not optional.
+    #
+    # Expected, from launch_pattern_bench plus the model: c should fall by most
+    # of the launch term and F should rise slightly, because T5 MOVES the cost
+    # rather than deleting it. At ctx 512 the slack is 25%, which is the worst
+    # case for the bytes it carries -- so this config is the hostile one, and
+    # ctx 2048 below is the favourable one.
     echo
     echo "######## 1. CORRECTNESS -- wrong index arithmetic is SILENT ########"
     echo "# off-GPU this is covered by whole_extent_equiv_test.py (16 checks,"
@@ -167,20 +196,20 @@ B)
     echo "# n_runs must read 1 and h2d_launches 2 per layer-step. If the slack"
     echo "# guard refused, n_runs stays at the rider count and T5 is a no-op"
     echo "# however well it tests -- which is exactly how T1 could have failed."
-    runpt T5_on_c512  512 16 0,1,2,4,8 --no-rungd-async --whole-extent --rungd-bpr 41
-    runpt T5_off_c512 512 16 0,1,2,4,8 --no-rungd-async
+    runpt T5_on_c512  512 16 0,1,2,4,8 --whole-extent --rungd-bpr 41
+    runpt T5_off_c512 512 16 0,1,2,4,8
 
     echo
     echo "######## 3. WHAT T5 BOUGHT, bracketed ########"
-    run T5_off_a 512 16 0,1,2,4,6,8 --no-rungd-async
-    run T5_on    512 16 0,1,2,4,6,8 --no-rungd-async --whole-extent --rungd-bpr 41
-    run T5_off_b 512 16 0,1,2,4,6,8 --no-rungd-async
+    run T5_off_a 512 16 0,1,2,4,6,8
+    run T5_on    512 16 0,1,2,4,6,8 --whole-extent --rungd-bpr 41
+    run T5_off_b 512 16 0,1,2,4,6,8
 
     echo
     echo "######## 4. ctx 2048, where slack is a SMALLER fraction ########"
     echo "# 2048 + 136 = 2184 tokens = 137 blocks at bs 16."
-    run T5_c2048_off 2048 16 0,1,2 --no-rungd-async
-    run T5_c2048_on  2048 16 0,1,2 --no-rungd-async --whole-extent --rungd-bpr 137
+    run T5_c2048_off 2048 16 0,1,2
+    run T5_c2048_on  2048 16 0,1,2 --whole-extent --rungd-bpr 137
     ;;
 
 *)  echo "unknown SLICE=$SLICE"; exit 2 ;;
