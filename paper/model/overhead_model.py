@@ -82,9 +82,27 @@ COEFF = {
     "d_per_block": (0.00765, "ms/block", "105-pt within-job fit; the layer axis "
                     "independently gives 0.252 ms/rider at ctx 512 vs this "
                     "0.245, agreeing to 3%"),
-    "c_link": (0.0744, "fraction of nominal link time", "105-pt within-job "
-               "fit; the minbytes arm gives 47% of c link-bound vs 37% here, "
-               "so the interval is 37-57%"),
+    # WHAT THIS COEFFICIENT ACTUALLY MEANS, established 2026-10-05. 0.0744 is
+    # not "the link is a small part of the cost" -- it is the fraction of the
+    # transfer that FAILS TO HIDE behind compute. The side-stream prefetch is on
+    # in every run this was fitted from, and it hides 92.6% of the bytes.
+    #
+    # The three measurements at ctx 512 decompose exactly against the harness's
+    # own per-rider transfer figure of 6.17 ms (0.155 GB at 25.1 GB/s):
+    #
+    #   async off        c = 7.196          transfer 6.17 + host ~1.0
+    #   async on         c = 0.883-1.004    host only
+    #   async on + T6    c = 7.024-7.037    transfer + host (overlap nullified)
+    #
+    # So this whole table describes the OVERLAPPED path, and the overlapped path
+    # is the one whose correctness is open (see the header note). A projection
+    # built on it assumes the overlap both works and is correct.
+    "c_link": (0.0744, "fraction of nominal link time that fails to hide",
+               "105-pt within-job fit, all with the side-stream prefetch ON; "
+               "the minbytes arm gives 47% of c link-bound vs 37% here, so the "
+               "interval is 37-57%. Equivalent statement: 92.6% of the transfer "
+               "is hidden behind compute, and T6 reverting c to 7.02 (= 0.9 + "
+               "6.1, the per-rider transfer to 1%) is what confirms it"),
     "d2h_per_rider": (0.109, "ms/rider", "M3 real-minus-skip_d2h on c"),
     "d2h_per_layer_8x128": (0.142, "ms/layer", "M3, Qwen-32B 0.142 and "
                             "Llama-8B 0.138 -- identical despite 1.8x "
