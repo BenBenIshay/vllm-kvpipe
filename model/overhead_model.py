@@ -60,6 +60,22 @@ import sys
 
 # ----------------------------------------------------------------- provenance
 # Every number here is measured, with where it came from. Nothing is assumed.
+# PROVENANCE DEFECT, found 2026-10-05. Every coefficient below was fitted from
+# runs taken with VLLM_KVPIPE_RUNGD_ASYNC enabled, and that path produces
+# INCORRECT OUTPUT: hybrid_rungd_real.py passes 3/3 with it unset and fails 2/3
+# with it set. run_suite.sh never sets the variable, so the suite validated the
+# non-async path, while rider_cost_curve.py defaults --rungd-async to True and
+# kv_k_window defaults to 4 -- so every archived artifact reads
+# async=True, k_window=4, M0 through M10.
+#
+# A missing wait makes a step FASTER, so these are plausibly OPTIMISTIC and are
+# PROVISIONAL pending the no-async re-measurement. The SHAPE of the law is not
+# in doubt -- the four-way identification and the gate c < T0/B rest on ratios
+# and on which axis each term scales with, and the defect is common to every arm
+# of every sweep -- but the absolute values may move.
+#
+# `--selftest` asserts relationships, not absolute values, for exactly this
+# reason; it is the magnitudes quoted in projections that need re-checking.
 COEFF = {
     "b_per_rider_layer": (0.00838, "ms/rider/layer", "105-pt within-job fit, "
                           "CI [0.0055, 0.0119]"),

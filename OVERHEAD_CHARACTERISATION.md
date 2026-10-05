@@ -23,6 +23,76 @@ was measured the interconnect was not what was stopping it.**
 > riders at 1.06×**. §1–§9 describe the system as characterised, which is the
 > baseline those changes are measured against; read §10 for the current state.
 
+> ## ⚠ PROVENANCE DEFECT, found 2026-10-05: read before using any number here
+>
+> **Every measurement in this campaign was taken with `VLLM_KVPIPE_RUNGD_ASYNC`
+> enabled, and that path produces incorrect output.** Same binary, one variable:
+>
+> ```
+>   hybrid_rungd_real.py                     ->  PASS, 3/3 token-identical
+>   hybrid_rungd_real.py  RUNGD_ASYNC=1      ->  FAIL, 2/3 diverged
+> ```
+>
+> It hid because the campaign's two arms exercised different paths and neither
+> could see it. `run_suite.sh` never sets the variable, so **the suite's 9/9 has
+> always been validating the non-async path**, while `rider_cost_curve.py`
+> declares `--rungd-async` with `default=True` and `kv_k_window` defaults to 4,
+> so `self.k >= 2` and the side stream engages. Every archived artifact under
+> `paper_runs/20260930/overhead/` records `async=True, k_window=4` — M0 through
+> M10, which is `c`, `F`, and the T1 and T2 before/afters.
+>
+> **The failure is intermittent**, which is itself the signature of a race rather
+> than a logic error: two failures on nova07, a pass on nova06 with the same
+> binary and flags. So a single passing run is not evidence of correctness, and
+> any check of a fix needs a negative control on the same binary.
+>
+> ### What it does to the numbers, measured
+>
+> `F` is untouched and `c` is **7.3× larger** with the async path off. Identical
+> least-squares fits of `ΔT = F + c·r` at ctx 512, Qwen-32B, batch 16, T1+T2 in:
+>
+> | run | async | `F` | `c` |
+> |---|---|---|---|
+> | `T3_off` | True | 4.98 | 0.883 |
+> | `T2_async_a` | True | 4.95 | 0.931 |
+> | `T2_async_b` | True | 4.29 | 1.004 |
+> | **`ASYNC_off`** | **False** | **4.98** | **7.196** |
+>
+> That is exactly the right shape: `F` is fixed host cost and overlap cannot
+> touch it, while `c` is per-rider transfer and the side stream hides ~88% of it
+> behind compute.
+>
+> **So the async path is not an optional optimisation — the positive result
+> depends on it.** With it off, `c` = 7.196 against a budget `T0/B` of 3.08 ms,
+> and the gate fails by more than 2×. The feature pays *only* on the overlapped
+> path, and that is the path that produces wrong output. An earlier draft of this
+> note suggested defaulting async off; that would have destroyed the result and
+> is retracted.
+>
+> ### Mechanism, and the fix
+>
+> `flush_token_writes` argued its ordering was safe because "nothing prefetches
+> across a step boundary". That is where a prefetch is *issued*; what crosses the
+> boundary is its *completion*. `stream_layer` consumes the last prefetch with
+> `current_stream().wait_event(ev)`, which orders the **device** and returns to
+> the host at once, so the host proceeds into the next `build_step` and
+> CPU-scatters into mirror rows an in-flight copy-stream DMA is still reading.
+>
+> The race **needs T2**: before T2 the per-layer mirror write was a blocking D2H
+> that synchronised the host on every layer and made the scatter safe by
+> accident. T2 did not introduce the hazard — it removed the sync that was
+> hiding it.
+>
+> **T6** orders the deferred scatter after the mirror's *readers* rather than
+> after the main stream, which is why it is nearly free: at the top of a step the
+> newest such DMA was issued a layer before the end of the previous step and has
+> long since retired. Waiting on the main stream instead would hand back exactly
+> the sync T2 removed. Both stream families are covered —
+> `_copy_stream.synchronize()` for the prefetches and a re-recorded event for
+> the main-stream event-miss fallback — because one event cannot stand for two
+> streams. `VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC=1` disables it as a negative
+> control, since the intermittency means a fix cannot be validated without one.
+
 ### Notation
 
 | | |
