@@ -17,33 +17,44 @@
 # paper_runs/20260930/overhead/ records async=True, k_window=4: M0 through M10,
 # which is every measured coefficient this campaign produced, c and F included.
 #
-# A missing wait makes a step FASTER, so the published coefficients are
-# plausibly optimistic. The size of that bias is the first thing this job
-# measures, and it decides whether the campaign's conclusions stand.
+# RESOLVED SINCE THIS HEADER WAS FIRST WRITTEN. Three things in it were wrong and
+# are corrected here rather than left to mislead whoever reads the file next.
 #
-# SUSPECTED MECHANISM, to be confirmed by slice A rather than assumed. T2 defers
-# the mirror write: write_token copies the new token D2H into pinned staging and
+#   1. "A missing wait makes a step faster, so the coefficients are plausibly
+#      optimistic." The direction is right but the magnitude is the story: async
+#      is LOAD-BEARING. c = 0.883-1.004 with it, 7.196 WITHOUT -- the side
+#      stream hides ~88% of the per-rider transfer behind compute, while F is
+#      unchanged at 4.98 either way (F is fixed host cost; overlap cannot reach
+#      it). With async off the gate fails by more than 2x, so the feature pays
+#      ONLY on the overlapped path.
+#
+#   2. "The cheap resolution is likely to DEFAULT ASYNC OFF." Wrong, and it
+#      would have destroyed the result. The race had to be FIXED. T6 does it by
+#      ordering the deferred scatter after the mirror's READERS
+#      (_copy_stream.synchronize() plus a re-recorded main-stream event) rather
+#      than after the main stream -- which is also the answer to "there is no
+#      one-line fix": waiting on the main stream would hand back exactly the
+#      sync T2 removed, but waiting on the readers costs ~nothing, because at
+#      the top of a step the newest such DMA was issued a layer before the end
+#      of the previous step.
+#
+#   3. "Slice A's grid decides." It cannot. The race is intermittent and the
+#      negative control passed twice on the node that had failed twice. What
+#      decided it was mirror_hazard_steps -- a non-blocking query() counter
+#      sampled before T6's sync -- reading 84 of 84 flush steps. The HAZARD is
+#      constant; the CORRUPTION is occasional, which is why the output evidence
+#      looked contradictory.
+#
+# The mechanism, now confirmed rather than suspected: T2 defers the mirror write
+# -- write_token copies the new token D2H into pinned staging and
 # flush_token_writes scatters it into the mirror on the CPU at the top of the
-# next build_step. flush_token_writes' docstring argues the ordering is safe
-# because "nothing prefetches across a step boundary" -- but that is about where
-# a prefetch is ISSUED, and what crosses the boundary is its COMPLETION.
-# stream_layer consumes the last prefetch with
-# current_stream().wait_event(ev), which orders the DEVICE and returns to the
-# host immediately, so the host runs on into the next step and CPU-writes mirror
-# rows that an in-flight copy-stream DMA is still reading.
-#
-# If that is the mechanism, the race needs T2: before T2 the per-layer mirror
-# write was a BLOCKING D2H, which synchronised the host every layer and made the
-# scatter safe by accident. So T2 did not introduce a bug of its own -- it
-# removed the implicit host sync that was hiding this one. Slice A tests exactly
-# that by running the async path with T2 switched off.
-#
-# WHY THERE IS NO ONE-LINE FIX, which is why this job measures instead of
-# patching: any correct ordering makes the host wait on the main stream once per
-# step, which is precisely the sync T2 removed, so it would hand back T2's gain.
-# The cheap resolution is likely to DEFAULT ASYNC OFF -- it is untested, it is
-# wrong, and launch_pattern_bench.py says the overlap only matters near the
-# knee, where the copy stream saturates anyway. Slice A's delta decides.
+# next build_step. That docstring argued safety from "nothing prefetches across
+# a step boundary", but that is where a prefetch is ISSUED; what crosses the
+# boundary is its COMPLETION, because stream_layer consumes the last prefetch
+# with current_stream().wait_event(ev), which orders the DEVICE and returns to
+# the host at once. The race needs T2: before it, the blocking per-layer D2H
+# synchronised the host every layer and made the scatter safe by accident. T2
+# did not introduce a bug -- it removed the sync that was hiding one.
 #
 # No delay command anywhere: this cluster's submit filter rejects any batch
 # script containing one.
