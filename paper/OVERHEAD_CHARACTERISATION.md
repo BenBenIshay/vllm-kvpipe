@@ -92,9 +92,18 @@ was measured the interconnect was not what was stopping it.**
 >
 > | run | async | T6 | `F` | `c` |
 > |---|---|---|---|---|
-> | archived (3 runs) | on | off | 4.3–5.0 | 0.883–1.004 |
+> | `T6_on` | on | **on** | 4.60 | 7.024 |
+> | `T6_fix_a` | on | **on** | 4.15 | 7.037 |
+> | **`T6_nofix`** | on | **off** | 4.87 | **0.927** |
 > | `ASYNC_off` | off | — | 4.98 | 7.196 |
-> | **`T6_on`** | **on** | **on** | **4.60** | **7.024** |
+> | archived (3 runs) | on | off | 4.3–5.0 | 0.883–1.004 |
+>
+> The first three rows are **one binary, one node, one session**, differing only
+> in whether the ordering is applied: **7.6× on `c`**, with `F` flat at 4.15–4.87
+> (inside the known ~0.7 ms/hour drift), so the entire effect lands on `c`. The
+> control reproduces the archived band at 0.927, which is what makes the bracket
+> internally consistent rather than a cross-session comparison that drift could
+> explain.
 >
 > With T6 the overlapped path performs like the *un*-overlapped one. The reason
 > is visible in `_launch_prefetch`: it begins with
