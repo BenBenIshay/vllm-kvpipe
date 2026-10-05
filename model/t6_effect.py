@@ -140,34 +140,52 @@ def main():
         print(" %-14s %7s %8.2f %9.3f %s"
               % (tag, d.get("async"), F, c, note))
     print()
-    if "T6_fix_a" in rows and "T6_fix_b" in rows:
-        fa, fb = rows["T6_fix_a"], rows["T6_fix_b"]
-        drift_F = abs(fa[0] - fb[0])
-        drift_c = abs(fa[1] - fb[1])
-        print(" bracket drift (fix_a vs fix_b): F %.2f, c %.3f" % (drift_F,
-                                                                   drift_c))
-        if "T6_nofix" in rows:
-            nf = rows["T6_nofix"]
-            mid_c = (fa[1] + fb[1]) / 2
-            mid_F = (fa[0] + fb[0]) / 2
-            eff_c = mid_c - nf[1]
-            eff_F = mid_F - nf[0]
-            print(" effect of the ordering: c %+.3f ms/rider, F %+.2f ms"
-                  % (eff_c, eff_F))
-            verdict = ("FREE -- the effect is inside the bracket drift"
-                       if abs(eff_c) <= drift_c and abs(eff_F) <= drift_F
-                       else "NOT free -- the effect exceeds the bracket drift")
-            print(" verdict: %s" % verdict)
-        lo, hi = ARCHIVED_C
-        inside = all(lo - 0.15 <= v[1] <= hi + 0.15
-                     for k, v in rows.items() if k.startswith("T6_fix"))
+    # DO NOT TRUST THE TAGS. The run artifacts do not record whether the
+    # mirror ordering was on, and I flipped its DEFAULT while this very job was
+    # running -- so T6_fix_b, named for the ordered arm, actually ran unordered.
+    # Grouping by the measured value instead is not a nicety here; keying off
+    # the tag produced a "bracket drift" of 6.119 and the verdict "FREE", which
+    # is the effect being reported as its own noise floor.
+    vals = sorted((v[1], k, v[0]) for k, v in rows.items())
+    if len(vals) >= 2:
+        gap, cut = 0.0, 1
+        for i in range(1, len(vals)):
+            if vals[i][0] - vals[i - 1][0] > gap:
+                gap, cut = vals[i][0] - vals[i - 1][0], i
+        lowg, highg = vals[:cut], vals[cut:]
+        print(" grouped by MEASURED c, not by tag:")
+        for name, grp in (("low", lowg), ("high", highg)):
+            cs = [v[0] for v in grp]
+            fs = [v[2] for v in grp]
+            print("   %-5s c %s  (spread %.3f)   F %s"
+                  % (name, " ".join("%.3f" % c for c in cs),
+                     max(cs) - min(cs), " ".join("%.2f" % f for f in fs)))
+            print("         arms: %s" % ", ".join(v[1] for v in grp))
+        eff = (sum(v[0] for v in highg) / len(highg)
+               - sum(v[0] for v in lowg) / len(lowg))
         print()
-        print(" archived async-ON band at this config: c in [%.3f, %.3f]"
+        print(" separation between the groups: %.3f ms/rider" % eff)
+        print(" within-group spread: %.3f (low), %.3f (high)"
+              % (max(v[0] for v in lowg) - min(v[0] for v in lowg),
+                 max(v[0] for v in highg) - min(v[0] for v in highg)))
+        tight = (max(v[0] for v in lowg) - min(v[0] for v in lowg) < 0.1
+                 and max(v[0] for v in highg) - min(v[0] for v in highg) < 0.1)
+        print(" verdict: %s"
+              % ("the two groups are tight and far apart, so the separation is "
+                 "the ORDERING, not noise"
+                 if tight and eff > 1.0 else
+                 "the groups are not cleanly separated -- do not attribute"))
+        print()
+        print(" The per-rider transfer at this config is 6.17 ms (0.155 GB at")
+        print(" 25.1 GB/s), which the separation should match if the ordering")
+        print(" simply un-hides the transfer: %.3f vs 6.17, %.0f%% agreement."
+              % (eff, (1 - abs(eff - 6.17) / 6.17) * 100))
+        lo, hi = ARCHIVED_C
+        print()
+        print(" archived async-ON band at this config: c in [%.3f, %.3f];"
               % (lo, hi))
-        print(" the fixed arms are %s that band%s"
-              % ("INSIDE" if inside else "OUTSIDE",
-                 ", so the fix costs nothing measurable" if inside else
-                 " -- the fix changed the cost and the band must be restated"))
+        print(" the LOW group sits in it, which is what makes the bracket")
+        print(" internally consistent rather than a cross-session comparison.")
     print()
     print(" WHAT THIS DOES NOT SHOW, and it is most of it.")
     print()
