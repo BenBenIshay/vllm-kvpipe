@@ -537,7 +537,62 @@ largest single improvement.
 > the identification worth doing, and it is about `F`, not about the per-rider
 > term the withdrawn proposal chased.
 
-### What would still settle the exposed-vs-transfer split in `c`
+### SETTLED: `c` is exposed work, and the bytes are hidden until the knee
+
+`minbytes` removes the bytes and keeps every launch, hook, event and stream
+ordering, so its per-rider cost **is** the exposed work — measured, with no
+hiding model, no load cut and no extrapolation. Run at two contexts, L=64:
+
+| ctx | real `c` | `minbytes` `c` | bytes contribute | real `F` | `minbytes` `F` |
+|---|---|---|---|---|---|
+| 128 | 0.522 | 0.532 | **−0.010** | 6.03 | 5.89 |
+| 256 | 0.620 | 0.488 | **+0.132** | 5.31 | 5.47 |
+
+Three things follow, and together they close the question:
+
+1. **The exposed cost is context-independent.** 0.532 at ctx 128 against 0.488
+   at ctx 256 — a difference of 0.044, *lower* at the longer context, which is
+   the opposite direction from anything that scales with bytes. So `c` ≈ **0.51
+   ms/rider at L=64** and it is launches plus host bookkeeping, nothing else.
+2. **The bytes are fully hidden at ctx 128 and begin to leak at ctx 256.** They
+   contribute −0.010 (nothing) at load ≤0.28 and +0.132 at load ≤0.31. That is
+   the knee approaching, not a per-rider byte charge — which is why it appears
+   as "`c` grows with context" in the `real` arms and vanishes here.
+3. **`F` is pure host work.** Removing the bytes moves it by −0.14 and +0.15,
+   i.e. not at all.
+
+**So the design intent holds: below the knee a rider's transfer hides completely,
+and `c` contains only the extra work the feature adds that cannot hide.** Every
+`c` in this campaign larger than ~0.5 was the knee leaking into the fit.
+
+### The final numbers for the current solution
+
+```
+  EXPOSED per-rider cost   c(L) = 0.177 + 0.00540 * L     ->  0.61 ms at L=80
+  FIXED cost               F(L) = -0.951 + 0.1079 * L     ->  7.68 ms at L=80
+```
+
+| | value at the GH200 target | share of the step |
+|---|---|---|
+| `T0` | 24.2 ms | — |
+| budget `T0/B` | 3.37 ms | — |
+| **`c`** | **0.61 ms/rider** | `c·r` at the knee = **9.5%** |
+| **`F`** | **7.68 ms** | **31.7%** |
+
+`c` clears the gate by **5.5×**, so it is not the constraint and never was. `F`
+is three times larger than the entire per-rider cost at the knee, and it is paid
+the moment one rider is admitted.
+
+**What closing `F` is worth, at C2C:** 7.68 → 1.081×, halved → **1.217×**,
+quartered → 1.300×, eliminated → 1.394×. Halving `F` buys +14 points; removing
+`c` altogether — not possible — would buy at most +10.
+
+### Where the remaining gap is
+
+`F = L × (residual D2H + exposed per-layer host work)`, and T4 measured the D2H
+half as **at floor** (the only available aggregation is 18% worse). So the gap
+is the **exposed per-layer host work**, and identifying *that* is the experiment
+worth running — not the per-rider term the withdrawn proposal chased.
 
 `minbytes` removes the bytes while keeping every launch, hook, event and stream
 ordering. Whatever per-rider cost survives it **is** the exposed work, measured
