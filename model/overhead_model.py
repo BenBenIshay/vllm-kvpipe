@@ -185,6 +185,17 @@ class Model:
 
 Q32 = Model("Qwen-32B fp16", 64, 65.53, 8, 128)
 L70 = Model("Llama-70B fp8", 80, 72.7, 8, 128)
+Q72 = Model("Qwen-72B fp8", 80, 76.0, 8, 128)
+
+# THE TARGET, retargeted 2026-10-05 from (L70, 8192) on Ben's instruction after
+# the model search (best_model.py) put Qwen-72B fp8 at ctx 16384 ahead of every
+# other (model, context) pair. It wins on nothing but 76.0 GB of weights against
+# 72.7: heavier weights raise T0 and shrink the capacity left for KV, so fewer
+# residents fit and each rider is worth more. L70 is KEPT, not deleted -- the
+# whole projection section and several selftests are stated against it, and it
+# remains the anchor the paper's own tables use.
+TARGET, TARGET_S = Q72, 16384
+LEGACY, LEGACY_S = L70, 8192
 
 
 def F_ms(m: Model, hw: HW, exposed_per_layer: float, d2h_fixed: bool,
@@ -335,15 +346,20 @@ def core_question(S: int = 8192) -> None:
     print(" so the verdict as built does not depend on the interconnect.\n")
 
 
-def delivered(S: int = 8192) -> dict:
+def delivered(S: int | None = None, m: "Model | None" = None) -> dict:
     """The projection with T1 and T2 as BUILT AND MEASURED, not as proposed.
 
     Both coefficients here are measurements on this code: T1's 0.00313 ms/rider
     from a 5-point rider sweep confirmed by a 4x block-size change, and T2's
     0.0737 ms/layer from a bracketed before/after. Neither is an estimate of a
     change that might be made.
+
+    Defaults to the TARGET (Qwen-72B fp8, ctx 16384). Pass (LEGACY_S, LEGACY) for
+    the Llama-70B / ctx 8192 point the earlier sections are written against.
     """
-    m, hw = L70, GH200
+    S = TARGET_S if S is None else S
+    m = TARGET if m is None else m
+    hw = GH200
     out = {}
     for lab, kw in (("as built", {}),
                     ("T1 only", {"t1": True}),
@@ -356,14 +372,10 @@ def delivered(S: int = 8192) -> dict:
     return out
 
 
-def delivered_table() -> None:
-    d = delivered()
-    print("=" * 78)
-    print(" WHAT WAS BUILT: T1 AND T2 AS MEASURED")
-    print("=" * 78)
-    print()
+def _delivered_block(m, S) -> None:
+    d = delivered(S, m)
     any_v = next(iter(d.values()))
-    print(" Llama-70B fp8, ctx 8192, GH200 C2C 419 GB/s")
+    print(" %s, ctx %d, GH200 C2C 419 GB/s" % (m.name, S))
     print(" B_cap %.1f residents, T0 %.1f ms, T0/B %.2f ms, knee %.1f riders"
           % (any_v["b_res"], any_v["t0"], any_v["t0"] / any_v["b_res"],
              any_v["knee"]))
@@ -376,6 +388,126 @@ def delivered_table() -> None:
               % (lab, v["c"], v["F"],
                  "-" if v["r_be"] is None else "%.1f" % v["r_be"],
                  v["gain"], v["verdict"]))
+    print()
+
+
+def delivered_table() -> None:
+    print("=" * 78)
+    print(" WHAT WAS BUILT: T1 AND T2 AS MEASURED")
+    print("=" * 78)
+    print()
+    print(" THE TARGET (retargeted after the model search):")
+    _delivered_block(TARGET, TARGET_S)
+    print(" the earlier anchor, kept for comparison:")
+    _delivered_block(LEGACY, LEGACY_S)
+    t = delivered()["T1 + T2"]
+    l = delivered(LEGACY_S, LEGACY)["T1 + T2"]
+    print(" retargeting is worth %.2fx -> %.2fx, and buys it by fitting FEWER"
+          % (l["gain"], t["gain"]))
+    print(" residents (%.1f against %.1f), which raises what each rider is"
+          % (t["b_res"], l["b_res"]))
+    print(" worth (T0/B %.2f against %.2f ms)."
+          % (t["t0"] / t["b_res"], l["t0"] / l["b_res"]))
+    print()
+    hi = delivered(TARGET_S * 2, TARGET)["T1 + T2"]
+    print(" READ THAT MECHANISM BEFORE BANKING THE NUMBER. The gain is a RATIO")
+    print(" against a baseline that holds only %.1f residents, and it rises as"
+          % t["b_res"])
+    print(" that count falls -- %.2fx at ctx %d where just %.1f fit. A bigger"
+          % (hi["gain"], TARGET_S * 2, hi["b_res"]))
+    print(" ratio against a weaker baseline is not more tokens per second, so")
+    print(" the best RATIO is not automatically the best deployment. Absolute")
+    print(" throughput at the target is %.0f tok/s against %.0f at the anchor."
+          % (t["b_res"] * (1 + min(t["knee"], 64.0) / t["b_res"])
+             / (t["t0"] + t["F"] + t["c"] * min(t["knee"], 64.0)) * 1e3,
+             l["b_res"] * (1 + min(l["knee"], 64.0) / l["b_res"])
+             / (l["t0"] + l["F"] + l["c"] * min(l["knee"], 64.0)) * 1e3))
+    print()
+
+
+def kv_precision_table() -> None:
+    """Does fp8 KV help, hurt, or neither? Neither -- it is a context rescale.
+
+    This was an open question flagged as possibly flipping the verdict, and the
+    answer is that it cannot: the law sees the per-token KV footprint and the
+    context ONLY through their product. Halving the bytes per token and doubling
+    the context are the same point to within floating point.
+    """
+    print("=" * 78)
+    print(" fp16 KV vs fp8 KV: the law sees only the PRODUCT b_tok * S")
+    print("=" * 78)
+    print()
+    print(" %-9s %7s %6s %7s %7s %6s %8s"
+          % ("KV", "ctx", "B", "T0/B", "c", "knee", "gain"))
+    rows = {}
+    for lab, kvb in (("fp16", 2), ("fp8", 1)):
+        m = Model(TARGET.name, TARGET.L, TARGET.w, TARGET.kv_heads,
+                  TARGET.head_dim, kvb)
+        for S in (8192, 16384, 32768):
+            d = delivered(S, m)["T1 + T2"]
+            rows[(lab, S)] = d
+            print(" %-9s %7d %6.1f %7.2f %7.3f %6.1f %7.3fx"
+                  % (lab, S, d["b_res"], d["t0"] / d["b_res"], d["c"],
+                     d["knee"], d["gain"]))
+    print()
+    a, b = rows[("fp16", 16384)], rows[("fp8", 32768)]
+    print(" fp8 at 32768 IS fp16 at 16384: gain %.6f vs %.6f, c %.6f vs %.6f."
+          % (a["gain"], b["gain"], a["c"], b["c"]))
+    print(" So KV quantisation neither helps nor hurts this feature at a matched")
+    print(" b_tok*S. What it does is move the best context: the same gain now")
+    print(" sits at twice the context, which is a REAL operational win even")
+    print(" though the law cannot see it. (An earlier note in this campaign said")
+    print(" fp8 KV loses. That compared the two at a FIXED context, where fp8")
+    print(" doubles the resident count and so halves T0/B -- the right")
+    print(" comparison holds b_tok*S fixed.)")
+    print()
+
+
+def absolute_table() -> None:
+    """The gain RATIO and the absolute tokens/s rank in OPPOSITE directions.
+
+    This is the one result that changes what should be deployed, as opposed to
+    what should be built. The ratio measures the feature against the same system
+    without it, which is the right test of the mechanism. But maximising the
+    ratio over (model, context) selects for a WEAK baseline: fewer residents fit,
+    each is worth more, so each rider clears the bar more easily. In absolute
+    tokens per second the ranking inverts, and the heavier model loses to the
+    lighter one at every context.
+    """
+    print("=" * 78)
+    print(" THE RATIO AND THE ABSOLUTE RATE RANK OPPOSITELY")
+    print("=" * 78)
+    print()
+    print(" %-16s %6s %5s %6s %6s %7s %10s %10s"
+          % ("model", "ctx", "B", "knee", "gain", "ITL", "base tok/s",
+             "+ riders"))
+    best_ratio = best_abs = None
+    for m in (LEGACY, TARGET):
+        for S in (4096, 8192, 16384, 32768):
+            d = delivered(S, m)["T1 + T2"]
+            r = min(d["knee"], 64.0)
+            itl = d["t0"] + d["F"] + d["c"] * r
+            base = d["b_res"] / d["t0"] * 1e3
+            wr = (d["b_res"] + r) / itl * 1e3
+            print(" %-16s %6d %5.1f %6.1f %5.2fx %7.1f %10.0f %10.0f"
+                  % (m.name, S, d["b_res"], d["knee"], d["gain"], itl, base, wr))
+            if best_ratio is None or d["gain"] > best_ratio[0]:
+                best_ratio = (d["gain"], wr, m.name, S)
+            if best_abs is None or wr > best_abs[1]:
+                best_abs = (d["gain"], wr, m.name, S)
+    print()
+    print(" best RATIO    %s ctx %d: %.2fx, %.0f tok/s"
+          % (best_ratio[2], best_ratio[3], best_ratio[0], best_ratio[1]))
+    print(" best ABSOLUTE %s ctx %d: %.2fx, %.0f tok/s  (%.1fx the rate)"
+          % (best_abs[2], best_abs[3], best_abs[0], best_abs[1],
+             best_abs[1] / best_ratio[1]))
+    print()
+    print(" So TARGETING Qwen-72B fp8 at ctx 16384 is correct for the question")
+    print(" 'does the feature pay', and WRONG read as 'this is the deployment")
+    print(" to ship'. The two are not in conflict: the feature's value is")
+    print(" largest exactly where the baseline is weakest -- heavy weights, long")
+    print(" context, few residents -- which is the regime the project exists to")
+    print(" serve. It just must not be reported as a throughput record.")
     print()
 
 
@@ -539,7 +671,7 @@ def _selftest() -> int:
     # T2 IS BUILT AND MEASURED. It must cut F substantially but NOT to the
     # idealised "d2h_fixed" floor, because it removes 66% of the blocking copy
     # rather than all of it -- conflating the two would overstate the result.
-    d = delivered()
+    d = delivered(LEGACY_S, LEGACY)
     f_built, f_t2 = d["as built"]["F"], d["T1 + T2"]["F"]
     f_ideal = F_ms(L70, GH200, HIDING[2][1], True)
     good = f_t2 < 0.6 * f_built and f_t2 > f_ideal
@@ -557,6 +689,63 @@ def _selftest() -> int:
           % ("ok " if good else "BAD",
              d["T1 + T2"]["r_be"] or -1, d["T1 + T2"]["knee"]))
 
+    # THE RETARGET. Qwen-72B fp8 at ctx 16384 must beat the Llama-70B anchor,
+    # and it must do so through the stated mechanism -- fewer residents, each
+    # worth more -- rather than through anything else moving.
+    t = delivered()["T1 + T2"]
+    l = delivered(LEGACY_S, LEGACY)["T1 + T2"]
+    good = (t["gain"] > l["gain"] and t["b_res"] < l["b_res"]
+            and t["t0"] / t["b_res"] > l["t0"] / l["b_res"])
+    ok &= good
+    print("  [%s] target beats the anchor %.3fx > %.3fx via B %.1f < %.1f and "
+          "T0/B %.2f > %.2f" % ("ok " if good else "BAD", t["gain"], l["gain"],
+                                t["b_res"], l["b_res"], t["t0"] / t["b_res"],
+                                l["t0"] / l["b_res"]))
+
+    good = t["r_be"] is not None and t["r_be"] <= t["knee"]
+    ok &= good
+    print("  [%s] the target pays, from r=%.1f against a knee of %.1f"
+          % ("ok " if good else "BAD", t["r_be"] or -1, t["knee"]))
+
+    # fp8 KV is a CONTEXT RESCALE, not a win or a loss. This is the open
+    # question that was flagged as possibly flipping the verdict; asserting the
+    # identity is what closes it.
+    fp8 = Model(TARGET.name, TARGET.L, TARGET.w, TARGET.kv_heads,
+                TARGET.head_dim, 1)
+    a = delivered(TARGET_S, TARGET)["T1 + T2"]
+    b = delivered(TARGET_S * 2, fp8)["T1 + T2"]
+    good = all(abs(a[k] - b[k]) < 1e-9
+               for k in ("gain", "c", "b_res", "knee"))
+    ok &= good
+    print("  [%s] fp8 KV at 2S == fp16 KV at S exactly (gain %.6f vs %.6f)"
+          % ("ok " if good else "BAD", a["gain"], b["gain"]))
+
+    # AND THE GAIN IS BOUGHT WITH LATENCY. The design's own precondition is an
+    # ITL budget above HBM/BW; the post-admission ITL must be checked against
+    # it, because it is ABOVE it and that constrains where the feature may run.
+    r = min(t["knee"], 64.0)
+    itl = t["t0"] + t["F"] + t["c"] * r
+    floor = GH200.hbm_gb / GH200.hbm * 1e3
+    good = itl > floor and itl / t["t0"] > 1.2
+    ok &= good
+    print("  [%s] ITL %.1f -> %.1f ms (%.2fx), ABOVE the %.1f ms HBM/BW "
+          "precondition" % ("ok " if good else "BAD", t["t0"], itl,
+                            itl / t["t0"], floor))
+
+    # THE RATIO AND THE ABSOLUTE RATE RANK OPPOSITELY. The target has the best
+    # gain and a LOWER tokens/s than the anchor; if that ever stops being true
+    # the "best ratio is not the best deployment" caveat must be rewritten.
+    def _rate(m, S):
+        d = delivered(S, m)["T1 + T2"]
+        r = min(d["knee"], 64.0)
+        return (d["b_res"] + r) / (d["t0"] + d["F"] + d["c"] * r) * 1e3
+    rt, rl = _rate(TARGET, TARGET_S), _rate(LEGACY, LEGACY_S)
+    good = t["gain"] > l["gain"] and rt < rl
+    ok &= good
+    print("  [%s] best ratio is NOT best rate: %.2fx at %.0f tok/s beats "
+          "%.2fx at %.0f tok/s on ratio and loses on rate"
+          % ("ok " if good else "BAD", t["gain"], rt, l["gain"], rl))
+
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
@@ -570,6 +759,8 @@ def main() -> int:
         return _selftest()
     core_question()
     delivered_table()
+    kv_precision_table()
+    absolute_table()
     projection_table()
     return 0
 
