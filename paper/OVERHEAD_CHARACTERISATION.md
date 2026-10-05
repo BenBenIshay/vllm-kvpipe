@@ -232,6 +232,19 @@ Across three attempts, all with the concurrent issue:
 > `restore_roundtrip`, `host_pool`, and T2's negative control failing 3 of 3 on
 > demand).
 >
+> ### The fix, and how strongly it is supported
+>
+> Serial issue makes both sides reproducible **and the pool then matches vanilla
+> exactly** (`rungd_serial_gate.py`: vanilla 1 vs 2 identical, pool 1 vs 2
+> identical, pool vs vanilla identical). The gate is fixed in place.
+>
+> Re-validated on a clean tree: **6 of 6 passes.** That is consistent with the
+> fix but is *not* proof of determinism — at the old gate's observed flake rate
+> a run of 6 would come up clean about half the time anyway, so six greens bound
+> the rate only loosely from above. The weight is carried by the **mechanism**:
+> serial issue pins batch composition, and the self-consistency test showed the
+> baseline's non-determinism directly rather than by inference.
+>
 > **The suspected source** is the harness issuing its three prompts concurrently
 > through a `ThreadPoolExecutor`, so batch composition varies run to run and with
 > it the reduction order inside attention and the MLP. Greedy decoding then turns
