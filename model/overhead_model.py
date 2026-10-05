@@ -987,22 +987,32 @@ def _selftest() -> int:
     # says it does not, and the gap is what tells us b_per_rider_layer is not the
     # launch count.
     #
-    # Measured, same job, back-to-back, ctx 512 Qwen-32B A100:
-    #   T5 off: c = 0.899 (n_runs 8, 1024 launches)
-    #   T5 on : c = 0.948 (n_runs 1,  128 launches)
-    MEAS_OFF, MEAS_ON = 0.899, 0.948
+    # Measured, same job, back-to-back, ctx 512 Qwen-32B A100. TWO off arms, so
+    # the run-to-run drift is known and the effect can be compared against it
+    # rather than against zero -- which matters, because the measured change is
+    # INSIDE the drift. The first version of this assertion tested the SIGN of
+    # that change (0.899 -> 0.948, "+5%") as though it were a real increase; it
+    # is not resolvable, and asserting its sign would have pinned noise.
+    #
+    #   T5 off : c = 0.899, 0.946   (n_runs 8, 1024 launches)  drift 0.047
+    #   T5 on  : c = 0.948          (n_runs 1,  128 launches)  effect +0.025
+    MEAS_OFF = (0.899, 0.946)
+    MEAS_ON = 0.948
+    drift = max(MEAS_OFF) - min(MEAS_OFF)
+    effect = MEAS_ON - sum(MEAS_OFF) / len(MEAS_OFF)
     pred_off = c_ms(Q32, A100, 512, 16, False, t1=True)["total"]
     pred_on = c_ms(Q32, A100, 512, 16, False, t1=True, t5=True,
                    gen=136)["total"]
-    model_cuts = pred_on < pred_off * 0.9          # model: a big cut
-    engine_did_not = MEAS_ON >= MEAS_OFF           # engine: no cut at all
-    good = model_cuts and engine_did_not
+    predicted_cut = pred_off - pred_on
+    # The falsification is a NULL RESULT against a large prediction: the model's
+    # predicted cut is many times the measurement's own noise floor, and nothing
+    # of that size happened.
+    good = predicted_cut > 4 * drift and abs(effect) <= drift
     ok &= good
-    print("  [%s] T5 prediction is FALSIFIED: model %.3f->%.3f (%.0f%%), "
-          "engine %.3f->%.3f (+%.0f%%)"
-          % ("ok " if good else "BAD", pred_off, pred_on,
-             (pred_on / pred_off - 1) * 100, MEAS_OFF, MEAS_ON,
-             (MEAS_ON / MEAS_OFF - 1) * 100))
+    print("  [%s] T5 FALSIFIED as a null result: model predicts a %.3f ms cut "
+          "(%.0fx the %.3f drift); measured effect %+.3f, inside it"
+          % ("ok " if good else "BAD", predicted_cut, predicted_cut / drift,
+             drift, effect))
 
     # and the size of the term that failed to move, since that is the finding
     launch = COEFF["b_per_rider_layer"][0] * Q32.L

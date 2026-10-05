@@ -1167,8 +1167,14 @@ tensor and aggregating it costs a touch per layer either way.
 >
 > The mechanism fired exactly as designed — verified in the phase JSONL *before*
 > any timing was read, which is the gate T1 nearly failed and T3 did fail. The
-> launch count is now independent of the rider count. And `c` went **up 5%** where
-> the model predicted a **36% cut**.
+> launch count is now independent of the rider count.
+>
+> **And `c` did not move.** A second off-arm (`T5b_off_a`, `c` = 0.946) puts the
+> run-to-run drift at **0.047**, and T5's effect is **+0.025 — inside it.** So the
+> honest statement is a *null result*, not the "+5% increase" an earlier draft of
+> this box claimed from a single pair. The model predicted a cut of **0.374 ms,
+> eight times that drift**, and nothing of the kind happened. `F` rose 0.72
+> against an `F` drift of 0.49, so that increase is marginally real.
 >
 > **So `b_per_rider_layer` — 0.536 ms/rider, 51% of `c` at this config — is not
 > the launch count.** Removing seven eighths of the launches did not move it.
