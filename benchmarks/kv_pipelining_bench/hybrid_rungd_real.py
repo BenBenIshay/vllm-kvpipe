@@ -21,7 +21,6 @@ import signal
 import subprocess
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 
 ROOT = "/mnt/beegfs/benishay/vllm-kvpipe"
 PY = f"{ROOT}/.venv/bin/python"
@@ -88,8 +87,26 @@ def run(port: int, pool: bool) -> dict[str, str]:
     try:
         if not wait_ready(port):
             return {p: "<no-start>" for p in PROMPTS}
-        with ThreadPoolExecutor(max_workers=len(PROMPTS)) as ex:
-            outs = list(ex.map(lambda p: complete(port, p), PROMPTS))
+        # SERIAL, deliberately. Issuing these concurrently let the engine
+        # batch whatever was in flight, so batch composition varied run to
+        # run -- and batch composition sets the reduction order in attention
+        # and the MLP, which moves the last bits of the logits. Under greedy
+        # decoding a near-tie argmax then flips and this test fails by chance.
+        #
+        # Measured 2026-10-05: with concurrent issue the gate failed
+        # intermittently even with the pool's async prefetch OFF, i.e. on the
+        # configuration the suite has always called correct. Every "suite 9/9"
+        # cited as correctness evidence in the overhead campaign, T1 and T2
+        # included, was therefore a test that could pass or fail by chance.
+        #
+        # WHAT THIS STILL DOES NOT MAKE SOUND: the pool path changes batch
+        # composition ON PURPOSE -- serving more requests per step is the
+        # feature -- so pool and vanilla sum in different orders even with
+        # serial issue, and exact text equality is not guaranteed in
+        # principle, only likely over 32 tokens. The tensor-level tests
+        # (restore_roundtrip, host_pool) are the ones that can establish
+        # correctness; this one is a smoke test and should be read as one.
+        outs = [complete(port, p) for p in PROMPTS]
         return dict(zip(PROMPTS, outs))
     finally:
         # SIGTERM alone drained nova06/07 on 2026-09-06: a wedged

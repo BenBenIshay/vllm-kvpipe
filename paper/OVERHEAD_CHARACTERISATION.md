@@ -166,22 +166,28 @@ was measured the interconnect was not what was stopping it.**
 > Both divergences sit 46–53% through the output, between two fluent
 > continuations. That is the flipped-near-tie signature, not corruption.
 >
-> Across repeated attempts, all with the concurrent issue:
+Across three attempts, all with the concurrent issue:
 >
 > | attempt | vanilla vs vanilla | pool vs pool | pool vs vanilla |
 > |---|---|---|---|
-> | 1 | **DIFF (2 of 3)** | SAME | DIFF (2 of 3) |
+> | 1 | **DIFF (2 of 3)** | SAME | **DIFF (2 of 3)** |
 > | 2 | SAME | SAME | SAME |
+> | 3 | SAME | SAME | SAME |
 >
-> The self-disagreement is **intermittent**, which is what makes a single green
-> run worthless as evidence — but one demonstration of vanilla ≠ vanilla is
-> enough to establish that the gate cannot certify equality, and later agreements
-> do not un-prove it.
+> **The correlation is the clincher.** The only attempt in which the pool
+> differed from vanilla is the only attempt in which vanilla differed from
+> *itself*. The observed pool-vs-vanilla divergence is therefore fully accounted
+> for by vanilla's own non-determinism, with no residual left to attribute to the
+> feature.
 >
-> The row that matters for the feature is the middle one: **`pool vs pool` was
-> identical in both attempts, while `vanilla vs vanilla` was identical in only
-> one.** On this evidence the pool is *at least as reproducible as vanilla* —
-> the opposite of the concern that opened this investigation.
+> Two further readings. The self-disagreement is **intermittent** (1 of 3), which
+> is what made single green runs worthless throughout this investigation and why
+> the negative control passing twice cleared nothing — but one demonstration of
+> vanilla ≠ vanilla is enough to show the gate cannot certify equality, and later
+> agreements do not un-prove it. And `pool vs pool` was identical **3 of 3**
+> against vanilla's 2 of 3, so on this evidence **the pool is the more
+> reproducible of the two** — the opposite of the concern that opened the
+> investigation.
 >
 > So every "correctness failure" in this investigation was a comparison of two
 > draws from a non-deterministic process. One mechanism accounts for all of it:
