@@ -1169,12 +1169,17 @@ tensor and aggregating it costs a touch per layer either way.
 > any timing was read, which is the gate T1 nearly failed and T3 did fail. The
 > launch count is now independent of the rider count.
 >
-> **And `c` did not move.** A second off-arm (`T5b_off_a`, `c` = 0.946) puts the
-> run-to-run drift at **0.047**, and T5's effect is **+0.025 — inside it.** So the
-> honest statement is a *null result*, not the "+5% increase" an earlier draft of
-> this box claimed from a single pair. The model predicted a cut of **0.374 ms,
-> eight times that drift**, and nothing of the kind happened. `F` rose 0.72
-> against an `F` drift of 0.49, so that increase is marginally real.
+> **And nothing moved.** Full bracket, three off arms and two on:
+>
+> | | off arms | on arms | effect | drift | verdict |
+> |---|---|---|---|---|---|
+> | `c` | 0.899, 0.946, 0.892 | 0.948, 0.928 | +0.025 | 0.054 | **not resolvable** |
+> | `F` | 5.27, 4.78, 5.35 | 5.75, 5.49 | +0.484 | 0.568 | **not resolvable** |
+>
+> T5 moves **neither coefficient** resolvably, while the model predicted a
+> **0.374 ms** cut in `c` — seven times the drift. Two earlier readings of mine
+> are retracted by this table: the "+5% increase in `c`" (from one pair) and the
+> "marginally real `F` increase" (from two arms). Both were drift-sized.
 >
 > **So `b_per_rider_layer` — 0.536 ms/rider, 51% of `c` at this config — is not
 > the launch count.** Removing seven eighths of the launches did not move it.

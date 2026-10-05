@@ -190,15 +190,21 @@ def main():
         mf_on = sum(v[0] for v in ons) / len(ons)
         drift = (max(v[1] for v in offs) - min(v[1] for v in offs)
                  if len(offs) > 1 else float("nan"))
-        print(" c: %.3f -> %.3f  (%+.3f ms/rider)" % (mc_off, mc_on,
-                                                      mc_on - mc_off))
-        print(" F: %.2f -> %.2f  (%+.2f ms)" % (mf_off, mf_on, mf_on - mf_off))
-        if drift == drift:
-            print(" off-arm bracket drift on c: %.3f" % drift)
-            print(" verdict: %s"
-                  % ("the change in c EXCEEDS the drift, so it is real"
-                     if abs(mc_on - mc_off) > drift else
-                     "the change in c is INSIDE the drift -- not resolvable"))
+        # F needs its own drift. Reporting F's change without it let me call a
+        # +0.48 ms rise "marginally real" off two arms; the third off arm put
+        # the F drift at 0.57 and the rise inside it.
+        fdrift = (max(v[0] for v in offs) - min(v[0] for v in offs)
+                  if len(offs) > 1 else float("nan"))
+        for lab, on, off, d in (("c", mc_on, mc_off, drift),
+                                ("F", mf_on, mf_off, fdrift)):
+            eff = on - off
+            if d != d:
+                print(" %s: %.3f -> %.3f  (%+.3f)  [no repeat arm, no drift]"
+                      % (lab, off, on, eff))
+                continue
+            print(" %s: %.3f -> %.3f  (%+.3f)  drift %.3f  -> %s"
+                  % (lab, off, on, eff, d,
+                     "REAL" if abs(eff) > d else "not resolvable"))
         print()
         print(" Expected shape: c DOWN (launch term mostly gone) and F UP")
         print(" slightly (the launch cost moves into F rather than vanishing).")
