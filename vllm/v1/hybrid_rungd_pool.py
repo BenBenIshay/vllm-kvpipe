@@ -352,6 +352,32 @@ class RungdHostPool:
         )
         self._copy_stream = torch.cuda.Stream() if self._async else None
         self._events: dict[int, torch.cuda.Event] = {}
+        # T6: records where the mirror was last READ, so the deferred mirror
+        # WRITE can be ordered after it. One event, re-recorded per layer --
+        # recording overwrites, and since every copy here goes on the MAIN
+        # stream in issue order, the newest event completing implies all the
+        # older ones did. Prefetches go on `_copy_stream` instead and are
+        # covered by synchronising that stream, because one event cannot stand
+        # for two streams: a later copy-stream record would overwrite the
+        # main-stream one and the main-stream DMA would go unwaited.
+        #
+        # NEGATIVE CONTROL. Setting VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC=1 disables
+        # the ordering and restores the race, which is the only way to A/B the
+        # fix on ONE binary -- and it has to be an A/B, because the failure is
+        # intermittent (2 failures on nova07, a pass on nova06). Without a
+        # control, five passes after the fix cannot be told apart from five
+        # passes because the race happened not to fire.
+        self._no_mirror_sync = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC", "0") == "1"
+        )
+        if self._no_mirror_sync:
+            print("*** RungdHostPool: NO_MIRROR_SYNC=1 -- the deferred mirror "
+                  "scatter is NOT ordered against in-flight H2D reads. This is "
+                  "a deliberate negative control and output MAY be wrong, "
+                  "intermittently.", flush=True)
+        self._mirror_ev = (torch.cuda.Event()
+                           if torch.cuda.is_available()
+                           and not self._no_mirror_sync else None)
         self.free_list: list[int] = list(range(self.h_max))
         # Item 1b: per-request CONTIGUOUS host extents (DirectKV's pool is
         # "contiguous per-request, no scatter/gather" for exactly this reason).
@@ -1036,6 +1062,16 @@ class RungdHostPool:
         # The launch COUNT is the quantity a faster link leaves untouched, so
         # it is counted per step rather than derived from the rider count.
         PT.count("h2d_launches", launches)
+        # T6. Mark where this layer's mirror READS were issued, so the deferred
+        # mirror WRITE in `flush_token_writes` can be ordered after them -- see
+        # the long comment there for the race and why it was invisible. Only
+        # the MAIN stream is recorded here: inside `_launch_prefetch` the
+        # current stream is the copy stream, and that whole stream is
+        # synchronised instead, because one event cannot cover two streams.
+        if (self._mirror_ev is not None and mode != "nobus"
+                and (self._copy_stream is None
+                     or torch.cuda.current_stream() != self._copy_stream)):
+            self._mirror_ev.record()
         PT.add("issue_runs", _t)
 
     def writeback_layer(self, layer_idx: int) -> int:
@@ -1203,6 +1239,48 @@ class RungdHostPool:
             return 0
         if self._wt_event is not None:
             self._wt_event.synchronize()
+        # T6, AND IT IS A CORRECTNESS FIX, not a tuning knob. The scatter below
+        # CPU-writes the host mirror. The mirror's READERS are the H2D copies in
+        # `_issue_runs`, issued with non_blocking=True from pinned memory, so
+        # they are live DMAs that outlive the host call that launched them.
+        #
+        # The ordering argument in the docstring above says "nothing prefetches
+        # across a step boundary", and that is true of where a prefetch is
+        # ISSUED. What crosses the boundary is its COMPLETION. `stream_layer`
+        # consumes the last prefetch with current_stream().wait_event(ev), which
+        # orders the DEVICE and returns to the host immediately, so the host
+        # runs on into the next step's build_step -- and straight into this
+        # scatter -- while that DMA may still be reading the rows it is about to
+        # overwrite.
+        #
+        # Measured 2026-10-05: with RUNGD_ASYNC=1 the token-identical test fails
+        # INTERMITTENTLY (2 failures on nova07, a pass on nova06 -- which is the
+        # signature of a race rather than a logic error). It stayed invisible
+        # because run_suite.sh never sets RUNGD_ASYNC while rider_cost_curve.py
+        # defaults it ON, so the suite tested one path and every measurement ran
+        # the other.
+        #
+        # Before T2 the mirror write was a BLOCKING D2H, which synchronised the
+        # host on every layer and made this safe by accident. T2 did not
+        # introduce the hazard, it removed the sync that was hiding it.
+        #
+        # The wait is on the stream that READ the mirror, not on the main stream,
+        # which is why it is nearly free: at the top of a step the newest such
+        # DMA was issued a layer before the end of the PREVIOUS step and has long
+        # since retired. Waiting on the main stream instead would hand back
+        # exactly the sync T2 removed.
+        #
+        # BOTH stream families have to be covered, which a single event cannot
+        # do: prefetches are issued on `_copy_stream` and the event-miss
+        # fallback in `stream_layer` issues on the main stream, so one
+        # re-recorded event would have the later record silently stand in for
+        # the other stream's outstanding DMA. The copy stream is covered by
+        # synchronising the stream itself (all its work, in issue order) and the
+        # main stream by `_mirror_ev`.
+        if self._copy_stream is not None and not self._no_mirror_sync:
+            self._copy_stream.synchronize()
+        if self._mirror_ev is not None:
+            self._mirror_ev.synchronize()
         _tf = PT.now()
         rows = 0
         for li, host_pos, n in self._wt_pending:

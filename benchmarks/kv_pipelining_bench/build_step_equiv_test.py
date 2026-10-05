@@ -101,6 +101,16 @@ class Stub:
         self._req_extent = {}
         self.whole_extent_steps = 0
         self.whole_extent_refused = 0
+        # T6 state. flush_token_writes now orders itself after the mirror's
+        # READERS, so the stand-in needs both handles for that call to be real
+        # rather than stubbed -- the ordering is the correctness fix, and a test
+        # that skipped it would pass while the thing it protects was broken.
+        self._copy_stream = None
+        self._mirror_ev = None
+        # Set explicitly even though the two guards above short-circuit before
+        # reading it: relying on short-circuit order would make this stub pass
+        # for a reason unrelated to what it is testing.
+        self._no_mirror_sync = False
 
     # bind the real implementations. `_active_host` is a property, so it has
     # to be a CLASS attribute to work at all -- which is itself worth asserting,
