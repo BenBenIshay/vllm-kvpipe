@@ -1,5 +1,35 @@
 # Overhead characterisation: how `c` scales, and whether a faster link buys throughput
 
+> ## Bottom line, 2026-10-05
+>
+> 1. **A faster interconnect does buy throughput, but only after two host-side
+>    fixes, and the link was never what was stopping it.** T1 took `c` from 5.173
+>    to 1.259 ms per rider and T2 took `F` from 13.44 to 5.90, turning the target
+>    from *never pays at any bandwidth* into **paying from 2.8 riders at 1.06×**.
+> 2. **`c` is almost entirely transfer, and the side-stream overlap already hides
+>    92.6% of it.** `c_link` = 0.0744 is the fraction that *fails* to hide, not a
+>    small cost share. The overlap is **load-bearing**: `c` = 0.92 with it against
+>    **7.20** without, which fails the gate by more than 2×. That leaves much less
+>    launch-side headroom than the earlier sections imply.
+> 3. **The remaining optimisations are nearly exhausted.** T4 (batching the
+>    per-layer D2H) is 18% *slower* and was killed unbuilt; T5 (whole-extent runs)
+>    is worth −89.5% host but its sign **flips with context**; T6 (ordering the
+>    mirror write) is correct and costs the entire overlap, so it is flag-gated
+>    off. The realistic floor is `c` ≈ 1.07 and `F` ≈ 3–4, worth about **1.32×**.
+> 4. **The gain is bought with latency**, and at the target the post-admission ITL
+>    (34.9 ms) exceeds the design's own `HBM/BW` precondition (~32 ms).
+> 5. **The correctness scare was the test, not the feature.** `hybrid_rungd_real`
+>    was not an equality test: *vanilla disagreed with itself*. Serial prompt issue
+>    makes both sides reproducible and the pool then matches vanilla exactly. But
+>    **"suite 9/9" was never the correctness evidence it was read as** — in the
+>    T1/T2 commits or in `B-correctness.tex`. The bitwise tests always were.
+>
+> §0–§8 describe the system as first characterised. §9 is what was then built,
+> §9b–§9d the retarget, the optimisation programme and the floor. The defect note
+> below §0 records the correctness investigation, including three conclusions I
+> reached and retracted; it is kept in that order because the retractions are the
+> part worth learning from.
+
 Final report, campaign M0–M6, branch `overhead-characterisation`.
 Substrate: one A100-80 PCIe, Qwen-32B / Llama-8B / Qwen-0.5B, P/D-emulated with
 the feature on the decode node, decode purity asserted per step on every
