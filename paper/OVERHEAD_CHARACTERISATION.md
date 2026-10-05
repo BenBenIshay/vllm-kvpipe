@@ -854,6 +854,91 @@ real operational win the law is blind to.
 > context with more residents, they run it to serve a longer one. The verdict is
 > unchanged either way, which is why this was never a blocker.
 
+### 9d. The optimisation programme, and where the floor actually is
+
+Ben's instruction was to keep reducing `F` and `c` until they are as small as
+they can be. This records what was tried, what each attempt cost to evaluate,
+and what is left — including two attempts that were **killed before being
+built**, which is the point of the method rather than a failure of it.
+
+**The instrument.** `benchmarks/kv_pipelining_bench/launch_pattern_bench.py`
+replays the pool's exact copy patterns engine-free, in minutes. It exists because
+T3 was implemented, proved correct, and turned out to be a 6× regression — the
+mechanism it relied on (fewer launches) was not the binding cost, and the
+warning was in a comment in the file being edited. The benchmark carries **T3
+itself as a control**, and the control reproduces the regression off-engine (4.6
+GB/s against 22.3 contiguous, device time +382%), so the harness is validated
+against a known answer before it is trusted on an unknown one. Its per-run arm
+also predicts the in-engine `issue_runs` timer to 12%.
+
+| attempt | what it does | verdict | cost to find out |
+|---|---|---|---|
+| T1 | block-table rebuild O(r) not O(r·S/bs) | **built**, `c` 5.17→1.26 | — |
+| T2 | defer the mirror write | **built**, `F` 13.4→5.90 | — |
+| T3 | one strided copy per layer | **reverted**, 6× worse | a day, in the engine |
+| T4 | batch the per-layer D2H | **killed unbuilt** | one GPU-minute |
+| T5 | whole-extent runs | built, flag-gated, unmeasured in-engine | one GPU-minute to price |
+| T6 | order the mirror write | **correctness fix**, see above | — |
+
+**T4 is dead, and it was the largest remaining item in `F`.** `write_token`
+spends 2.477 ms/step issuing D2H launches and that figure is *flat* in riders
+(+2% from 1 to 8), so it is pure fixed cost. The candidate replaced 2L D2H
+launches with 2L device-to-device copies into device staging plus one batched
+D2H. Measured: **18% slower** (33% for the single-D2H variant). You cannot
+remove 2L launches by adding 2L more. The benchmark's "2 D2H only" row shows the
+prize was real (−98.8% host) — it is simply not reachable through a staging
+copy, because every layer produces its KV at a different time in a different
+tensor and aggregating it costs a touch per layer either way.
+
+**T5 helps at short context and hurts at long, and that flip is the finding.**
+`_plan_extents` has always merged adjacent runs, and the merge has never fired:
+consecutive extents *are* adjacent, but a decode request grows a block every
+`block_size` tokens, so an extent sized for its final length always has unused
+slack at its tail and the next extent's base sits past it. No packing removes
+that. Taking the whole extent closes the gap — one contiguous run, 2 launches
+per layer instead of 2r — at the price of carrying the slack.
+
+| ctx | slack | `c` now | `c` T5 | knee | knee T5 | gain | gain T5 |
+|---|---|---|---|---|---|---|---|
+| 2048 | 25.0% | 0.902 | 0.331 | 15.8 | 12.7 | 0.926× | **1.077×** |
+| 4096 | 12.5% | 1.021 | 0.451 | 7.9 | 7.0 | 1.072× | 1.152× |
+| 8192 | 6.2% | 1.259 | 0.689 | 4.0 | 3.7 | 1.164× | 1.197× |
+| 16384 | 3.1% | 1.736 | 1.166 | 2.0 | 1.9 | 1.216× | 1.223× |
+| 32768 | 1.6% | 2.689 | 2.119 | 1.0 | 1.0 | 1.244× | 1.237× |
+
+T5 buys launches with bytes. `c` is **launch-dominated at short context and
+link-dominated at long** — at ctx 16384 the link is already 55% of `c` and the
+launch term only 39% — so the same trade is good at one end and bad at the
+other. It also *moves* cost from `c` into `F` rather than deleting it, which is a
+**structural** improvement even where the arithmetic is a wash: the gate is
+`c < T0/B`, and `F` only sets where break-even lands.
+
+So what T5 is worth is **absolute throughput, not headline ratio**: with it,
+ctx 8192 reaches 1.197× at ~274 tok/s, where today matching that ratio means
+going to ctx 32768 and 73 tok/s. That is the same point §9b makes — the best
+ratio is not the best deployment — arriving from the other direction.
+
+> One correction worth recording. My first reading took the microbenchmark's 24%
+> slack penalty at ctx 512 as a general figure, which made T5 look like a loss
+> everywhere. **The slack fraction is `gen/S`** — set by the generation length,
+> not the context — so the same 8 blocks is 24% at ctx 512 and 3% at ctx 16384.
+> The number was right and the inference from it was wrong.
+
+**Where the floor is.** At the retargeted operating point `c` decomposes as
+link 0.953 (54.9%), launches 0.670 (38.6%), D2H 0.109 (6.3%), block-table 0.003
+(0.2%). The link term is `bytes / bandwidth` and is irreducible by definition —
+it is what the feature exists to spend. T5 can take ~90% of the launch term.
+That leaves a floor near **`c` ≈ 1.07 at ctx 16384** against 1.736 today, and
+`F` near **3–4 ms** against 5.90, with the remaining `F` being 2L irreducible
+D2H launches plus exposed host work. The gain at that floor is ~**1.32×** on
+C2C.
+
+**And the honest caveat on all of it:** every coefficient above was fitted from
+runs with the data race of §0 open on every step. The relative statements — which
+term dominates, which axis a term scales with, the sign of T5's effect — are
+robust, because the defect is common to every arm of every sweep. The absolute
+magnitudes are provisional until re-measured on the ordered path.
+
 ### Verification
 
 | check | result |
