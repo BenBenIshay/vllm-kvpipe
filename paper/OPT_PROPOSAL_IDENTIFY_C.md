@@ -1,8 +1,87 @@
-# Proposal: identify the 51% of `c` that nothing we have tried can move
+# Proposal: WITHDRAWN as written — the archive already answered it
 
-**Status: FOR REVIEW. No code written.**
-Author: Claude, 2026-10-05. Supersedes the optimisation half of
+**Status: WITHDRAWN 2026-10-05, same day it was written. Read §-1 first.**
+Author: Claude. Supersedes the optimisation half of
 `OPT_PROPOSAL_PERBLOCK_D2H.md` (that one is EXECUTED: it became T1 and T2).
+
+---
+
+## §-1. Why this proposal is withdrawn, and what replaces it
+
+I proposed a four-arm, ~4 GPU-hour experiment to identify "the 51% of `c`" that
+T3, T4 and T5 all failed to move. **Before running it I checked whether the
+archive already constrained the candidates. It did — three of the four arms were
+already measured, and together they dissolve the premise.**
+
+**The premise was wrong.** The decisive arm is `VLLM_KVPIPE_RUNGD_XFER_MODE`
+from M1 (`01_perturbation/`), which keeps every gather, hook, event and stream
+ordering fixed and varies only the bytes:
+
+```
+  real      c = 1.166
+  minbytes  c = 0.597     same launches, almost no bytes
+  nobus     c = 0.509     views built, no copy issued
+
+  bytes          = real - minbytes = 0.569   49% of c
+  launch issuing = minbytes - nobus = 0.088    8% of c
+```
+
+So **the launch term is ~10% of `c`, not 51%.** The law overstated it **6×**,
+because `b_tok ∝ L` makes a transfer-bound per-rider cost indistinguishable in
+shape from a per-rider-per-layer launch cost — the two terms are collinear in
+`L` and the fit put the mass in the wrong one.
+
+**That retires the question this proposal was built around.** There is no
+51% mystery term. Today's `c` is 62% link, 12% d2h, 10% launches and **17%
+unidentified**. See `OVERHEAD_CHARACTERISATION.md` §0b.
+
+**The arms, and what the archive already says:**
+
+| arm | status | result |
+|---|---|---|
+| A, layer sweep | **already run** — M2 slice C, `02_law/C_L{8,16,32,48}` | `c` = 0.358 → 1.075 for L = 8 → 64, slope 0.0131 ms/rider/layer. Linear in `L`, so **C4 excluded by direct measurement.** The §8 question about the unsafe knob is moot: it was already used, under the mitigation the campaign plan approved. |
+| B, window sweep | **partly run** — `02_law/F_k{2,8}` | `c` = 1.110 / 1.075 / 1.108 for k_window 2 / 4 / 8. **Flat**, so the term does not depend on slot count. T5 covered the blocks-per-rider axis (+24%, no change). |
+| C, link/bytes | **already run** — `01_perturbation/xfer_{min,nob}` | The table above. **C3 confirmed: the dominant term is the transfer.** |
+| D, cohort shape | **not run** | The only genuinely new arm, and now worth ~1 h rather than 4. |
+
+**Per-phase timers already narrow the 17% residual too**, from the T5 phase
+JSONL (slopes in ms per rider per step, ctx 512, L=64):
+
+```
+  issue_runs          +1.181     <- where the per-rider cost lives
+  stream_layer        +1.189     (= issue_runs + 0.008, so NOT event bookkeeping)
+  rider_attend        +0.040     <- so NOT the attention pass either
+  rider_gather_alloc  -0.001
+  rider_scatter       -0.001
+```
+
+**C1 and C2 are both excluded**: the attention bracket is flat and the
+`stream_layer − issue_runs` bookkeeping bracket is ~0.008. Whatever the residual
+is, it is inside `issue_runs` and survives `nobus`, i.e. it is the Python work of
+building the per-run views, not the copies themselves.
+
+### What I now recommend instead
+
+1. **Nothing urgent.** The dominant term is the link, which is understood and
+   which the whole project exists to improve. The remaining code-side targets are
+   d2h (12%, **at floor** — T4 measured the only aggregation as 18% worse) and
+   the 17% residual.
+2. **Re-fit the law** so `c`'s link and launch terms are no longer collinear.
+   This is desk work, no GPU: constrain the launch coefficient to the measured
+   0.00138 ms/rider/layer from the `minbytes − nobus` difference and let the link
+   term take the rest. Every projection in the report and in
+   `overhead_model.py` depends on this split, and it is currently 6× wrong in one
+   term and 1.43× wrong in the other.
+3. **Then, if the 17% is still worth chasing**, arm D alone (~1 h) plus a reading
+   of `issue_runs`' Python cost at fixed bytes.
+4. **The H100 run still stands** — it is about `F`'s hiding fraction, which none
+   of this touches.
+
+The original four-arm design is kept below for the record, because its §3 and §6
+reasoning is what made checking the archive first seem worth doing.
+
+---
+
 
 ---
 
