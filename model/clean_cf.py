@@ -121,6 +121,36 @@ def main():
         print(" measured at git head %s" % head)
         print()
 
+    # --- is the affine form even right below the knee? -------------------
+    # A least-squares c is only meaningful if the marginal cost of one more
+    # rider is roughly constant. On the first arm it is NOT: the r=1->2 step
+    # costs 1.117 ms while r=3..6 average 0.37. Fitting a line through that
+    # returns 0.508, which is neither value. This prints the marginals so the
+    # affine assumption is visible instead of assumed -- the same fit-window
+    # sensitivity that already forced the alpha retraction in section 2.
+    print(" MARGINAL COST OF ONE MORE RIDER (is c actually constant?)")
+    for tag, ctx, L in ARMS:
+        r = one(tag)
+        if not r:
+            continue
+        d, t0, pts, loads, over = r
+        if len(pts) < 3:
+            continue
+        marg = []
+        for i in range(1, len(pts)):
+            dr = pts[i][0] - pts[i - 1][0]
+            if dr > 0:
+                marg.append((pts[i][0], (pts[i][1] - pts[i - 1][1]) / dr))
+        mid = [v for rr, v in marg if 2 < rr <= 6]
+        print("   %-12s %s" % (tag, "  ".join("r%d:%.2f" % m for m in marg)))
+        if mid:
+            f = lsq(pts)
+            print("   %-12s mid-range mean %.3f   vs affine fit %.3f   %s"
+                  % ("", sum(mid) / len(mid), f[1],
+                     "(affine OK)" if abs(sum(mid) / len(mid) - f[1]) < 0.06
+                     else "(AFFINE FIT INFLATED by the end points)"))
+    print()
+
     # --- drift -----------------------------------------------------------
     a, b = got.get("CF_c128_a"), got.get("CF_c128_b")
     drift_c = drift_F = None
