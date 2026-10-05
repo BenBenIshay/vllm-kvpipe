@@ -994,10 +994,14 @@ def _selftest() -> int:
     # that change (0.899 -> 0.948, "+5%") as though it were a real increase; it
     # is not resolvable, and asserting its sign would have pinned noise.
     #
-    #   T5 off : c = 0.899, 0.946   (n_runs 8, 1024 launches)  drift 0.047
-    #   T5 on  : c = 0.948          (n_runs 1,  128 launches)  effect +0.025
-    MEAS_OFF = (0.899, 0.946)
-    MEAS_ON = 0.948
+    #   T5 off : c = 0.899, 0.946, 0.892  (n_runs 8, 1024 launches) drift 0.054
+    #   T5 on  : c = 0.948, 0.928         (n_runs 1,  128 launches) effect +0.025
+    #
+    # Full bracket, 3 off arms and 2 on. F is ALSO a null: +0.48 against an F
+    # drift of 0.57, so the "marginally real F increase" I read off two arms did
+    # not survive the third either. T5 moves NEITHER coefficient resolvably.
+    MEAS_OFF = (0.899, 0.946, 0.892)
+    MEAS_ON = (0.948 + 0.928) / 2
     drift = max(MEAS_OFF) - min(MEAS_OFF)
     effect = MEAS_ON - sum(MEAS_OFF) / len(MEAS_OFF)
     pred_off = c_ms(Q32, A100, 512, 16, False, t1=True)["total"]
