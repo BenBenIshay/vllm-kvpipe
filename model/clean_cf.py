@@ -151,6 +151,61 @@ def main():
                      else "(AFFINE FIT INFLATED by the end points)"))
     print()
 
+    # --- THE RIGHT COMPARISON: marginal cost vs transfer LOAD -------------
+    # c came out 0.508 at ctx 128 and 0.620 at ctx 256, which looks like a
+    # context dependence and would mean the bytes are not hidden. But at ctx 256
+    # the SAME rider count sits at a higher transfer load, so the comparison is
+    # confounded: the two arms are not at the same distance from the knee.
+    #
+    # Pooling every arm's marginal against its load decouples them. If the
+    # marginals from different contexts fall on ONE curve against load, then the
+    # per-rider cost is a function of knee proximity and not of context, and the
+    # intercept of that curve at load -> 0 is the genuine exposed cost -- the
+    # quantity `c` was always meant to be.
+    print(" MARGINAL vs TRANSFER LOAD, pooled across contexts")
+    print("   (if one curve fits both contexts, c depends on LOAD not on S)")
+    pool = []
+    for tag, ctx, L in ARMS:
+        r = one(tag)
+        if not r or L != 64:
+            continue
+        d, t0, pts, loads, over = r
+        rows = {x["riders"]: x for x in d["rows"] if x.get("usable")}
+        for i in range(1, len(pts)):
+            r0, r1 = pts[i - 1][0], pts[i][0]
+            if r1 <= r0:
+                continue
+            m = (pts[i][1] - pts[i - 1][1]) / (r1 - r0)
+            lm0 = rows.get(r0, {}).get("link_ms")
+            lm1 = rows.get(r1, {}).get("link_ms")
+            if not (lm0 and lm1 and t0):
+                continue
+            ld = (lm0 + lm1) / 2 / t0          # mean load over the interval
+            pool.append((ld, m, d.get("ctx"), r0, r1))
+    if pool:
+        print("   %7s %8s %9s %s" % ("load", "marginal", "ctx", "interval"))
+        for ld, m, ctx, r0, r1 in sorted(pool):
+            print("   %7.3f %8.3f %9s   r%d->r%d" % (ld, m, ctx, r0, r1))
+        # drop the first-rider step: it is a one-off, identical at both
+        # contexts (1.117 and 1.13), so it belongs in F, not in c
+        body = [(ld, m) for ld, m, ctx, r0, r1 in pool if r0 >= 2]
+        if len(body) >= 3:
+            f = lsq(body)
+            print()
+            print("   excluding the r=1->2 step (a one-off, 1.12 at BOTH")
+            print("   contexts, so it is part of F rather than of c):")
+            print("     marginal(load) = %.4f + %.3f * load" % (f[0], f[1]))
+            print("     at load -> 0 :  %.3f ms/rider   <-- the EXPOSED cost"
+                  % f[0])
+            print("     max residual :  %.3f" % f[3])
+            print()
+            print("   So the per-rider cost is %.3f ms of exposed work plus a"
+                  % f[0])
+            print("   term that grows with knee proximity. The second part is")
+            print("   not `c` -- it is the knee, and it belongs to the rider")
+            print("   admission limit rather than to the per-rider charge.")
+    print()
+
     # --- drift -----------------------------------------------------------
     a, b = got.get("CF_c128_a"), got.get("CF_c128_b")
     drift_c = drift_F = None
