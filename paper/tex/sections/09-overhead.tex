@@ -603,6 +603,87 @@ into one pinned allocation with per-layer views. That is worth roughly 0.4\,ms
 of an 8\,ms win and is the only change among these that alters a data layout
 every mirror access shares, so we did not make it.
 
+\subsection{Which model the feature suits, and how that follows from the law}
+\label{sec:overhead:bestmodel}
+
+\emph{Question: the law now has measured coefficients, so which model and context
+does it favour?} This is answerable by search rather than by argument, and the
+answer is not the model the rest of this paper targets.
+
+\paragraph{What a model contributes to the law.} Only four properties of a model
+enter. Its depth $L$ sets the per-rider launch term and the whole of $F$, both
+linearly. Its weight footprint $W$ sets the step time $T_0 = W/(M_{\textrm{bw}}
+\eta)$ and, by subtraction, the capacity $C = M - W$ left for KV. Its per-token
+KV footprint $\beta = 2 L n_{kv} d_h b$ sets how many residents fit,
+$B = C/\beta S$, and how many bytes a rider streams. Context $S$ enters only
+through $\beta S$. Everything else about an architecture is invisible here.
+
+That last point is worth stating plainly because it collapses three apparent
+knobs into one: \emph{the law sees only the product $\beta S$}. A model at
+$S{=}16384$ with fp16 KV, the same model at $S{=}32768$ with fp8 KV, and a
+multi-head variant with eight times the KV heads at $S{=}2048$ all produce
+identical $c$, $B$, $T_0/B$ and $r^{*}$. Tuning context, KV precision and head
+count separately is tuning one quantity three times.
+
+\paragraph{Four consequences, three of them counter-intuitive.}
+
+\emph{Heavy weights help.} They raise $T_0$ and shrink $C$, so fewer residents
+fit and each is worth more --- the budget $T_0/B$ rises. This recovers the
+project's prior rule that the feature's value tracks how much of HBM the weights
+consumed, and it survives the measured overhead law rather than being superseded
+by it.
+
+\emph{Shallow beats deep at equal weight.} $L$ appears in $c$ and in $F$
+linearly, but reaches $T_0$ only through the weights it implies. A 95-layer
+model loses to an 80-layer one of similar footprint.
+
+\emph{Smaller KV hurts.} Halving $\beta$ doubles the resident count, so $T_0/B$
+halves --- the budget a rider must beat tightens faster than $c$ falls. KV
+quantisation is therefore mildly \emph{negative} for this feature, sharpening
+the prior expectation that it was neutral.
+
+\emph{Longer context helps only up to the knee.} The budget rises with $S$ while
+$r^{*}$ falls as $1/S$, so there is an interior optimum rather than a monotone
+preference.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+model & $S$ & $B$ & $T_0/B$ & $c$ & $r^{*}$ & gain \\
+\midrule
+Qwen-72B fp8   & 16384 & 3.0 & 8.50 & 1.736 & 2.0 & \textbf{1.22}$\times$ \\
+Qwen-72B fp8   &  8192 & 6.0 & 4.25 & 1.259 & 4.0 & 1.16$\times$ \\
+Llama-70B fp8  & 16384 & 3.6 & 6.74 & 1.736 & 1.9 & 1.11$\times$ \\
+Llama-70B fp8  &  8192 & 7.2 & 3.37 & 1.259 & 3.8 & 1.06$\times$ \\
+Qwen-32B fp16  & 16384 & 6.2 & 3.54 & 1.411 & 2.1 & 0.99$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Best points under the measured law on GH200 with the 419\,GB/s link,
+with both host-side changes in. Milliseconds unless marked. Ten of
+forty-three (model, context) points pay at all; the table gives the top four and
+one that does not.}
+\label{tab:overhead:bestmodel}
+\end{table}
+
+Table~\ref{tab:overhead:bestmodel} gives the search result. The best point is
+\textbf{Qwen-72B fp8 at $S{=}16384$, 1.22$\times$}, and it beats the 70B at the
+same context on nothing but 76\,GB of weights against 72.7 --- which is the
+heavy-weight rule acting on a 4\% difference. On a doubled link the same point
+reaches 1.69$\times$ and eighteen of forty-six points pay.
+
+\paragraph{The gain is bought with latency, and that constrains where it may be
+used.} Throughput rises because more requests share a longer step, so the step
+time --- which is the inter-token latency every resident experiences --- rises
+too. At the 70B target, admitting riders up to the knee takes the ITL from 24.2
+to 34.9\,ms, a factor of 1.44, in exchange for 1.06$\times$ throughput. The
+design's own precondition is that the ITL budget exceed $M/M_{\textrm{bw}}$,
+about 32\,ms here; the post-admission ITL of 34.9\,ms sits above that. So at this
+operating point the feature consumes the latency headroom that justified it, and
+a deployment has to have an ITL budget well above the rider-free step time rather
+than merely above the memory-read floor.
+
 \subsection{Threats to validity}
 \label{sec:overhead:threats}
 
