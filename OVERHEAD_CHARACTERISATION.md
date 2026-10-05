@@ -107,6 +107,36 @@ was measured the interconnect was not what was stopping it.**
 >
 > So T6 stays behind a flag and is not defaulted on.
 >
+> ### The three numbers decompose exactly, which confirms the mechanism
+>
+> The harness independently reports the per-rider transfer at ctx 512 as **6.17
+> ms** (0.155 GB at 25.1 GB/s). Against that:
+>
+> | configuration | `c` | reading |
+> |---|---|---|
+> | async off | 7.196 | transfer 6.17 + host ~1.0 |
+> | **async on** | **0.883–1.004** | **host only — the transfer is hidden** |
+> | async on + T6 | 7.024–7.037 | transfer + host; the overlap is nullified |
+>
+> T6's cost per rider is 7.03 − 0.9 = **6.1 ms**, which is the per-rider
+> transfer to within 1%. So `copy_stream.synchronize()` makes the host wait for a
+> full step's outstanding transfer — precisely the work the overlap was
+> deferring — and the three configurations are not three mysteries but one
+> quantity appearing or not appearing in the step.
+>
+> **And this reframes the law in this document.** The fitted `c_link`
+> coefficient is 7.44% of nominal link time, i.e. **92.6% of the transfer is
+> hidden**. Every coefficient here was fitted on the overlapped path, so §3's
+> decomposition, §5's link sweep and §8's verdict all describe *the overlapped
+> path* — the one whose correctness is in question. That is why the defect
+> blocks the headline claim rather than qualifying it.
+>
+> One failure mode checked and ruled out: if the overlap were merely *deferring*
+> transfer into an unbounded backlog, the step time would understate the
+> steady-state cost and `c` = 0.9 would be an artefact. It is not. At 8 riders
+> the overlapped step is ~61 ms while the transfer needs 49.4 ms of link time,
+> so the copy stream can keep up and the overlap is real.
+>
 > ### And the causal chain is NOT established
 >
 > Two things are confirmed: the hazard window exists on every step, and the
