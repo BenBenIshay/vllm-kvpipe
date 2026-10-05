@@ -11,18 +11,20 @@
 >    small cost share. The overlap is **load-bearing**: `c` = 0.92 with it against
 >    **7.20** without, which fails the gate by more than 2×. That leaves much less
 >    launch-side headroom than the earlier sections imply.
-> 3. **Host-side optimisation is exhausted, because `c` is 62% LINK — see §0b.**
->    Differencing the `real` / `minbytes` / `nobus` arms attributes `c` directly:
->    **62% bytes, 10% launch issuing, 12% d2h, 17% unidentified.** The law had
->    claimed launches were 42–51%, overstating them **6×**, which is why T3, T4
->    and T5 all failed — each attacked a tenth of the cost. The code-side terms
->    left are d2h (at floor, T4 measured) and the 17% residual.
-> 6. **So the interconnect buys MORE than this report projected, not less.** With
->    the corrected split, `c` at C2C is **1.098** rather than 1.259 and the gain
->    **1.079×**; at a doubled link `c` is **0.733** and the gain **1.43×**. Being
->    more link-bound also makes it *worse* below PCIe6 — which sharpens the
->    original answer rather than softening it: the interconnect is what decides
->    this, and C2C is the first point where it decides in our favour.
+> 3. **`c` was fitted across the knee and is ~2.5× smaller than reported — see
+>    §0b.** Re-fitting on arms wholly below the knee gives
+>    **`c`(L) = 0.116 + 0.00382·L, context-independent** — **0.42 ms/rider** at
+>    the target, not 1.259. Below the knee the rider transfer hides completely
+>    (measured: at 1–2 riders the bytes cost *nothing*), so `c` contains only the
+>    exposed extra work, which is what it was always supposed to mean.
+> 6. **So the gate is not what binds, and the interconnect buys more.** `c` = 0.42
+>    against a budget of 3.37 passes with 8× margin at *every* bandwidth. What
+>    binds is the **knee** — how many riders can be admitted before the transfer
+>    stops hiding — and the knee scales linearly with link bandwidth. Gain at C2C
+>    is **1.17×** (was 1.06×) and at a doubled link **1.54×**.
+> 7. **Which is why T3, T4 and T5 all failed.** They attacked launch count. With
+>    `c` = 0.42 and a budget of 3.37, `c` was never the constraint, so no
+>    reduction of it could have changed the verdict.
 > 4. **The gain is bought with latency**, and at the target the post-admission ITL
 >    (34.9 ms) exceeds the design's own `HBM/BW` precondition (~32 ms).
 > 5. **The correctness scare was the test, not the feature.** `hybrid_rungd_real`
@@ -409,7 +411,106 @@ Everything below is the derivation and the evidence.
 
 ---
 
-## 0b. CORRECTION, 2026-10-05: `c` is 62% link-bound, not 31% — and the archive said so in M1
+## 0b. CORRECTION, 2026-10-05: `c` was fitted across the knee, and is ~2.5× smaller than reported
+
+**Headline: `c` at the target is 0.42 ms/rider, not 1.259, and it is
+context-independent. The gate `c < T0/B` is not what binds — the knee is.**
+
+### The error
+
+Every `c` in this report was fitted as one straight line through a whole rider
+sweep. At the short contexts the campaign used, the **top of that sweep sits at
+the knee.** Below the knee a rider's transfer hides behind compute and costs
+nothing; at the knee it stops hiding and lands in the step. A straight line
+through both regimes smears the knee cost backwards and reports it as a constant
+per-rider charge.
+
+Differencing the `xfer_mode` arms at ctx 512 shows it directly — no fitting:
+
+| riders | cost of the bytes | transfer they need | un-hidden |
+|---|---|---|---|
+| 1 | **−0.26** | 5.3 | ~0% |
+| 2 | **−0.25** | 10.7 | ~0% |
+| 4 | 1.44 | 21.4 | 6.7% |
+| 8 | 3.50 | 42.8 | 8.2% |
+
+At 1–2 riders the bytes cost **nothing**, exactly as the design intends. The
+cost appears only on approach to the knee (9.2 riders here).
+
+### The re-fit
+
+Truncating a sweep to its lowest points does not work — with `F` ≈ 11 ms and
+only r = 1,2 surviving, the fit is ill-conditioned and returns a *higher* `c`.
+The arms to use are those **wholly below the knee**, which need no truncation,
+plus `minbytes` (bytes removed, so no knee exists) for the full-depth point:
+
+| arm | max load | `c` |
+|---|---|---|
+| `C_L8_c512` (8 layers stream) | 0.14 | 0.358 |
+| `C_L16_c512` | 0.26 | 0.455 |
+| `xfer_min_c512` (L=64, bytes removed) | — | 0.597 |
+
+```
+  clean fit:  c(L) = 0.358 + 0.00382 * L        (pre-T1)
+  at L=64 it predicts 0.602; minbytes measures 0.597  -> 0.8% agreement
+```
+
+Two independent routes agree, which is the evidence that the cut is in the right
+place. The law's `b_per_rider_layer` = 0.00838 is **overstated 2.2×**.
+
+The 0.358 intercept is itself explained: these arms are **pre-T1**, so they still
+carry the per-block term (0.245 at ctx 512) plus d2h (0.109) = 0.354. With T1 in,
+that intercept collapses to 0.116:
+
+```
+  POST-T1:  c(L) = 0.116 + 0.00382 * L      and it does NOT depend on context
+            L=64  ->  0.361        L=80  ->  0.422
+```
+
+Context-independence is the strongest part of the claim: `minbytes` gives `c` =
+0.520 at S=256 and 0.597 at S=512, and after removing the S-scaling per-block
+term both reduce to ≈0.35–0.40. **A per-rider cost that does not scale with the
+bytes cannot be the transfer.**
+
+### What it does to the projection
+
+| link GB/s | `c` | budget `T0/B` | knee | gain (old) | gain (clean) |
+|---|---|---|---|---|---|
+| PCIe4 25 | 0.422 | 3.37 | 0.23 | — | 0.83× |
+| PCIe6 128 | 0.422 | 3.37 | 1.16 | 0.85× | 0.92× |
+| **C2C 419** | **0.422** | 3.37 | 3.78 | 1.06× | **1.166×** |
+| **2× C2C 900** | 0.422 | 3.37 | 8.12 | ~1.21× | **1.538×** |
+
+### And the framing of this whole report changes
+
+`c` = 0.42 against a budget of 3.37 is **not close to binding at any
+bandwidth.** So §1's claim that "the condition that decides everything" is
+`c < T0/B` is wrong as a description of the real system: that gate passes with
+8× margin. **What binds is the knee** — how many riders can be admitted before
+the transfer stops hiding — which is what §5 already said and which the fitted
+coefficient contradicted only because it had the knee folded into it.
+
+> **What still has to be confirmed.** The post-T1 intercept is an *inference*
+> (subtracting the measured per-block term), not a direct measurement, and the
+> clean fit rests on three points, two of which use the numerically-invalid
+> layer knob for timing. **The confirming run is cheap:** ctx 512 with riders
+> 0–3 and T1+T2 in, which is wholly below the knee (load ≤ 0.33), ~30 minutes.
+> Until then treat `c` = 0.42 as provisional in the same way the old 1.259 was —
+> but note the old value is now known to be contaminated, and this one is not
+> yet known to be.
+
+### Superseded by the above
+
+An earlier version of this section claimed `c` was "62% link-bound" and that the
+interconnect therefore buys *more* than projected. That rested on the same
+across-the-knee fit and is withdrawn. The conclusion that the interconnect buys
+more does survive, but for a different and better reason: `c` is small and
+constant, so the link's whole contribution is the **knee**, and the knee scales
+linearly with bandwidth.
+
+---
+
+## 0c. Superseded: `c` is 62% link-bound (withdrawn)
 
 This is the most consequential finding of the session, it reverses the
 pessimistic reading of §9d, and **it required no new GPU time** — the decisive
