@@ -148,10 +148,16 @@ was measured the interconnect was not what was stopping it.**
 >
 > ### RETRACTED: the divergence is not async-specific
 >
-> **`base run 1: CORRECTNESS FAIL` — and the `base` arm is async OFF**, the
-> suite's own configuration. The rate study's first arm shows the
-> token-identical test failing on the path this document has been treating as the
-> correct one.
+> **The rate study's first arm: `base` (async OFF) = 7 pass, 1 fail.** That is
+> the suite's own configuration — the path this document has been treating as
+> correct — failing the token-identical test.
+>
+> One failure in eight gives a point estimate of 12.5%, but the binomial
+> confidence interval on 1/8 runs from roughly 0.3% to 53%, so the honest claim
+> is **"it fails occasionally"**, not a rate. That is already enough: a gate that
+> fails occasionally on a configuration assumed correct cannot certify anything,
+> and a historical string of "9/9" is exactly what an occasional flake looks
+> like.
 >
 > So the framing above is wrong where it blames the prefetch. It rested on
 > async-ON failing twice and async-OFF passing a handful of times; with more
