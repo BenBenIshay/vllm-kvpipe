@@ -62,6 +62,20 @@ def fit(path):
     return d, (sy - c * sx) / n, c, n
 
 
+def want_merge(path):
+    """Was whole-extent enabled for this arm? None when unrecorded."""
+    try:
+        d = json.load(open(path))
+    except (OSError, ValueError):
+        return None
+    if "whole_extent" in d:
+        return bool(d["whole_extent"])
+    env = d.get("kvpipe_env") or {}
+    if "VLLM_KVPIPE_RUNGD_WHOLE_EXTENT" in env:
+        return env["VLLM_KVPIPE_RUNGD_WHOLE_EXTENT"] == "1"
+    return None
+
+
 def mechanism(path):
     """{riders: (n_runs, w_blocks, launches)} medians from a phase JSONL."""
     seen = {}
@@ -102,6 +116,11 @@ def main():
     fired = {}
     for f in sorted(glob.glob(os.path.join(DATA, "*_phases.jsonl"))):
         tag = re.sub(r"_phases\.jsonl$", "", os.path.basename(f))
+        # Judge each arm against ITS OWN configuration, read from the run
+        # artifact. The first version flagged the control arm as "DID NOT
+        # MERGE", which is what the control is FOR -- a check that reports the
+        # intended behaviour as a failure is worse than no check.
+        want = want_merge(os.path.join(DATA, tag + ".json"))
         m = mechanism(f)
         if not m:
             print(" %-12s no steps recorded" % tag)
@@ -114,22 +133,33 @@ def main():
             print("   %7d %8s %10s %10s %12d"
                   % (r, runs, wb, la, 2 * r * 64))
             if r >= 2:
-                fired.setdefault(tag, []).append(runs == 1)
+                fired.setdefault(tag, (want, []))[1].append(runs == 1)
         print()
-    for tag, oks in fired.items():
-        if all(oks):
-            print(" %-12s MERGED on every multi-rider cohort (n_runs == 1)"
+    for tag, (want, oks) in fired.items():
+        if want is None:
+            print(" %-12s no config recorded; cannot judge" % tag)
+        elif want and all(oks):
+            print(" %-12s whole-extent ON and MERGED on every multi-rider"
+                  " cohort" % tag)
+        elif want and any(oks):
+            print(" %-12s whole-extent ON but merged on SOME cohorts only --"
+                  " treat timing with care" % tag)
+        elif want:
+            print(" %-12s whole-extent ON but DID NOT MERGE. The slack guard"
                   % tag)
-        elif any(oks):
-            print(" %-12s merged on SOME cohorts only -- treat timing with care"
-                  % tag)
+            print("              refused it (loose blocks_per_req), so this arm")
+            print("              measured the per-run path and the comparison"
+                  " is void.")
+        elif not any(oks):
+            print(" %-12s control: whole-extent OFF and did not merge, as"
+                  " intended" % tag)
         else:
-            print(" %-12s DID NOT MERGE. The slack guard likely refused the"
+            print(" %-12s control: whole-extent OFF but SOME cohorts merged"
                   % tag)
-            print("              whole-extent path (loose blocks_per_req), so"
-                  " this arm")
-            print("              measured the per-run path and any difference"
-                  " is noise.")
+            print("              anyway -- adjacent used blocks can merge on"
+                  " their own,")
+            print("              which weakens the contrast rather than"
+                  " invalidating it.")
     print()
 
     print("=" * 78)
