@@ -146,7 +146,47 @@ was measured the interconnect was not what was stopping it.**
 > the overlapped step is ~61 ms while the transfer needs 49.4 ms of link time,
 > so the copy stream can keep up and the overlap is real.
 >
-> ### RETRACTED: the divergence is not async-specific
+> ### RESOLVED: vanilla disagrees with itself, so the gate was never valid
+>
+> ```
+> [DIFF] vanilla vs vanilla     2 of 3 prompts differ
+>       first diff at char 60 of 131 (46% through)
+>       run A: ...' statesman, invaded Gaul (modern-day France) in 50'
+>       run B: ...' statesman, invaded Gaul in 509 BC. The Romans had'
+> [SAME] pool vs pool           all 3 prompts identical
+> VERDICT: THE GATE IS NOT AN EQUALITY TEST.
+> ```
+>
+> **Two runs of plain vLLM — no pool, no feature — produce different text.** And
+> in the same attempt the pool emitted `"invaded Gaul in 509 BC"`, which is
+> precisely what vanilla run B produced: **the pool's output lies inside the set
+> of outputs vanilla itself generates.** On this attempt the pool was the *more*
+> stable of the two — 3 of 3 self-identical against vanilla's 1 of 3.
+>
+> Both divergences sit 46–53% through the output, between two fluent
+> continuations. That is the flipped-near-tie signature, not corruption.
+>
+> So every "correctness failure" in this investigation was a comparison of two
+> draws from a non-deterministic process. One mechanism accounts for all of it:
+> the intermittency, the failure on the async-OFF arm, the negative control
+> passing twice, the late divergence position, the identical printed prefixes,
+> and why a historical run of "9/9" mostly held.
+>
+> **What this establishes, and what it does not.** It removes the evidence that
+> the feature is incorrect. It does **not** show the feature is correct — that
+> still rests on the bitwise tests, which are unaffected and were always the
+> stronger half (`build_step_equiv` 18 cases, `whole_extent_equiv` 16,
+> `restore_roundtrip`, `host_pool`, and T2's negative control failing 3 of 3 on
+> demand).
+>
+> **The suspected source** is the harness issuing its three prompts concurrently
+> through a `ThreadPoolExecutor`, so batch composition varies run to run and with
+> it the reduction order inside attention and the MLP. Greedy decoding then turns
+> a last-bit logit difference into a different token. That is a hypothesis about
+> the *mechanism*; the *finding* — that the gate is not an equality test — does
+> not depend on it, because vanilla's self-disagreement is measured directly.
+>
+> ### Superseded: the divergence is not async-specific
 >
 > **The rate study's first arm: `base` (async OFF) = 7 pass, 1 fail.** That is
 > the suite's own configuration — the path this document has been treating as
