@@ -90,6 +90,17 @@ class Stub:
         self._batch_gather = True
         self.batched_steps = 0
         self.unbatched_steps = 0
+        # T5 state, flag OFF. These 18 cases are the reference for the PER-RUN
+        # numbering, so this file is what proves T5 changes nothing when it is
+        # not enabled; the whole-extent path has its own test
+        # (whole_extent_equiv_test.py) because it deliberately renumbers the
+        # compact region and so cannot be checked against this reference.
+        self._whole_extent = False
+        self._whole_extent_max_slack = 0.5
+        self._bpr = 0
+        self._req_extent = {}
+        self.whole_extent_steps = 0
+        self.whole_extent_refused = 0
 
     # bind the real implementations. `_active_host` is a property, so it has
     # to be a CLASS attribute to work at all -- which is itself worth asserting,

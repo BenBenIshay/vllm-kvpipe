@@ -380,6 +380,18 @@ def main() -> int:
                         "against the decode-node rig.")
     p.add_argument("--rungd-async", action="store_true", default=True)
     p.add_argument("--no-rungd-async", dest="rungd_async", action="store_false")
+    p.add_argument("--whole-extent", action="store_true",
+                   help="T5: build the per-step runs from whole EXTENTS so "
+                        "they merge into one contiguous copy per layer, 2 "
+                        "launches instead of 2r. Needs --rungd-bpr to be set "
+                        "tight or the pool's slack guard refuses it, because "
+                        "the default extent is sized for max_model_len and "
+                        "whole-extent copying would then move 4x the bytes.")
+    p.add_argument("--rungd-bpr", type=int, default=0,
+                   help="blocks_per_req override. Set to "
+                        "ceil((ctx + long_len) / block_size) for a tight "
+                        "extent. A request needing more RAISES, which is "
+                        "deliberate -- it must not silently truncate.")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--out", default="rider_cost_curve.json")
     p.add_argument("--outdir",
@@ -424,6 +436,10 @@ def main() -> int:
         os.environ["VLLM_KVPIPE_RUNGD_SKIP_D2H"] = "1"
     if a.batch_gather:
         os.environ["VLLM_KVPIPE_RUNGD_BATCH_GATHER"] = "1"
+    if a.whole_extent:
+        os.environ["VLLM_KVPIPE_RUNGD_WHOLE_EXTENT"] = "1"
+    if a.rungd_bpr > 0:
+        os.environ["VLLM_KVPIPE_RUNGD_BPR"] = str(a.rungd_bpr)
     if a.no_d2h_async:
         os.environ["VLLM_KVPIPE_RUNGD_D2H_ASYNC"] = "0"
     if a.d2h_probe:
@@ -727,6 +743,7 @@ def main() -> int:
     # paper quotes disagree on it. Never again: the JSON says what it was.
     out = {"fit": out_fit, "model": a.model, "ctx": a.ctx, "batch": a.batch,
            "link_gbps": a.link_gbps, "async": a.rungd_async,
+           "whole_extent": a.whole_extent, "rungd_bpr": a.rungd_bpr,
            "short_len": a.short_len, "long_len": a.long_len,
            "connector": bool(a.connector),
            "rig": ("decode_node_pd_emulated" if a.connector

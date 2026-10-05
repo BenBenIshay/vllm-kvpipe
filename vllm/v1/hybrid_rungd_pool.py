@@ -275,6 +275,52 @@ class RungdHostPool:
         self._batch_gather = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_BATCH_GATHER", "0") == "1"
         )
+        # T5. Build the per-step runs from whole EXTENTS rather than from the
+        # blocks a request has actually used. See `_plan_extents` for why that
+        # is what makes the runs merge, and what it costs.
+        #
+        # This is the change the T3 comment above points at ("making the extents
+        # ADJACENT so the runs merge naturally"), arrived at the other way
+        # round: the extents are already adjacent -- consecutive slots are
+        # `base, base + bpr, base + 2*bpr` -- and what breaks the merge is the
+        # GAP between a request's used blocks and the next extent's base. A
+        # decode request grows one block per `block_size` tokens, so an extent
+        # sized for its final length always has unused slack at its tail. Taking
+        # the whole extent closes the gap by definition, and every copy stays
+        # CONTIGUOUS, which is the one property T3 destroyed.
+        #
+        # Priced off-engine first, on the real shapes
+        # (benchmarks/kv_pipelining_bench/launch_pattern_bench.py, A100):
+        #
+        #   per-run loop, 2r launches   0.149 ms host   0.776 ms dev   22.3 GB/s
+        #   whole extent, 2 launches    0.016 ms host   0.706 ms dev   24.5 GB/s
+        #
+        # -89.5% host AND -9% device, because one big DMA beats r small ones.
+        # The cost is the slack it moves, which is gen/S of the bytes -- 3% at
+        # ctx 16384, 25% at ctx 2048 -- and the device time rises with it
+        # (+1.7% at 4 slack blocks, +12.5% at 8, +34% at 16). So this is a win
+        # while the step is HOST-bound and a loss once it is device-bound, which
+        # is why it is a flag and why M11 measures which regime the step is in.
+        #
+        # REQUIRES A TIGHT blocks_per_req. The runner sizes extents for
+        # max_model_len, so an extent is ~4x the blocks a request uses and whole
+        # -extent copying would move 4x the bytes. VLLM_KVPIPE_RUNGD_BPR sets a
+        # tighter value; with a loose one this flag makes things worse, so it
+        # refuses to turn on unless the slack is bounded (see _plan_extents).
+        self._whole_extent = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_WHOLE_EXTENT", "0") == "1"
+            and int(blocks_per_req) > 0
+        )
+        # Largest slack fraction worth paying. 0.5 is past the measured
+        # break-even (host+dev turns positive near 10-12 slack blocks on 33
+        # used, i.e. ~0.35) and is a backstop against a loose bpr, not a tuned
+        # value: the flag is meant to be used with an extent sized for the
+        # request, and this stops it silently costing 4x the bytes if it is not.
+        self._whole_extent_max_slack = float(
+            _os.environ.get("VLLM_KVPIPE_RUNGD_WHOLE_EXTENT_MAX_SLACK", "0.5")
+        )
+        self.whole_extent_steps = 0
+        self.whole_extent_refused = 0
         self._d2h_async = (
             _os.environ.get("VLLM_KVPIPE_RUNGD_D2H_ASYNC", "1") == "1"
             and torch.cuda.is_available()
@@ -692,7 +738,27 @@ class RungdHostPool:
         block, deduplication would make W smaller than the sum of the extent
         lengths, and the compact numbering computed here would drift from the
         numbering the dictionary produced.
+
+        T5, `_whole_extent`: the run lengths become the EXTENT length rather
+        than the used-block count. The merge below (`hs == prev_start + prev_len`
+        extends the previous run) has always been here and has never fired,
+        because consecutive extents are adjacent -- `base`, `base + bpr`,
+        `base + 2*bpr` -- while the used blocks stop short of each extent's end.
+        A decode request grows one block per `block_size` tokens, so that slack
+        is permanent, and no packing of the extents removes it. Taking the whole
+        extent closes the gap, the runs merge into ONE, and the per-layer H2D
+        becomes 2 contiguous launches instead of 2r.
+
+        The compact numbering is then at extent granularity, which is exactly
+        why the used blocks must start AT the extent base: a request's compact
+        ids are `extent_compact_base .. +n-1`, so the block-table row and
+        `compact_of` both stay the arithmetic they already were, and the slack
+        rows sit unused at the tail of each extent's compact range. Nothing
+        reads them -- no block-table entry points there -- they are simply
+        carried over the link, which is the cost of the change.
         """
+        whole = self._whole_extent
+        used_total = 0
         exts: list[tuple[int, int, int]] = []      # (host_start, length, row)
         for row, rid in enumerate(active_req_ids):
             blks = self.req_blocks.get(rid)
@@ -703,9 +769,42 @@ class RungdHostPool:
             n = len(blks)
             if blks[-1] - blks[0] != n - 1:
                 return None                        # not one ascending run
-            exts.append((blks[0], n, row))
+            if whole:
+                # T5: take the request's WHOLE extent, not just the blocks it
+                # has filled. `ensure_req` hands out `base .. base+n-1` from
+                # `extent * bpr`, so the used blocks start AT the extent base --
+                # checked here rather than assumed, because if they did not, the
+                # compact base computed below would be the extent's while
+                # `_req_cbase` recorded the request's, and `compact_of` would
+                # silently read the wrong rows.
+                ext = self._req_extent.get(rid)
+                if ext is None:
+                    return None
+                base = ext * self._bpr
+                if blks[0] != base or n > self._bpr:
+                    return None
+                used_total += n
+                exts.append((base, self._bpr, row))
+            else:
+                exts.append((blks[0], n, row))
         if not exts:
             return [], {}, 0
+        if whole:
+            # Refuse rather than silently pay for a loose extent. With the
+            # runner's default bpr (sized for max_model_len) the slack is ~75%
+            # and this would move 4x the bytes for the same launch saving, which
+            # is a net loss -- the T3 failure shape. Falling back to the
+            # per-block runs is correct and merely slower.
+            span = sum(ln for _, ln, _ in exts)
+            if span and 1.0 - used_total / span > self._whole_extent_max_slack:
+                self.whole_extent_refused += 1
+                whole = False
+                exts = []
+                for row, rid in enumerate(active_req_ids):
+                    blks = self.req_blocks[rid]
+                    exts.append((blks[0], len(blks), row))
+            else:
+                self.whole_extent_steps += 1
         exts.sort()
         runs: list[tuple[int, int, int]] = []
         bases: dict[int, int] = {}                 # row -> compact base

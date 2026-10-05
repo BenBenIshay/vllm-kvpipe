@@ -1350,6 +1350,31 @@ class GPUModelRunner(
             max_bpr = max(1, math.ceil(int(self.max_model_len) / bs))
             max_seqs = int(getattr(self.scheduler_config, "max_num_seqs", 256) or 256)
             h_max = max_seqs * max_bpr + 8
+            # T5 needs a TIGHT extent. Sizing extents for max_model_len leaves
+            # ~75% of each one unused, and T5 copies whole extents, so with the
+            # default it would move 4x the bytes for the same launch saving --
+            # a net loss, which is why the pool's slack guard refuses it. A
+            # request whose extent is sized for `prompt + max_tokens` instead
+            # never needs to grow past it and leaves only gen/S slack.
+            #
+            # Exposed as an override rather than computed because the pool is
+            # built once, before any request is seen, so the per-request figure
+            # is not available here; a production version would size each extent
+            # at admission from the request's own sampling params. h_max is
+            # deliberately left at the max_model_len figure, so a tighter bpr
+            # yields MORE extents rather than less capacity.
+            _env_bpr = os.environ.get("VLLM_KVPIPE_RUNGD_BPR", "").strip()
+            if _env_bpr:
+                try:
+                    _b = int(_env_bpr)
+                except ValueError:
+                    _b = 0
+                if _b > 0:
+                    logger.warning(
+                        "HYBRID rung-d: blocks_per_req overridden %d -> %d. A "
+                        "request needing more than %d blocks will RAISE.",
+                        max_bpr, _b, _b)
+                    max_bpr = _b
             # Override (mainly for tuning/tests); keep >= capacity in production.
             _env_h = os.environ.get("VLLM_KVPIPE_RUNGD_HMAX", "").strip()
             if _env_h:
