@@ -468,7 +468,76 @@ length at all.
 > separate "exposed work" from "partially-exposed transfer". **Recorded as a
 > hypothesis that failed its own check, not as a result.**
 
-### What settles it, with no inference
+### The complete M13 result, and where the gap to close actually is
+
+Five arms, all below the knee, on the current defaults:
+
+| arm | ctx | L | pts | max load | `F` | `c` (affine) | `c` (mid-range marginal) |
+|---|---|---|---|---|---|---|---|
+| CF_L16 | 128 | 16 | 7 | **0.07** | 0.92 | 0.263 | 0.220 |
+| CF_L32 | 128 | 32 | 7 | 0.15 | 2.28 | 0.350 | 0.280 |
+| CF_c128_a | 128 | 64 | 7 | 0.28 | 6.05 | 0.508 | 0.375 |
+| CF_c128_b | 128 | 64 | 7 | 0.28 | 6.01 | 0.536 | 0.424 |
+| CF_c256 | 256 | 64 | 5 | 0.31 | 5.31 | 0.620 | 0.507 |
+
+Only `CF_L16`, at load 0.07, has flat marginals (0.17–0.29, "affine OK"). Every
+arm above load ~0.15 shows them rising, so the ⅓ cut was too loose and the
+honest regime is **load ≲ 0.1**.
+
+**Fitted across depth:**
+
+```
+   F(L) = -0.951 + 0.1079 * L      ->  F = 7.68 ms at L=80
+   c(L) =  0.177 + 0.00540 * L     ->  c = 0.61 ms/rider at L=80
+                                       (0.46 using the mid-range estimator)
+```
+
+### Both of the campaign's coefficients were wrong, in opposite directions
+
+The report's `F` was 5.90 at L=80 (0.0737 ms/layer from M9); M13 measures
+**0.108 ms/layer**, 46% higher. And the report's `c` was 1.259; M13 measures
+**0.61**. Both errors have the same cause: fitting across the knee pulls the
+line up at high rider counts, which **raises the slope and lowers the
+intercept** — overstating `c` and understating `F` together.
+
+### So `c` is not the constraint, and `F` is
+
+| | at C2C 419 GB/s |
+|---|---|
+| gate `c < T0/B` | 0.61 < 3.37 — **passes with 5.5× margin** |
+| `F` as a share of the step | **31.7%** |
+| `c·r` at the knee as a share | 9.5% |
+| ratio | **`F` is 3.3× the entire per-rider cost** |
+
+And `F` is paid the moment *one* rider is admitted — the first rider costs
+6.25 ms at L=64 against an `F` of 6.03 — so it is dead weight until enough
+riders amortise it.
+
+**What closing `F` is worth, at C2C:**
+
+| | `F` | gain |
+|---|---|---|
+| as measured | 7.68 | **1.081×** |
+| halved | 3.84 | **1.217×** |
+| quartered | 1.92 | 1.300× |
+| eliminated | 0.00 | 1.394× |
+
+Halving `F` buys +14 points of throughput. Eliminating `c` *entirely* — which is
+not possible — would buy at most +10. **`F` is the lever, and `c` is not.**
+
+That also explains why T3, T4 and T5 all failed: every one of them attacked `c`,
+which had 5.5× of margin to spare, while the binding cost sat in `F`. The one
+change that did reach `F` (T2) is also the one that produced the campaign's
+largest single improvement.
+
+> **What is in `F`, and what is known about it.** `F = L × (residual D2H +
+> exposed per-layer host work)`. T4 measured the D2H half as **at floor** — the
+> only available aggregation is 18% worse. So the target is the exposed
+> per-layer host work, and the open question is what that consists of. That is
+> the identification worth doing, and it is about `F`, not about the per-rider
+> term the withdrawn proposal chased.
+
+### What would still settle the exposed-vs-transfer split in `c`
 
 `minbytes` removes the bytes while keeping every launch, hook, event and stream
 ordering. Whatever per-rider cost survives it **is** the exposed work, measured
