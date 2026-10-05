@@ -77,8 +77,40 @@ import sys
 # `--selftest` asserts relationships, not absolute values, for exactly this
 # reason; it is the magnitudes quoted in projections that need re-checking.
 COEFF = {
+    # FALSIFIED AS A LAUNCH TERM, 2026-10-05. This was named and used as the
+    # per-rider memcpy launch cost (2*L*r copies per step). T5 cut the launch
+    # count 8x in the engine -- n_runs 8 -> 1, h2d_launches 1024 -> 128 at r=8,
+    # verified in the phase JSONL before any timing was read -- and `c` did NOT
+    # fall. Same job, back-to-back at ctx 512:
+    #
+    #     arm       n_runs   launches   w_blocks      F       c
+    #     T5_off         8       1024        264   5.27   0.899
+    #     T5_on          1        128        328   5.75   0.948
+    #
+    # The model predicted c 1.046 -> 0.672 on that change. Measured: +5%. So
+    # whatever this coefficient captures, removing seven eighths of the launches
+    # does not touch it.
+    #
+    # LEADING INTERPRETATION, not yet tested: the extra ATTENTION PASS over the
+    # streamed window. It scales with the window (proportional to r), runs once
+    # per layer (so r*L, which is why the fit found this shape), is GPU compute
+    # rather than host work, and T5 makes it slightly WORSE by enlarging the
+    # window with slack -- 264 -> 328 blocks, +24%, the right sign and order for
+    # the +5% observed. Confirming it needs a sweep of window size at FIXED
+    # rider count, which this campaign has not run.
+    #
+    # CONSEQUENCES, if that holds. The term is irreducible by any host-side
+    # change and by any interconnect, so the "fix the launches via the allocator
+    # -> 1.19x" projection does not exist, and the realistic ceiling is nearer
+    # 1.1-1.2x than the 1.32x floor computed from treating this as removable.
+    # `c_ms(t5=True)` still models T5 as cutting it, which is now known to be
+    # WRONG -- kept only so the superseded projection can be reproduced, and not
+    # used for any forward-looking number.
     "b_per_rider_layer": (0.00838, "ms/rider/layer", "105-pt within-job fit, "
-                          "CI [0.0055, 0.0119]"),
+                          "CI [0.0055, 0.0119]. NOT the launch count -- an 8x "
+                          "launch cut left c unchanged (T5, 2026-10-05); "
+                          "probably the per-layer attention pass over the "
+                          "streamed window"),
     "d_per_block": (0.00765, "ms/block", "105-pt within-job fit; the layer axis "
                     "independently gives 0.252 ms/rider at ctx 512 vs this "
                     "0.245, agreeing to 3%"),
@@ -946,6 +978,39 @@ def _selftest() -> int:
     print("  [%s] T5 helps at ctx 2048 (%.3f>%.3f) and hurts at 32768 "
           "(%.3f<%.3f)" % ("ok " if good else "BAD", g(2048, True),
                            g(2048, False), g(32768, True), g(32768, False)))
+
+    # PIN THE FALSIFICATION. The four T5 assertions above test the model's own
+    # arithmetic, and they still hold -- but the prediction they encode was
+    # MEASURED WRONG in the engine, so leaving them as the last word on T5 would
+    # let the superseded projection quietly survive. This asserts the
+    # contradiction instead: the model says T5 cuts c at this config, the engine
+    # says it does not, and the gap is what tells us b_per_rider_layer is not the
+    # launch count.
+    #
+    # Measured, same job, back-to-back, ctx 512 Qwen-32B A100:
+    #   T5 off: c = 0.899 (n_runs 8, 1024 launches)
+    #   T5 on : c = 0.948 (n_runs 1,  128 launches)
+    MEAS_OFF, MEAS_ON = 0.899, 0.948
+    pred_off = c_ms(Q32, A100, 512, 16, False, t1=True)["total"]
+    pred_on = c_ms(Q32, A100, 512, 16, False, t1=True, t5=True,
+                   gen=136)["total"]
+    model_cuts = pred_on < pred_off * 0.9          # model: a big cut
+    engine_did_not = MEAS_ON >= MEAS_OFF           # engine: no cut at all
+    good = model_cuts and engine_did_not
+    ok &= good
+    print("  [%s] T5 prediction is FALSIFIED: model %.3f->%.3f (%.0f%%), "
+          "engine %.3f->%.3f (+%.0f%%)"
+          % ("ok " if good else "BAD", pred_off, pred_on,
+             (pred_on / pred_off - 1) * 100, MEAS_OFF, MEAS_ON,
+             (MEAS_ON / MEAS_OFF - 1) * 100))
+
+    # and the size of the term that failed to move, since that is the finding
+    launch = COEFF["b_per_rider_layer"][0] * Q32.L
+    good = launch > 0.4 * pred_off
+    ok &= good
+    print("  [%s] the term that did not move is %.3f ms/rider, %.0f%% of c -- "
+          "so it is not launches" % ("ok " if good else "BAD", launch,
+                                     launch / pred_off * 100))
 
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
