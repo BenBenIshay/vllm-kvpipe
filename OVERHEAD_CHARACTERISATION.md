@@ -146,7 +146,43 @@ was measured the interconnect was not what was stopping it.**
 > the overlapped step is ~61 ms while the transfer needs 49.4 ms of link time,
 > so the copy stream can keep up and the overlap is real.
 >
-> ### And the causal chain is NOT established
+> ### RETRACTED: the divergence is not async-specific
+>
+> **`base run 1: CORRECTNESS FAIL` — and the `base` arm is async OFF**, the
+> suite's own configuration. The rate study's first arm shows the
+> token-identical test failing on the path this document has been treating as the
+> correct one.
+>
+> So the framing above is wrong where it blames the prefetch. It rested on
+> async-ON failing twice and async-OFF passing a handful of times; with more
+> samples async-OFF fails too. Three consequences, and they point in a different
+> direction from everything above:
+>
+> 1. **The async path is not implicated as the cause.** Whatever diverges,
+>    diverges without it.
+> 2. **The suite's 9/9 has been passing partly by luck.** `hybrid_rungd_real` is
+>    flaky, so "the suite is green" was never the correctness evidence it was
+>    taken for — in this document or in the T1 and T2 commits that cited it.
+> 3. **The leading explanation is now numerical, not a race.** The pool sums
+>    attention over two KV sources — resident and streamed — in a different order
+>    from vanilla, so small floating-point differences are guaranteed by
+>    construction. Under greedy decoding a near-tie argmax then flips, and strict
+>    token identity fails by chance. That single mechanism accounts for the
+>    intermittency, the late divergence position, the identical printed prefixes,
+>    and the negative control passing twice — none of which the race hypothesis
+>    explained.
+>
+> If that is right, the headline is not "the feature is incorrect" but **"the
+> correctness test cannot distinguish a real fault from floating-point
+> tie-breaking, and has not been able to for the whole campaign."** Which is a
+> different and more tractable problem: the test needs a tolerance on logits or a
+> comparison of KV tensors rather than of emitted text.
+>
+> What remains true regardless: the coefficients were all fitted on the
+> overlapped path, and the overlap is load-bearing (`c` 0.927 against 7.03 when
+> ordered, 7.196 with async off).
+>
+> ### The earlier causal chain, kept for the record, is NOT established
 >
 > Two things are confirmed: the hazard window exists on every step, and the
 > async path diverges intermittently. What is *not* confirmed is that the first
