@@ -184,6 +184,38 @@ was measured the interconnect was not what was stopping it.**
 > different and more tractable problem: the test needs a tolerance on logits or a
 > comparison of KV tensors rather than of emitted text.
 >
+> ### What still stands, which is more than it first appears
+>
+> The suite has a **trustworthy half and an affected half**, and they are already
+> labelled as such in `run_suite.sh`:
+>
+> | group | tests | affected? |
+> |---|---|---|
+> | unit | `controller_unit` | no — pure logic |
+> | **mechanism (bitwise)** | `restore_roundtrip`, `host_pool` | **no — compares tensors** |
+> | end-to-end (token-identical) | `rungd_real`, `migrate_demote`, `migrate_roundtrip` | **yes — compares emitted text** |
+> | closed loop | `burst_recovery` | no — tests recovery, not equality |
+>
+> Only the token-identical group is in question, and the changes this campaign
+> made are not certified by that group alone:
+>
+> * **T1** rests on `build_step_equiv_test.py` — 18 cases that carry the
+>   pre-change algorithm verbatim as the reference and compare **bitwise**,
+>   off-GPU. That was always the stronger evidence, and it is untouched.
+> * **T2** rests on a bracketed before/after plus a **negative control that
+>   failed 3 of 3** when the flush was suppressed. A control that fails on
+>   demand is evidence the test is sensitive, which is exactly what a flaky gate
+>   lacks.
+> * **T5** rests on `whole_extent_equiv_test.py` — 16 checks resolving every
+>   block through the block table.
+> * **T3's** reversal rests on timing, not identity, and is unaffected.
+>
+> So the correct statement is narrower than "the campaign's correctness evidence
+> is void": **the end-to-end text-identity claim is void, and the component-level
+> bitwise claims are intact.** The feature's mechanism is still supported; what is
+> no longer supported is the inference from "suite 9/9" to "the engine produces
+> identical output", which is the claim the paper's correctness appendix leans on.
+>
 > What remains true regardless: the coefficients were all fitted on the
 > overlapped path, and the overlap is load-bearing (`c` 0.927 against 7.03 when
 > ordered, 7.196 with async off).
