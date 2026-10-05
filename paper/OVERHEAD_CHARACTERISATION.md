@@ -411,7 +411,85 @@ Everything below is the derivation and the evidence.
 
 ---
 
-## 0b. CORRECTION, 2026-10-05: `c` was fitted across the knee, and is ~2.5× smaller than reported
+## 0a. MEASURED ON THE CURRENT CODE (M13): `F` is solid, `c` is not
+
+Everything below this section fitted `c` from sweeps that reach the knee, or
+derived it from archived pre-T1 arms by arithmetic. M13 measures the defaults
+directly — T1 and T2 in, async on, T3/T5/T6 off — at contexts short enough that
+**every retained point is below the knee** (`link_ms / T0 ≤ 1/3`, read from the
+artifact, and sized on the *final* sequence length so generation is accounted
+for).
+
+| arm | ctx | L | pts | max load | `F` | `c` (affine) |
+|---|---|---|---|---|---|---|
+| CF_c128_a | 128 | 64 | 7 | 0.28 | 6.05 | 0.508 |
+| CF_c128_b | 128 | 64 | 7 | 0.28 | 6.01 | 0.536 |
+| CF_c256 | 256 | 64 | 5 | 0.31 | 5.31 | 0.620 |
+| **drift** | | | | | **0.039** | **0.028** |
+
+### `F` = 6.0 ms at L=64, reproducible to 0.04
+
+That is a real number and the first one in this campaign measured below the
+knee. The first rider costs 6.25 ms — essentially all of `F` — so `F` is paid
+the moment any rider is admitted, which is what "fixed cost" is supposed to
+mean.
+
+### `c` is small, but its decomposition is NOT established
+
+Two things block it.
+
+**1. The affine form does not hold, even below the knee.** The marginal cost of
+one more rider is not constant:
+
+```
+  CF_c128_a   r2:1.12  r3:0.36  r4:0.45  r5:0.28  r6:0.40  r8:0.68
+  CF_c128_b   r2:0.83  r3:0.23  r4:0.57  r5:0.49  r6:0.40  r8:0.73
+  CF_c256     r2:1.13  r3:0.27  r4:0.62  r5:0.63
+```
+
+The r=1→2 step costs ~1 ms while the middle of the range averages ~0.4, and the
+least-squares line returns ~0.52, which describes neither. A single `c` is a
+poor summary of this shape — the same fit-window sensitivity that forced the α
+retraction in §2, now in `c` itself.
+
+**2. `c` scales with context, so the bytes are not fully hidden here.** 0.522 at
+ctx 128 against 0.620 at ctx 256 — a difference of 0.098, **3.5× the drift**. If
+`c` were purely the exposed extra work it would not move with the sequence
+length at all.
+
+> **A reading I tried and will not claim.** Pooling the marginals against
+> transfer *load* instead of rider count makes the two contexts interleave
+> (0.275 at load 0.156, ctx 256; 0.283 at load 0.160, ctx 128), which would mean
+> the context effect is knee proximity rather than bytes, and would put the
+> exposed cost near **0.11 ms/rider**. But the arithmetic does not support it: on
+> that model ctx 256 should still read higher at matched load, by
+> `a·load·(3.18−1.84)`, and the one matched pair I have is too close for that.
+> With the marginals bouncing 0.23–0.73 non-monotonically, the data does not
+> separate "exposed work" from "partially-exposed transfer". **Recorded as a
+> hypothesis that failed its own check, not as a result.**
+
+### What settles it, with no inference
+
+`minbytes` removes the bytes while keeping every launch, hook, event and stream
+ordering. Whatever per-rider cost survives it **is** the exposed work, measured
+rather than derived — and running it at two contexts says whether that surviving
+cost is byte-independent, as it must be if the framing is right. Those arms are
+queued.
+
+### Status of the numbers in the rest of this document
+
+| quantity | standing |
+|---|---|
+| `F` ≈ 6.0 ms at L=64 | **measured below the knee, drift 0.04** |
+| `c` ≈ 0.52 at ctx 128, L=64 | measured, but an affine summary of a non-affine shape |
+| `c` = 1.259 at the target (§9) | **superseded** — fitted across the knee |
+| `c` = 0.42 "context-independent" (§0b) | **superseded** — derived from pre-T1 arms, and the context-independence is contradicted above |
+| the gate `c < T0/B` | passes with large margin on every measurement; **not the binding constraint** |
+| the knee | the binding constraint, as §5 always said |
+
+---
+
+## 0b. SUPERSEDED by §0a: `c` was fitted across the knee, and is ~2.5× smaller than reported
 
 **Headline: `c` at the target is 0.42 ms/rider, not 1.259, and it is
 context-independent. The gate `c < T0/B` is not what binds — the knee is.**
