@@ -361,20 +361,46 @@ class RungdHostPool:
         # for two streams: a later copy-stream record would overwrite the
         # main-stream one and the main-stream DMA would go unwaited.
         #
-        # NEGATIVE CONTROL. Setting VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC=1 disables
-        # the ordering and restores the race, which is the only way to A/B the
-        # fix on ONE binary -- and it has to be an A/B, because the failure is
-        # intermittent (2 failures on nova07, a pass on nova06). Without a
-        # control, five passes after the fix cannot be told apart from five
-        # passes because the race happened not to fire.
-        self._no_mirror_sync = (
-            _os.environ.get("VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC", "0") == "1"
+        # DEFAULT OFF, and that is a deliberate and uncomfortable choice.
+        #
+        # Measured: with the ordering on, c = 7.024-7.037 ms per rider against
+        # 0.883-1.004 without it -- it costs 6.1 ms per rider, which is the
+        # per-rider transfer (6.17 ms at ctx 512) to within 1%. The reason is
+        # `_launch_prefetch`'s opening `copy_stream.wait_stream(current_stream)`:
+        # every queued copy is gated behind main-stream progress, so the copy
+        # stream always has about a step's transfer outstanding and
+        # synchronising it makes the host wait for all of it. The hazard is
+        # intrinsic to the host running a step ahead of the device, so ANY
+        # host-side ordering pays the whole gap.
+        #
+        # Turning it on therefore removes the feature's entire reason to exist:
+        # the overlap is what makes c small enough to pass the gate at all.
+        #
+        # And it is NOT established that it fixes anything. The row the scatter
+        # overwrites holds the CURRENT token, and at step N-1 the streamed
+        # window only needs tokens up to t-1 -- token t's KV comes from the
+        # resident GPU cache, written by the attention kernel -- so what the
+        # in-flight prefetch reads there is masked out by seq_len and never
+        # consumed. On that reading the race is benign and this ordering buys
+        # nothing at full price.
+        #
+        # So: off by default, available with VLLM_KVPIPE_RUNGD_MIRROR_SYNC=1,
+        # and the hazard counter below keeps measuring the window either way.
+        # The intermittent token divergence on the async path remains OPEN and
+        # is not explained by this.
+        self._mirror_sync = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_MIRROR_SYNC", "0") == "1"
+            # kept as the old name so existing scripts keep working; it meant
+            # the opposite, hence the inversion.
+            and _os.environ.get(
+                "VLLM_KVPIPE_RUNGD_NO_MIRROR_SYNC", "0") != "1"
         )
-        if self._no_mirror_sync:
-            print("*** RungdHostPool: NO_MIRROR_SYNC=1 -- the deferred mirror "
-                  "scatter is NOT ordered against in-flight H2D reads. This is "
-                  "a deliberate negative control and output MAY be wrong, "
-                  "intermittently.", flush=True)
+        self._no_mirror_sync = not self._mirror_sync
+        if self._mirror_sync:
+            print("*** RungdHostPool: MIRROR_SYNC=1 -- the deferred mirror "
+                  "scatter is ordered against in-flight H2D reads. This is "
+                  "CORRECT but costs ~6 ms per rider (the whole overlap); see "
+                  "the comment in __init__.", flush=True)
         self._mirror_ev = (torch.cuda.Event()
                            if torch.cuda.is_available() else None)
         # How often the mirror's readers were STILL IN FLIGHT when the deferred
