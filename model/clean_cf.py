@@ -37,7 +37,11 @@ BASE = os.environ.get(
 MAX_LOAD = float(os.environ.get("CF_MAX_LOAD", "0.3333"))
 
 ARMS = [("CF_c128_a", 128, 64), ("CF_c128_b", 128, 64),
-        ("CF_c256", 256, 64), ("CF_L16", 128, 16), ("CF_L32", 128, 32)]
+        ("CF_c256", 256, 64), ("CF_L16", 128, 16), ("CF_L32", 128, 32),
+        # minbytes: the bytes removed, every launch/hook/event/ordering kept.
+        # Load is ~0 by construction, so all rider points are usable at full
+        # depth -- which no cut on the `real` arms can deliver.
+        ("MB_c128", 128, 64), ("MB_c256", 256, 64)]
 
 
 def load(tag):
@@ -235,11 +239,51 @@ def main():
             print("   against drift %.3f  ->  %s" % (drift_c, verdict))
         print()
 
+    # --- THE EXPOSED/TRANSFER SPLIT, measured not inferred ---------------
+    # minbytes keeps the launches and drops the bytes, so its per-rider cost IS
+    # the exposed work. Subtracting it from the `real` arm at the same context
+    # and rider range leaves the part the bytes are responsible for -- with no
+    # model of hiding, no load cut and no extrapolation.
+    print(" EXPOSED vs TRANSFER, from minbytes (no inference)")
+    any_mb = False
+    for ctx, real_tags in ((128, ("CF_c128_a", "CF_c128_b")),
+                           (256, ("CF_c256",))):
+        mb = got.get("MB_c%d" % ctx)
+        rl = [got[t] for t in real_tags if t in got]
+        if not mb or not rl:
+            continue
+        any_mb = True
+        c_mb, F_mb = mb[0][1], mb[0][0]
+        c_re = sum(x[0][1] for x in rl) / len(rl)
+        F_re = sum(x[0][0] for x in rl) / len(rl)
+        print("   ctx %-4d  real c %.3f  minbytes c %.3f  ->  bytes %+.3f"
+              % (ctx, c_re, c_mb, c_re - c_mb))
+        print("             real F %.3f  minbytes F %.3f  ->  bytes %+.3f"
+              % (F_re, F_mb, F_re - F_mb))
+    if any_mb:
+        a = got.get("MB_c128")
+        b = got.get("MB_c256")
+        if a and b and drift_c is not None:
+            d = abs(b[0][1] - a[0][1])
+            print()
+            print("   DOES THE EXPOSED COST DEPEND ON CONTEXT? It must not --")
+            print("   with the bytes gone there is nothing left to scale with S.")
+            print("     minbytes c: %.3f at ctx 128, %.3f at ctx 256, diff %.3f"
+                  % (a[0][1], b[0][1], d))
+            print("     against drift %.3f  ->  %s" % (drift_c,
+                  "byte-independent, so it IS exposed work" if d <= 2 * drift_c
+                  else "STILL scales with S -- the exposed-work framing is "
+                       "wrong and something per-rider tracks sequence length"))
+    else:
+        print("   minbytes arms not present yet")
+    print()
+
     # --- the layer slope on current code ---------------------------------
     lay = {}
     for t in ("CF_L16", "CF_L32"):
         if t in got:
             lay[got[t][2]] = got[t][0][1]
+    # (the MB arms are L=64 only, so they do not enter the layer slope)
     if c128:
         lay[64] = sum(c128) / len(c128)
     if len(lay) >= 3:
