@@ -135,6 +135,35 @@ COEFF = {
                             "M9, mean of ctx 512 (0.0741) and ctx 2048 "
                             "(0.0733); REPLACES d2h_per_layer + exposed, and "
                             "is 66% off the D2H part rather than all of it"),
+    # T5, PRICED OFF-ENGINE and not yet measured in the engine. From
+    # benchmarks/kv_pipelining_bench/launch_pattern_bench.py on A100, replaying
+    # the pool's exact per-layer H2D pattern at the real shapes (block row 32
+    # KB, 8 riders, 33 blocks each, extent stride 141):
+    #
+    #            launches   host ms   dev ms   GB/s
+    #   per run        16     0.149    0.776   22.3
+    #   whole extent    2     0.016    0.706   24.5
+    #   T3 strided      2     3.708    3.742    4.6   <- the control
+    #
+    # The T3 row is why this is trustworthy: it reproduces, off-engine, the 6x
+    # regression T3 showed in the engine, so the harness is measuring the thing
+    # that actually binds. The per-run arm also predicts the in-engine
+    # issue_runs timer at 8 riders (9.5 ms/step at L=64 vs 10.757 measured, 12%).
+    #
+    # NOTE these are RAW host issue times, while b_per_rider_layer is a fitted
+    # STEP-TIME effect: 0.0186 raw per rider per layer against 0.00838 fitted,
+    # i.e. ~45% of the host issue cost reaches step time. t5_hidden carries that
+    # ratio so the flat term is not double-counted at full weight.
+    "t5_host_removed": (0.895, "fraction of the per-rider launch term",
+                        "launch_pattern_bench A100: 0.149 -> 0.016 ms host per "
+                        "layer at 8 riders"),
+    "t5_flat_per_layer": (0.016, "ms/layer",
+                          "launch_pattern_bench A100: the whole-extent arm's "
+                          "host cost, independent of rider count -- this is "
+                          "cost MOVED from c into F"),
+    "t5_hidden": (0.45, "fitted/raw ratio for host issue work",
+                  "0.00838 fitted (b_per_rider_layer) over 0.0186 raw "
+                  "(0.149/8) at L=64, 8 riders"),
     "t1_per_rider": (0.00313, "ms/rider",
                      "M8, mean of T1_c512_bs16 (0.00317, resid 0.00055) and "
                      "T1_c512_bs64 (0.00308, resid 0.00045), 5 rider points "
@@ -215,36 +244,71 @@ LEGACY, LEGACY_S = L70, 8192
 
 
 def F_ms(m: Model, hw: HW, exposed_per_layer: float, d2h_fixed: bool,
-         t2: bool = False) -> float:
+         t2: bool = False, t5: bool = False) -> float:
     """Fixed cost, paid once any rider exists.
 
     `t2=True` uses the MEASURED post-T2 per-layer cost rather than modelling the
     mirror write as removed. That distinction matters: `d2h_fixed=True` assumes
     the whole blocking copy goes away, which no implementation achieves, while
     T2 measurably removes 66% of it.
+
+    `t5=True` ADDS the whole-extent change's flat host cost. T5 does not delete
+    the launch work, it makes the launch count independent of the rider count --
+    so the cost MOVES from `c` into `F`. That is a structural improvement rather
+    than merely a smaller number, because the gate is `c < T0/B` and `F` only
+    sets where break-even lands; but it is an improvement that has to be
+    accounted on both sides, and charging only the saving would overstate it.
     """
-    if t2:
-        return m.L * COEFF["f_per_layer_post_t2"][0]
-    d2h = 0.0 if d2h_fixed else m.d2h_per_layer()
-    return m.L * (d2h + exposed_per_layer)
+    f = (m.L * COEFF["f_per_layer_post_t2"][0] if t2
+         else m.L * ((0.0 if d2h_fixed else m.d2h_per_layer())
+                     + exposed_per_layer))
+    if t5:
+        f += m.L * COEFF["t5_flat_per_layer"][0] * COEFF["t5_hidden"][0]
+    return f
+
+
+def slack_frac(S: int, gen: int = 512) -> float:
+    """Fraction of extra bytes T5 moves: the extent's unused tail over its size.
+
+    An extent is sized for `prompt + max_tokens`, and mid-generation the unused
+    tail is what is left of `max_tokens`, so the slack is set by the GENERATION
+    length and not by the context. That distinction mattered: the microbenchmark
+    runs at ctx 512 where 8 slack blocks is 24% of the bytes, and reading that
+    as a general figure made T5 look like a loss everywhere. At ctx 16384 the
+    same 8 blocks is 3%.
+    """
+    return gen / float(S)
 
 
 def c_ms(m: Model, hw: HW, S: int, bs: int, d2h_fixed: bool,
-         link_frac: float | None = None, t1: bool = False) -> dict:
+         link_frac: float | None = None, t1: bool = False,
+         t5: bool = False, gen: int = 512) -> dict:
     """Per-rider cost, decomposed.
 
     `t1=True` uses the MEASURED post-T1 block-table coefficient instead of the
     per-block one. That is not an estimate of a proposed change: T1 is
     implemented, the suite is 9/9 with it, and the coefficient is a fit over
     five rider points (see COEFF["t1_per_rider"]).
+
+    `t5=True` applies the whole-extent change: the per-rider launch term loses
+    the measured 89.5%, and the link term GAINS the slack bytes the change
+    carries. Both halves are required -- T5 trades bytes for launches, so
+    modelling only the saving would make it look free. Unlike t1 this is priced
+    off-engine only (launch_pattern_bench.py) and is NOT yet measured in the
+    engine; the flat host cost it moves into F is applied by `F_ms(t5=True)`.
     """
     nominal = m.b_tok * S / (hw.link * 1e9) * 1e3
     frac = COEFF["c_link"][0] if link_frac is None else link_frac
+    launch = COEFF["b_per_rider_layer"][0] * m.L
+    link = frac * nominal
+    if t5:
+        launch *= 1.0 - COEFF["t5_host_removed"][0]
+        link *= 1.0 + slack_frac(S, gen)
     parts = {
-        "per_rider_layer": COEFF["b_per_rider_layer"][0] * m.L,
+        "per_rider_layer": launch,
         "per_block": (COEFF["t1_per_rider"][0] if t1
                       else COEFF["d_per_block"][0] * (S // bs)),
-        "link": frac * nominal,
+        "link": link,
         "d2h": 0.0 if d2h_fixed else COEFF["d2h_per_rider"][0],
     }
     parts["total"] = sum(parts.values())
@@ -254,15 +318,21 @@ def c_ms(m: Model, hw: HW, S: int, bs: int, d2h_fixed: bool,
 
 def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
                d2h_fixed: bool, bs: int = 16, drop_per_block: bool = False,
-               t1: bool = False, t2: bool = False) -> dict:
+               t1: bool = False, t2: bool = False, t5: bool = False,
+               gen: int = 512) -> dict:
     if b_res is None:
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
-    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2)
-    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
+    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2, t5=t5)
+    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1, t5=t5, gen=gen)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     per_resident = t0 / b_res
+    # T5 carries the extent slack over the link, so the knee -- which is set by
+    # BYTES per rider -- falls by the same factor. Charging the bytes to c but
+    # not to the knee would make T5 look free at long context.
     knee = t0 / (m.b_tok * S / (hw.link * 1e9) * 1e3)
+    if t5:
+        knee /= 1.0 + slack_frac(S, gen)
     out = {"F": F, "c": c, "t0": t0, "knee": knee, "b_res": b_res,
            "parts": parts}
     if c >= per_resident:
@@ -280,7 +350,7 @@ def break_even(m: Model, hw: HW, S: int, b_res: float | None, exposed: float,
 def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
          d2h_fixed: bool, b_res: float | None = None, bs: int = 16,
          drop_per_block: bool = False, t1: bool = False,
-         t2: bool = False) -> float:
+         t2: bool = False, t5: bool = False, gen: int = 512) -> float:
     """Throughput gain from admitting r riders on top of B residents.
 
         gain = (1 + r/B) / (1 + (F + c*r)/T0)
@@ -292,8 +362,8 @@ def gain(m: Model, hw: HW, S: int, r: float, exposed: float,
     if b_res is None:
         b_res = m.b_cap(hw, S)
     t0 = m.t0_ms(hw)
-    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2)
-    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1)
+    F = F_ms(m, hw, exposed, d2h_fixed, t2=t2, t5=t5)
+    parts = c_ms(m, hw, S, bs, d2h_fixed, t1=t1, t5=t5, gen=gen)
     c = parts["total"] - (parts["per_block"] if drop_per_block else 0.0)
     return (1.0 + r / b_res) / (1.0 + (F + c * r) / t0)
 
@@ -524,6 +594,59 @@ def absolute_table() -> None:
     print(" largest exactly where the baseline is weakest -- heavy weights, long")
     print(" context, few residents -- which is the regime the project exists to")
     print(" serve. It just must not be reported as a throughput record.")
+    print()
+
+
+def t5_table() -> None:
+    """T5 helps at short context and HURTS at long. The crossover is the point.
+
+    Not an argument from the mechanism but a consequence of the decomposition:
+    T5 buys launches with bytes, `c` is launch-dominated at short context and
+    link-dominated at long, so the trade is good at one end and bad at the
+    other. Priced off-engine only -- in-engine measurement is M12 slice B.
+    """
+    print("=" * 78)
+    print(" T5 (whole-extent runs): the sign of the effect FLIPS with context")
+    print("=" * 78)
+    print()
+    H = HIDING[2][1]
+    print(" %-7s %6s %8s %8s %7s %7s %8s %8s"
+          % ("ctx", "slack", "c now", "c T5", "knee", "kneeT5", "gain", "T5"))
+    for S in (2048, 4096, 8192, 16384, 32768):
+        a = break_even(TARGET, GH200, S, None, H, False, t1=True, t2=True)
+        b = break_even(TARGET, GH200, S, None, H, False, t1=True, t2=True,
+                       t5=True)
+        ra, rb = min(a["knee"], 64.0), min(b["knee"], 64.0)
+        ga = gain(TARGET, GH200, S, ra, H, False, t1=True, t2=True)
+        gb = gain(TARGET, GH200, S, rb, H, False, t1=True, t2=True, t5=True)
+        print(" %-7d %5.1f%% %8.3f %8.3f %7.2f %7.2f %7.3fx %7.3fx%s"
+              % (S, slack_frac(S) * 100, a["c"], b["c"], a["knee"], b["knee"],
+                 ga, gb, "  <-- helps" if gb > ga else "  <-- hurts"))
+    print()
+    print(" Why the flip: T5 buys launches with bytes. c is LAUNCH-dominated at")
+    print(" short context and LINK-dominated at long, so the same trade is good")
+    print(" at one end and bad at the other. At ctx 16384 the link is already")
+    print(" 55%% of c and the launch term only 39%%.")
+    print()
+    print(" What it is actually worth is therefore ABSOLUTE throughput, not")
+    print(" headline ratio: it lets a shorter context reach the same gain, and")
+    print(" shorter context means more residents.")
+    print()
+    for S in (8192, 32768):
+        b = break_even(TARGET, GH200, S, None, HIDING[2][1], False,
+                       t1=True, t2=True, t5=S <= 8192)
+        r = min(b["knee"], 64.0)
+        g = gain(TARGET, GH200, S, r, HIDING[2][1], False, t1=True, t2=True,
+                 t5=S <= 8192)
+        itl = b["t0"] + b["F"] + b["c"] * r
+        print("   ctx %-6d %-9s %.3fx at %4.0f tok/s"
+              % (S, "with T5" if S <= 8192 else "no T5", g,
+                 (b["b_res"] + r) / itl * 1e3))
+    print()
+    print(" AND IT IS STILL PRICED OFF-ENGINE ONLY. The in-engine arm is M12")
+    print(" slice B, and it must be run with async OFF or the timing is taken")
+    print(" on the incorrect path -- which is also why T5's own measurement")
+    print(" waits on T6.")
     print()
 
 
@@ -762,6 +885,50 @@ def _selftest() -> int:
           "%.2fx at %.0f tok/s on ratio and loses on rate"
           % ("ok " if good else "BAD", t["gain"], rt, l["gain"], rl))
 
+    # T5 MUST BE MODELLED AS A TRADE, not a saving. Charging the launch cut
+    # without the slack bytes would make it look free, which is the T3 mistake
+    # in model form, so both halves are asserted.
+    H = HIDING[2][1]
+    c_no = c_ms(TARGET, GH200, 16384, 16, False, t1=True)
+    c_t5 = c_ms(TARGET, GH200, 16384, 16, False, t1=True, t5=True)
+    good = (c_t5["per_rider_layer"] < c_no["per_rider_layer"]
+            and c_t5["link"] > c_no["link"])
+    ok &= good
+    print("  [%s] T5 is a TRADE: launch %.3f -> %.3f but link %.3f -> %.3f"
+          % ("ok " if good else "BAD", c_no["per_rider_layer"],
+             c_t5["per_rider_layer"], c_no["link"], c_t5["link"]))
+
+    good = (F_ms(TARGET, GH200, H, False, t2=True, t5=True)
+            > F_ms(TARGET, GH200, H, False, t2=True))
+    ok &= good
+    print("  [%s] and it MOVES cost into F rather than deleting it (%.2f -> "
+          "%.2f)" % ("ok " if good else "BAD",
+                     F_ms(TARGET, GH200, H, False, t2=True),
+                     F_ms(TARGET, GH200, H, False, t2=True, t5=True)))
+
+    # the knee must fall with the extra bytes, or long context looks free
+    kn = break_even(TARGET, GH200, 16384, None, H, False, t1=True, t2=True)
+    k5 = break_even(TARGET, GH200, 16384, None, H, False, t1=True, t2=True,
+                    t5=True)
+    good = k5["knee"] < kn["knee"]
+    ok &= good
+    print("  [%s] the knee falls with the slack bytes (%.2f -> %.2f riders)"
+          % ("ok " if good else "BAD", kn["knee"], k5["knee"]))
+
+    # and the SIGN of the effect flips with context, which is the finding
+    def g(S, t5):
+        b = break_even(TARGET, GH200, S, None, H, False, t1=True, t2=True,
+                       t5=t5)
+        return gain(TARGET, GH200, S, min(b["knee"], 64.0), H, False,
+                    t1=True, t2=True, t5=t5)
+    short_helps = g(2048, True) > g(2048, False)
+    long_hurts = g(32768, True) < g(32768, False)
+    good = short_helps and long_hurts
+    ok &= good
+    print("  [%s] T5 helps at ctx 2048 (%.3f>%.3f) and hurts at 32768 "
+          "(%.3f<%.3f)" % ("ok " if good else "BAD", g(2048, True),
+                           g(2048, False), g(32768, True), g(32768, False)))
+
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
@@ -777,6 +944,7 @@ def main() -> int:
     delivered_table()
     kv_precision_table()
     absolute_table()
+    t5_table()
     projection_table()
     return 0
 

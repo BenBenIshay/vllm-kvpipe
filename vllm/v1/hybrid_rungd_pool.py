@@ -376,8 +376,13 @@ class RungdHostPool:
                   "a deliberate negative control and output MAY be wrong, "
                   "intermittently.", flush=True)
         self._mirror_ev = (torch.cuda.Event()
-                           if torch.cuda.is_available()
-                           and not self._no_mirror_sync else None)
+                           if torch.cuda.is_available() else None)
+        # How often the mirror's readers were STILL IN FLIGHT when the deferred
+        # scatter was about to overwrite their rows. This is the race window
+        # measured directly rather than inferred from output divergence, which
+        # is intermittent and so cannot prove the window either way.
+        self.mirror_hazard_steps = 0
+        self.mirror_flush_steps = 0
         self.free_list: list[int] = list(range(self.h_max))
         # Item 1b: per-request CONTIGUOUS host extents (DirectKV's pool is
         # "contiguous per-request, no scatter/gather" for exactly this reason).
@@ -1277,10 +1282,34 @@ class RungdHostPool:
         # the other stream's outstanding DMA. The copy stream is covered by
         # synchronising the stream itself (all its work, in issue order) and the
         # main stream by `_mirror_ev`.
-        if self._copy_stream is not None and not self._no_mirror_sync:
-            self._copy_stream.synchronize()
-        if self._mirror_ev is not None:
-            self._mirror_ev.synchronize()
+        #
+        # MEASURE THE HAZARD WINDOW, don't wait for its symptom. Output
+        # divergence is a terrible detector for this: the race is intermittent,
+        # so a passing run says nothing, and the negative control passed on its
+        # first attempt. `query()` is non-blocking -- the Class A idiom this
+        # repo already uses in `_drain_wait_events` -- so asking whether the
+        # mirror's readers are STILL RUNNING at the moment the scatter is about
+        # to overwrite their rows costs nothing and answers the question
+        # directly. A non-zero count here is the race window existing, whether
+        # or not any token came out wrong on this run.
+        if self._mirror_ev is not None or self._copy_stream is not None:
+            busy = False
+            if self._copy_stream is not None:
+                busy = busy or not self._copy_stream.query()
+            if self._mirror_ev is not None:
+                busy = busy or not self._mirror_ev.query()
+            if busy:
+                self.mirror_hazard_steps += 1
+                PT.count("mirror_hazard_steps")
+            self.mirror_flush_steps += 1
+        if not self._no_mirror_sync:
+            # Both or neither: the control has to restore the race in full, and
+            # the event sync alone would silently close most of the window and
+            # make the control look like the fix.
+            if self._copy_stream is not None:
+                self._copy_stream.synchronize()
+            if self._mirror_ev is not None:
+                self._mirror_ev.synchronize()
         _tf = PT.now()
         rows = 0
         for li, host_pos, n in self._wt_pending:
