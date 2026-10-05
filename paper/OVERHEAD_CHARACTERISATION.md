@@ -718,6 +718,72 @@ Three things this says that the pre-implementation projection did not.
    change: the as-built case failed condition (1), which no interconnect could
    fix at any bandwidth (§5). That is no longer the situation.
 
+### 9b. Retargeting the model, and the trap in doing so
+
+Searching every (model, context) pair under the law puts **Qwen-72B fp8 at
+ctx 16384** first, at **1.22×**, and `overhead_model.py` has been retargeted to
+it. It beats Llama-70B fp8 on nothing but 76.0 GB of weights against 72.7:
+heavier weights raise `T0` and shrink the capacity left for KV, so fewer
+residents fit (3.0 against 7.2) and each rider is worth more (`T0/B` 8.50 against
+3.37 ms). `c` is 1.736 rather than 1.259 because the context is doubled, and the
+budget still wins.
+
+**But the ratio and the absolute rate rank in opposite directions, and that
+changes what should be *deployed* as distinct from what should be *built*.**
+
+| model | ctx | `B` | knee | gain | ITL | base tok/s | with riders |
+|---|---|---|---|---|---|---|---|
+| Llama-70B fp8 | 4096 | 14.4 | 7.6 | 0.98× | 37.9 | 593 | 580 |
+| Llama-70B fp8 | 8192 | 7.2 | 3.8 | 1.06× | 34.9 | 297 | **314** |
+| Llama-70B fp8 | 16384 | 3.6 | 1.9 | 1.11× | 33.4 | 148 | 164 |
+| Llama-70B fp8 | 32768 | 1.8 | 0.9 | 1.13× | 32.7 | 74 | 84 |
+| Qwen-72B fp8 | 4096 | 11.9 | 7.9 | 1.07× | 39.3 | 471 | 505 |
+| Qwen-72B fp8 | 8192 | 6.0 | 4.0 | 1.16× | 36.2 | 235 | 274 |
+| **Qwen-72B fp8** | **16384** | **3.0** | **2.0** | **1.22×** | **34.7** | **118** | **143** |
+| Qwen-72B fp8 | 32768 | 1.5 | 1.0 | 1.24× | 33.9 | 59 | 73 |
+
+The best-ratio point delivers **143 tok/s**; the 70B at ctx 8192 delivers
+**314**, 2.2× more, at a gain of only 1.06×. The gain rises monotonically as the
+resident count falls, because a smaller `B` is exactly a *weaker baseline* — and
+maximising a ratio over the choice of baseline is not a throughput result.
+
+The two readings are not in conflict. The ratio is the correct test of **the
+mechanism**: it compares the same system with and without the feature, and the
+feature's value is largest precisely where the baseline is weakest — heavy
+weights, long context, few residents — which is the regime this project exists to
+serve. It must simply not be reported as a throughput record. `absolute_table()`
+prints both, and a selftest asserts the inversion so the caveat cannot silently
+go stale.
+
+### 9c. fp8 KV: neither helps nor hurts — it rescales the context
+
+This was logged as an open question that might flip the verdict. It cannot, and
+the reason is structural: **the law sees the per-token KV footprint and the
+context only through their product `b_tok·S`.** Halving the bytes per token and
+doubling the context are the same point:
+
+| KV | ctx | `B` | `T0/B` | `c` | knee | gain |
+|---|---|---|---|---|---|---|
+| fp16 | 8192 | 6.0 | 4.25 | 1.259 | 4.0 | 1.164× |
+| fp16 | 16384 | 3.0 | 8.50 | 1.736 | 2.0 | **1.216×** |
+| fp16 | 32768 | 1.5 | 17.00 | 2.689 | 1.0 | 1.244× |
+| fp8 | 8192 | 11.9 | 2.13 | 1.021 | 7.9 | 1.072× |
+| fp8 | 16384 | 6.0 | 4.25 | 1.259 | 4.0 | 1.164× |
+| fp8 | 32768 | 3.0 | 8.50 | 1.736 | 2.0 | **1.216×** |
+
+fp8 at 32768 is fp16 at 16384 to every decimal the model carries — gain
+1.215762 against 1.215762. So KV quantisation is neutral *at matched `b_tok·S`*,
+and what it actually buys is **the same gain at twice the context**, which is a
+real operational win the law is blind to.
+
+> **Correction.** An earlier note in this campaign recorded that fp8 KV loses
+> (break-even 8.9 against a knee of 7.6). That compared fp16 and fp8 at a *fixed*
+> context, where fp8 doubles the resident count and so halves `T0/B` while `c`
+> falls by much less. Held at fixed context the note is arithmetically right and
+> the comparison is the wrong one: nobody runs fp8 KV in order to serve the same
+> context with more residents, they run it to serve a longer one. The verdict is
+> unchanged either way, which is why this was never a blocker.
+
 ### Verification
 
 | check | result |

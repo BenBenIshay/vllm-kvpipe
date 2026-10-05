@@ -649,21 +649,24 @@ preference.
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lrrrrrr@{}}
+\begin{tabular}{@{}lrrrrrrr@{}}
 \toprule
-model & $S$ & $B$ & $T_0/B$ & $c$ & $r^{*}$ & gain \\
+model & $S$ & $B$ & $T_0/B$ & $c$ & $r^{*}$ & gain & tok/s \\
 \midrule
-Qwen-72B fp8   & 16384 & 3.0 & 8.50 & 1.736 & 2.0 & \textbf{1.22}$\times$ \\
-Qwen-72B fp8   &  8192 & 6.0 & 4.25 & 1.259 & 4.0 & 1.16$\times$ \\
-Llama-70B fp8  & 16384 & 3.6 & 6.74 & 1.736 & 1.9 & 1.11$\times$ \\
-Llama-70B fp8  &  8192 & 7.2 & 3.37 & 1.259 & 3.8 & 1.06$\times$ \\
-Qwen-32B fp16  & 16384 & 6.2 & 3.54 & 1.411 & 2.1 & 0.99$\times$ \\
+Qwen-72B fp8   & 16384 & 3.0 & 8.50 & 1.736 & 2.0 & \textbf{1.22}$\times$ & 143 \\
+Qwen-72B fp8   &  8192 & 6.0 & 4.25 & 1.259 & 4.0 & 1.16$\times$ & 274 \\
+Llama-70B fp8  & 16384 & 3.6 & 6.74 & 1.736 & 1.9 & 1.11$\times$ & 164 \\
+Llama-70B fp8  &  8192 & 7.2 & 3.37 & 1.259 & 3.8 & 1.06$\times$ & \textbf{314} \\
+Qwen-32B fp16  & 16384 & 6.2 & 3.54 & 1.411 & 2.1 & 0.99$\times$ & 281 \\
 \bottomrule
 \end{tabular}
 \caption{Best points under the measured law on GH200 with the 419\,GB/s link,
-with both host-side changes in. Milliseconds unless marked. Ten of
+with both host-side changes in. Milliseconds unless marked; the last column is
+the absolute delivered rate with riders admitted to the knee. Ten of
 forty-three (model, context) points pay at all; the table gives the top four and
-one that does not.}
+one that does not. Note that the gain column and the rate column rank in
+\emph{opposite} directions: the one row that does not pay has the second-highest
+absolute rate.}
 \label{tab:overhead:bestmodel}
 \end{table}
 
@@ -672,6 +675,26 @@ Table~\ref{tab:overhead:bestmodel} gives the search result. The best point is
 same context on nothing but 76\,GB of weights against 72.7 --- which is the
 heavy-weight rule acting on a 4\% difference. On a doubled link the same point
 reaches 1.69$\times$ and eighteen of forty-six points pay.
+
+\paragraph{The best ratio is not the best deployment.} The gain in
+Table~\ref{tab:overhead:bestmodel} rises monotonically as the resident count
+falls, and the absolute delivered rate falls with it: the best-ratio point serves
+143 tokens per second where the 70B at half the context serves 314, at a gain of
+only 1.06$\times$. The reason is that a smaller $B$ \emph{is} a weaker baseline,
+so maximising a ratio over the choice of baseline is not a throughput result.
+Both readings are sound for their own question. The ratio is the correct test of
+the mechanism, because it compares the same system with and without the feature,
+and the feature's value is largest exactly where the baseline is weakest ---
+heavy weights, long context, few residents --- which is the regime the design
+exists to serve. It is not a throughput record and is not reported as one.
+
+\paragraph{KV quantisation is neutral, not helpful.} Because the law sees only
+$\beta S$, halving the bytes per token and doubling the context give the same
+point: fp8 KV at $S{=}32768$ reproduces fp16 KV at $S{=}16384$ in every
+quantity --- $B{=}3.0$, $c{=}1.736$, $r^{*}{=}2.0$, gain $1.2158\times$ ---
+rather than improving on it. What fp8 KV buys is therefore not a better gain but
+\emph{the same gain at twice the context}, which the law cannot see and a
+deployment certainly can.
 
 \paragraph{The gain is bought with latency, and that constrains where it may be
 used.} Throughput rises because more requests share a longer step, so the step
