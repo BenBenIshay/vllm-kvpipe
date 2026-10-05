@@ -587,7 +587,83 @@ the moment one rider is admitted.
 quartered → 1.300×, eliminated → 1.394×. Halving `F` buys +14 points; removing
 `c` altogether — not possible — would buy at most +10.
 
-### Where the remaining gap is
+### Where the remaining gap is: inside `F`, and it is 87% of it (M14)
+
+A 2×2 ablation at two depths, every arm below the knee, each knob removing one
+mechanism while leaving every hook, event and stream ordering in place:
+
+| arm | L=64 `F` | L=16 `F` |
+|---|---|---|
+| as shipped | 5.80 | 1.09 |
+| mirror write OFF | 1.85 | 0.12 |
+| streaming OFF | 5.97 | 1.12 |
+| both OFF | 2.35 | 0.35 |
+
+**Per-layer costs, which is how `F` has to be expressed:**
+
+| component | L=16 /layer | L=64 /layer | linear in `L`? |
+|---|---|---|---|
+| **mirror write (D2H)** | **0.0603** | **0.0617** | **yes, to 2%** |
+| streaming (H2D) | −0.0022 | −0.0028 | ~0 |
+| irreducible remainder | 0.0220 | 0.0368 | **no** |
+
+Three findings, in order of how solid they are.
+
+1. **The mirror write is the dominant component and the only one that scales
+   cleanly** — 0.0610 ms/layer at both depths, so **4.88 ms at L=80**. It is
+   68% of `F` at L=64 and 89% at L=16.
+2. **The streaming contributes nothing to `F`** (−0.18 and −0.04 ms), and
+   instead shows up in `c`: removing it drops `c` from 0.517 to 0.273. So the two
+   mechanisms land in different coefficients, exactly as the law assumes.
+3. **A remainder survives with both mechanisms off** — 2.35 ms at L=64, 0.35 at
+   L=16. The riders are still admitted, so this is the per-layer **attention
+   override**: work neither the mirror write nor the streaming requires. It is
+   *not* linear in `L` (0.022 vs 0.037 per layer), so extrapolating it by depth
+   gives a band, not a number.
+
+Building `F` at L=80 from the measured per-layer parts gives **6.64–7.82 ms**,
+and M13's independent fit of `F(L)` gives **7.68** — inside the band, from a
+different experiment. That cross-check is why these components can be trusted
+individually.
+
+### The most optimal `F`, and what each step is worth
+
+| state | `F` at L=80 | share of step | gain at C2C |
+|---|---|---|---|
+| today, as shipped | 7.82 | 32% | **1.076×** |
+| remove the remainder | 4.88 | 20% | **1.177×** |
+| + mirror write at its launch floor | **1.04** | **4%** | **1.341×** |
+
+**So the optimal `F` is ≈1.0 ms against ≈7.8 today — an 87% reduction, worth
+1.076× → 1.341×.**
+
+**Step 1, remove the remainder (worth +10 points).** It is present with both
+mechanisms off, so it is the per-layer cost of the attention override — the
+second attention call over the rider window. The project's own Solution 1
+sequencing already lists "fuse to a single unified attention call" as step 3,
+predicting the delta would be *second-order*. M14 says it is worth 2–3 ms per
+step at L=80, which is not second-order.
+
+**Step 2, bring the mirror write to its launch floor (worth another +16
+points).** The mirror write costs 0.0610 ms/layer; `launch_pattern_bench`
+measures the same 2L D2H launches, stripped of everything around them, at
+**0.0130 ms/layer** — so the mechanism runs at **4.7× its own launch cost**, and
+the excess is the CPU scatter that T2's staging introduced. Removing it needs
+the write made **contiguous** so no scatter is required (for example a per-layer
+append region merged lazily). T4 already established that the obvious
+alternative — batching the copies across layers — is 18% *worse*, so per-layer
+copies have to be kept.
+
+> **What these numbers are not.** The 0.0130 ms/layer launch floor is an
+> off-engine microbenchmark, so in-engine it would land somewhat higher and
+> 1.04 ms is optimistic. The remainder is superlinear, so its contribution at
+> L=80 is a band. And neither change is implemented or shown to be
+> implementable — M14 prices the prize, it does not claim it. What it does
+> establish is **where the prize is**: 87% of `F`, in two identified
+> mechanisms, after a day spent attacking `c`, which had 5.5× of margin to
+> spare.
+
+### The earlier framing of this section
 
 `F = L × (residual D2H + exposed per-layer host work)`, and T4 measured the D2H
 half as **at floor** (the only available aggregation is 18% worse). So the gap
