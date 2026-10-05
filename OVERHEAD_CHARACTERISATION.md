@@ -1139,8 +1139,8 @@ also predicts the in-engine `issue_runs` timer to 12%.
 | T2 | defer the mirror write | **built**, `F` 13.4→5.90 | — |
 | T3 | one strided copy per layer | **reverted**, 6× worse | a day, in the engine |
 | T4 | batch the per-layer D2H | **killed unbuilt** | one GPU-minute |
-| T5 | whole-extent runs | built, flag-gated, unmeasured in-engine | one GPU-minute to price |
-| T6 | order the mirror write | **correctness fix**, see above | — |
+| T5 | whole-extent runs | **measured in-engine: null on both `c` and `F`**, flag-gated off | one GPU-minute to price, ~1 h to measure |
+| T6 | order the mirror write | correct, but costs the **whole overlap**; flag-gated off | — |
 
 **T4 is dead, and it was the largest remaining item in `F`.** `write_token`
 spends 2.477 ms/step issuing D2H launches and that figure is *flat* in riders
@@ -1234,14 +1234,54 @@ ratio is not the best deployment — arriving from the other direction.
 > not the context — so the same 8 blocks is 24% at ctx 512 and 3% at ctx 16384.
 > The number was right and the inference from it was wrong.
 
-**Where the floor is.** At the retargeted operating point `c` decomposes as
-link 0.953 (54.9%), launches 0.670 (38.6%), D2H 0.109 (6.3%), block-table 0.003
-(0.2%). The link term is `bytes / bandwidth` and is irreducible by definition —
-it is what the feature exists to spend. T5 can take ~90% of the launch term.
-That leaves a floor near **`c` ≈ 1.07 at ctx 16384** against 1.736 today, and
-`F` near **3–4 ms** against 5.90, with the remaining `F` being 2L irreducible
-D2H launches plus exposed host work. The gain at that floor is ~**1.32×** on
-C2C.
+**Where the floor is — and the honest answer is that the dominant term is
+unidentified.** An earlier version of this paragraph computed a floor of
+`c` ≈ 1.07 and `F` ≈ 3–4, worth ~1.32×, by assuming T5 would remove ~90% of the
+"launch" term. **T5 removed 7/8 of the launches and the term did not move**, so
+that floor is withdrawn.
+
+What the decomposition looks like with the identity of each part marked by what
+is actually known about it (ctx 512, A100, where the engine measurements were
+taken):
+
+| part | size | share | what is established |
+|---|---|---|---|
+| `b_per_rider_layer` | 0.536 | **51%** | **identity unknown.** Not launches (T5: 8× fewer, no change). Not proportional to blocks per rider (T5 raised them 24%; a proportional term would have moved +0.13, which is 2.4× the 0.054 drift and would have shown). Per-rider, per-layer, and O(1) in window size. |
+| link, un-hidden | 0.398 | 38% | `bytes/bandwidth` × the 7.4% that fails to hide. Irreducible by definition — it is what the feature exists to spend. |
+| d2h per rider | 0.109 | 10% | — |
+| block table | 0.003 | 0.2% | at floor (T1 took it from 3.917) |
+
+And for `F`: the D2H half is **at floor** — T4 measured the only available
+aggregation as 18% *worse*. The exposed-host-work half shrinks only with slower
+compute per layer, i.e. it is a property of the GPU, not of this code.
+
+So the defensible statement is **not** "`F` and `c` cannot be optimised
+further". It is:
+
+* **the host-side launch-count avenue is exhausted** — three attempts (T3, T4,
+  T5), every mechanism verified firing, none helped;
+* **the link term is irreducible** and already 92.6% hidden;
+* **the largest single term, 51% of `c`, has no established identity**, and an
+  unidentified term cannot be called either reducible or irreducible.
+
+> **A hypothesis I offered and then had to weaken.** I suggested the mystery term
+> is the extra attention pass over the streamed window. T5's own data argues
+> against it: T5 raised the window 264 → 328 blocks, +24% rows *and* bytes per
+> rider, and a window-proportional term would have risen +0.13 — detectable
+> against 0.054 drift. It did not. So the term is not window-proportional
+> either, and I do not have a mechanism for it. Candidates that survive the
+> constraints are per-rider metadata or `cu_seqlens` setup in the two-pass
+> attention, or a fixed per-rider kernel cost.
+
+**That is what the next experiment has to settle**, and it is an identification
+experiment rather than an optimisation attempt — see
+`paper/OPT_PROPOSAL_IDENTIFY_C.md`. It matters beyond this report: the project's
+Solution 1 sequencing lists "fuse to a single unified attention call" as step 3
+with the prediction that the delta would be *second-order*. If the mystery term
+turns out to be per-rider attention-call overhead, that prediction is wrong in
+exactly the way the launch attribution was wrong, and fusing becomes the
+high-value change. If it is not, fusing stays second-order and the ceiling
+stands near **1.1–1.2×**.
 
 **And the honest caveat on all of it:** every coefficient above was fitted from
 runs with the data race of §0 open on every step. The relative statements — which
