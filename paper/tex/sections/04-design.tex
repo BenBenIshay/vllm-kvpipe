@@ -198,24 +198,13 @@ The intuitive signal is the wrong one. \textbf{Context length does not discrimin
 to first order}: moving a request of context $S$ frees $S\btok$ bytes and costs
 $S\btok$ bytes every step, so ranking by context is ranking arbitrarily. What
 survives is \emph{remaining} generation, which sets how many steps a one-time seed
-amortises over; we estimate it as \texttt{max\_tokens} minus tokens produced --- a
-bound the scheduler already holds, loose in the safe direction --- and admit above a
-threshold at the amortisation point. On a substrate whose budget admits two host-tier
-requests no ranking separates from arrival order, and \S\ref{sec:eval:ablation} says
-so.
-
+amortises over. Placement must also be revisable --- blocks free when a resident
+finishes, and a cohort that outgrows the pool is worth demoting whenever that costs
+less than the recompute-preemption it avoids --- so both moves carry hysteresis and a
+cooldown. The gate cannot be the byte budget alone, since the host path also carries
+a fixed per-step cost, so a demotion is a \textbf{probe}: make the move, settle,
+compare on \emph{goodput} rather than latency, because a demotion always lengthens
+the step while its benefit is requests served. Appendix~\ref{app:figures} gives the
+estimator and the thresholds; \S\ref{sec:eval:ablation} explains why a two-rider
+budget cannot test any of it.
 \label{sec:design:migration}
-Placement must also be revisable, for two situations a fixed assignment handles
-badly: device blocks free when a resident request finishes, and a host-tier request
-promoted into them sheds its link traffic for nothing; and when the resident cohort
-outgrows the pool, demotion is worth doing whenever it costs less than the
-recompute-preemption it avoids. Both moves carry hysteresis and a cooldown bounding
-thrash. The gate cannot be the byte budget alone, which prices transfer bytes while
-the host path also carries a fixed per-step cost (\S\ref{sec:model:omits}), so a
-demotion is a \textbf{probe}: make the move, settle, compare. The metric must be
-goodput rather than latency, because a demotion \emph{always} lengthens the step ---
-scored on latency the probe would revert every time --- while its benefit is
-capacity, which shows up as requests served. On a link too slow to hide the transfer
-no freed capacity repays the step it costs, so the probe should revert; on a
-coherent link it should keep. That is a prediction:
-\S\ref{sec:eval:ablation} explains why a two-rider budget cannot test it.
