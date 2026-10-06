@@ -49,7 +49,7 @@ One forward, two KV sources & the whole gain & \ref{sec:design:exec} \\
 Transfer hidden under compute & $c$: $0.92 \to 7.20$\,ms & \ref{sec:design:step} \\
 $O(r)$ extent allocation & $c$: $1.26 \to 5.17$\,ms & \ref{sec:design:spaces} \\
 Deferred, batched mirror write & $F$: $3.4 \to 13.4$\,ms & \ref{sec:design:mirror} \\
-Overhead-aware admission & $22\%$ of the gain & \ref{sec:design:admission} \\
+Overhead-aware admission & $18\%$ of the gain & \ref{sec:design:admission} \\
 \bottomrule
 \end{tabular}
 \caption{The five pillars and the measured cost of removing each, at $L = 64$
@@ -176,14 +176,16 @@ reclaiming afterwards still pays the peak. \emph{Queue bypass}: vLLM's waiting
 queue stops at the first request it cannot allocate for, so a block-starved
 request ahead would otherwise block an admission that needs no resources.
 
-\textbf{What it buys: $22\%$, from configuration alone.} Admission must respect
+\textbf{What it buys: $18\%$, from configuration alone.} Admission must respect
 Eq.~\ref{eq:knee} and, because riders are integers, must round \emph{down}: a
-budget that admits $1.98$ riders admits one. Choosing the operating point with that
-in mind is worth more than any of the code changes above --- $\times 1.37$ against
-$\times 1.12$ for the same model and hardware at a context $1.2\%$ shorter
-(\S\ref{sec:model:knee}). It is also the one pillar whose benefit needs no new
-mechanism, only a policy that knows the knee, which is why we treat the overhead
-law rather than the transport as this paper's contribution.
+budget that admits $1.89$ riders admits one. Choosing the operating point with that
+in mind is worth more than every code change above combined --- $\times 1.25$
+against $\times 1.07$ for the same model and hardware at a context $5\%$ shorter
+(\S\ref{sec:model:knee}), where the whole remaining optimisation programme we can
+identify is bounded at $+14\%$ and most of that is unreachable. It is also the one
+pillar whose benefit needs no new mechanism, only a policy that knows the knee,
+which is why we treat the overhead law rather than the transport as this paper's
+contribution.
 
 \subsection{Placement and migration are mechanisms, not contributions}
 \label{sec:design:placement}
