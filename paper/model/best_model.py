@@ -88,7 +88,16 @@ def evaluate(m, hw, S, t1=True, t2=True, batched=False):
         return None                       # cannot admit even one rider below
                                           # the knee
     tb = T0 / B
-    r = min(knee, 64.0)
+    # RIDERS ARE INTEGERS. Crediting the fractional knee was a real defect: at a
+    # knee of 1.98 you can run ONE rider, not 1.98, and the inflation is worst
+    # exactly where the knee is just above an integer. It is what put the target
+    # at ctx 16384 (knee 1.98 -> 1.12x once floored) when ctx ~16200 (knee 2.00
+    # -> 2 riders -> 1.37x) is the real optimum. `gain` is a SAWTOOTH in S with
+    # a peak just below every integer crossing, and a fractional r smooths the
+    # sawtooth away.
+    r = float(int(min(knee, 64.0)))
+    if r < 1.0:
+        return None
     g = (1 + r / B) / (1 + (F + c * r) / T0)
     rbe = F / (tb - c) if c < tb else None
     return {"gain": g, "c": c, "F": F, "T0": T0, "B": B, "tb": tb,
