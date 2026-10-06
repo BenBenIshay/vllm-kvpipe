@@ -1,5 +1,81 @@
 # Overhead characterisation: how `c` scales, and whether a faster link buys throughput
 
+## CAMPAIGN CONCLUDED, 2026-10-06
+
+**The closing state.** Both coefficients are, for the first time, measured
+*below the knee* on the code as shipped. Anchor is Llama-70B fp8 / ctx 8192 /
+NVLink-C2C, the same anchor every figure in this report uses.
+
+| | value | how it is known |
+|---|---|---|
+| `c` | **0.61 ms/rider** at L=80 | `c(L) = 0.177 + 0.00540·L`, context-independent, M13 |
+| budget `T0/B` | 3.37 ms | `c` clears it by **5.5×** |
+| `F` | **4.24 ms** at L=80 (3.3–3.5 at L=64) | M17/M18, ±0.5 |
+| gain at C2C | **1.20×** | at the knee, r = 3.8 |
+
+**The campaign's two findings, in one line each.**
+
+1. **`c` was never the constraint.** Every `c` above ~0.5 was the knee leaking
+   into the fit — fitting across the knee raises the slope and lowers the
+   intercept from one cause. Below the knee the rider transfer hides
+   *completely*: the `minbytes` arm removes the bytes and keeps the launches, and
+   `c` moves by **−0.010 ms**. What is left is context-independent (0.532 at ctx
+   128 against 0.488 at ctx 256). So `c` is exposed work only — launches plus
+   host bookkeeping — which is what it was always supposed to mean, and it
+   passes the gate at *every* bandwidth.
+2. **`F` is what binds, it is down 42%, and the win was a disabled feature.**
+   `writeback_layer` — the swap-semantics emulation, **off by default** — ran on
+   every layer because its call site tests that the *method exists*, and it
+   flushed the deferred mirror writes before checking its own flag. 64 flushes
+   per step, 63 redundant host waits on the D2H, defeating T2's batching ever
+   since T2 landed. `F` 5.62 → ~3.4 at L=64; gain 1.101× → 1.20×.
+
+**Optimisations attempted: 9, landed: 4.**
+
+| | | |
+|---|---|---|
+| T1 | ✓ | `c` 5.17 → 1.26 |
+| T2 | ✓ | `F` 13.4 → 5.80 |
+| T7a | ✓ | vectorised mirror scatter, −0.32 ms |
+| T8 | ✓ | **−2.02 ms**, the disabled-feature flush |
+| T3 | ✗ | staged D2D→D2H, 6× worse (4.6 GB/s vs 22.3) |
+| T4 | ✗ | killed unbuilt — 2L D2D + 2 D2H is 18% slower |
+| T5 | ✗ | whole-extent runs: null, inside the drift |
+| T6 | ✗ | mirror ordering costs the entire overlap; flag-gated off |
+| T7b | ✗ | preallocated rider buffers: nothing resolvable |
+
+**What is left, and why it is not this campaign's work.** `F`'s remaining 3.4 ms
+at L=64 is ~56% the per-layer **second attention call** (≈1.9 ms) and ~42% the
+**mirror write** (≈1.2–1.5 ms, of which only ~0.6 is removable — the 2L D2H
+launches alone measure 0.834 ms off-engine). Removing the first is the project's
+own **Solution 1 step 3** (fuse to one unified attention call): days of work in
+the attention backend with its own correctness ladder, worth **+10 points**
+(1.20× → 1.31×) *if* fusing removes the remainder rather than relocating it —
+which nothing here shows, and which deserves suspicion given four changes this
+campaign whose mechanism fired and whose benefit did not follow.
+
+> **Which Bottom-line items below are superseded.** They are kept, not deleted,
+> so the superseded reasoning stays auditable — the same reason `COEFF` is kept
+> beside `FINAL` in `overhead_model.py`.
+>
+> * **Item 2 is RETRACTED.** "`c` is almost entirely transfer / the overlap hides
+>   92.6%" was the across-the-knee artifact. Below the knee the transfer hides
+>   *entirely*, and `c` contains none of it.
+> * **Item 3 is SUPERSEDED on magnitude.** Its `c(L) = 0.116 + 0.00382·L` → 0.42
+>   was an earlier below-the-knee fit on fewer arms; the final fit is
+>   `0.177 + 0.00540·L` → **0.61**. Its *conclusion* — context-independent,
+>   exposed work only — holds and is the campaign's main result.
+> * **Item 6 is SUPERSEDED on magnitude:** gain **1.20×**, not 1.17×.
+> * Items 1, 4, 5 and 7 stand as written.
+
+**Authoritative numbers live in code, not prose:** `FINAL` and
+`closing_state()` in `paper/model/overhead_model.py`, pinned by four selftest
+assertions (`--selftest`, 27/27). `COEFF` in that module is the across-the-knee
+fit — do not re-derive from it. `paper/tex/sections/09-overhead.tex` is **stale**
+and carries a header saying so.
+
+---
+
 > ## Bottom line, 2026-10-05
 >
 > 1. **A faster interconnect does buy throughput, but only after two host-side

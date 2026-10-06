@@ -76,6 +76,78 @@ import sys
 #
 # `--selftest` asserts relationships, not absolute values, for exactly this
 # reason; it is the magnitudes quoted in projections that need re-checking.
+# =====================================================================
+# THE CAMPAIGN'S FINAL COEFFICIENTS, 2026-10-06. READ THESE, NOT COEFF.
+# =====================================================================
+#
+# Every number in COEFF below was fitted over rider sweeps whose top points sat
+# AT the knee. That raises the fitted slope and lowers the fitted intercept
+# together, from one cause -- so `c` came out overstated and `F` understated, and
+# the "c is 62% link-bound" reading was an artifact of it. FINAL below is
+# measured BELOW the knee (link_ms / T0 <= 1/3, sized on the FINAL sequence
+# length so generation is accounted for) on the shipped defaults, after T1, T2,
+# T7a and T8.
+#
+# PROVENANCE: M13 (`c` and its depth slope), M17 (`F` after T8, three arms at
+# 0.04 drift), M18 (`F`'s split, two arms at 0.51 drift).
+#
+# ERROR BARS ARE NOT DECORATION HERE. `F`'s within-job drift across four jobs on
+# identical configuration was 0.04, 0.43, 0.04, 0.51 -- bimodal and
+# unpredictable. Any single-arm `F` figure carries +-0.5 unless a tight bracket
+# is demonstrated IN THAT JOB. Never borrow a drift figure between jobs.
+FINAL = {
+    # Per-rider cost: EXPOSED work only. Below the knee the rider transfer hides
+    # completely -- the minbytes arm (bytes removed, launches kept) moves `c` by
+    # -0.010 at ctx 128 -- and what survives is context-independent (0.532 at
+    # ctx 128 against 0.488 at ctx 256). So `c` is launches plus host
+    # bookkeeping, which is what it was always meant to be.
+    "c_intercept": (0.177, "ms/rider", "M13, from L=16/32/64 at ctx 128"),
+    "c_per_layer": (0.00540, "ms/rider/layer", "M13; c(64)=0.52, c(16)=0.263"),
+    # Fixed cost, after T8 stopped a DISABLED feature flushing the deferred
+    # mirror writes on every layer (64 flushes/step, 63 redundant host waits).
+    "f_per_layer_post_t8": (0.053, "ms/layer",
+                            "M17/M18: F = 3.3-3.5 at L=64, so 0.051-0.055"),
+    # `F`'s two remaining components at L=64. Each is one arm, so each is +-0.5.
+    "f_mirror_write": (1.46, "ms at L=64", "M18, ~42% of F (1.2-1.5)"),
+    "f_attention_remainder": (1.94, "ms at L=64",
+                              "M18, ~56% of F -- survives with BOTH the mirror "
+                              "write and the streaming disabled, so it is the "
+                              "per-layer second attention call"),
+    # The mirror write's floor: the 2L D2H copies alone, off-engine. Only
+    # ~0.37 ms of the current mirror write is removable.
+    "f_mirror_launch_floor": (0.834, "ms at L=64",
+                              "launch_pattern_bench on A100"),
+}
+
+
+def final_c(L: int) -> float:
+    """`c` in ms/rider for an L-layer model. Context-independent below the knee."""
+    return FINAL["c_intercept"][0] + FINAL["c_per_layer"][0] * L
+
+
+def final_F(L: int) -> float:
+    """`F` in ms for an L-layer model, after T8. Carries +-0.5 at L=64."""
+    return FINAL["f_per_layer_post_t8"][0] * L
+
+
+def closing_state(m=None, hw=None, S=None):
+    """The campaign's closing state at one (model, hw, context).
+
+    Stated against LEGACY/8192 by default, because that is the anchor every
+    reported figure in OVERHEAD_CHARACTERISATION.md uses.
+    """
+    m = m if m is not None else LEGACY
+    hw = hw if hw is not None else GH200
+    S = S if S is not None else LEGACY_S
+    t0 = m.t0_ms(hw)
+    b_res = m.b_cap(hw, S)
+    knee = t0 / (m.b_tok * S / (hw.link * 1e9) * 1e3)
+    c, F = final_c(m.L), final_F(m.L)
+    return {"t0": t0, "b_res": b_res, "knee": knee, "c": c, "F": F,
+            "budget": t0 / b_res,
+            "gain": (1.0 + knee / b_res) / (1.0 + (F + c * knee) / t0)}
+
+
 COEFF = {
     # FALSIFIED AS A LAUNCH TERM, 2026-10-05. This was named and used as the
     # per-rider memcpy launch cost (2*L*r copies per step). T5 cut the launch
@@ -1025,6 +1097,44 @@ def _selftest() -> int:
     print("  [%s] the term that did not move is %.3f ms/rider, %.0f%% of c -- "
           "so it is not launches" % ("ok " if good else "BAD", launch,
                                      launch / pred_off * 100))
+
+    # ----- THE CAMPAIGN'S CLOSING STATE, pinned so a later edit cannot drift
+    # it. These assert the FINAL (below-the-knee) coefficients, not COEFF.
+    cs = closing_state()
+    good = (0.55 < cs["c"] < 0.70 and 3.8 < cs["F"] < 4.6
+            and 1.17 < cs["gain"] < 1.25)
+    ok &= good
+    print("  [%s] closing state at %s/%d: c %.2f, F %.2f, gain %.3fx"
+          % ("ok " if good else "BAD", LEGACY.name, LEGACY_S, cs["c"],
+             cs["F"], cs["gain"]))
+
+    # The campaign's single biggest correction: the GATE IS NOT WHAT BINDS.
+    # Every `c` above ~0.5 was the knee leaking into the fit.
+    good = cs["c"] < 0.25 * cs["budget"]
+    ok &= good
+    print("  [%s] c clears the T0/B budget by %.1fx, so the gate is not the "
+          "constraint -- F is" % ("ok " if good else "BAD",
+                                  cs["budget"] / cs["c"]))
+
+    # `F`'s two components must sum back to `F` at L=64 within the error bar,
+    # and the attention remainder must be the larger of the two.
+    mir = FINAL["f_mirror_write"][0]
+    rem = FINAL["f_attention_remainder"][0]
+    f64 = final_F(64)
+    good = abs(mir + rem - f64) < 0.5 and rem > mir
+    ok &= good
+    print("  [%s] F's split closes at L=64 (%.2f + %.2f = %.2f vs F %.2f) and "
+          "the attention remainder is the larger half"
+          % ("ok " if good else "BAD", mir, rem, mir + rem, f64))
+
+    # Only part of the mirror write is removable: the D2H launches themselves
+    # are measured off-engine and are a floor.
+    good = FINAL["f_mirror_launch_floor"][0] < mir
+    ok &= good
+    print("  [%s] only %.2f ms of the %.2f mirror write is removable (floor "
+          "%.3f)" % ("ok " if good else "BAD",
+                     mir - FINAL["f_mirror_launch_floor"][0], mir,
+                     FINAL["f_mirror_launch_floor"][0]))
 
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
