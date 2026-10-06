@@ -153,10 +153,12 @@ $74\%$ of $F$ removed is the difference between the thin result this paper
 originally reported and Table~\ref{tab:gain}. Two cautions belong with it. The
 largest single saving came from finding that a \emph{disabled} feature was flushing
 the batch on every layer, which had silently defeated the batching since the day it
-landed --- the overhead was not where the design said it was. And what remains is
-now dominated not by the write but by the extra attention call of
-\S\ref{sec:design:exec}: $56\%$ of $F$ at $L = 64$, which
-\S\ref{sec:eval:cost} prices as the next thing worth removing.
+landed --- the overhead was not where the design said it was. And of the $3.4$\,ms
+that remains, $1.2$ is the extra attention call of \S\ref{sec:design:exec}, which
+Appendix~\ref{app:ridercost} prices by ablation rather than projecting: fusing the
+two calls is worth between $+2$ and $+8.5$ points, and we decline to spend days of
+backend work against the lower end of that range until one cheap off-engine
+measurement narrows it.
 
 \subsection{Admission}
 \label{sec:design:admission}

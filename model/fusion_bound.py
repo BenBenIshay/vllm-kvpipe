@@ -121,55 +121,98 @@ def main():
         return 0
 
     noatt, nokern = arms["FB_noattend"]["F"], arms["FB_nokernel"]["F"]
-    whole = Fb - noatt            # the entire second pass
-    movement = noatt - nokern     # gather + scatter (negative if nokernel < )
-    kernel = Fb - nokern          # kernel + its launch
+    cb = sum(arms[t]["c"] for t in ("FB_base_a", "FB_base_b", "FB_base_c")
+             if t in arms) / len(bases)
+    c_noatt, c_nokern = arms["FB_noattend"]["c"], arms["FB_nokernel"]["c"]
 
-    print(" %-44s %8s" % ("component", "ms"))
-    print(" %-44s %8.2f" % ("the whole second pass (base - noattend)", whole))
-    print(" %-44s %8.2f" % ("  of it: gather + scatter", movement))
-    print(" %-44s %8.2f" % ("  of it: kernel + launch", kernel))
+    whole = Fb - noatt            # the entire second pass, as it lands in F
+    in_F_kernel = Fb - nokern     # kernel + its per-layer launch
+    in_c_gather = cb - c_noatt    # gather + scatter -- PER RIDER, so it is in c
+
+    # THE SPLIT IS ACROSS BOTH COEFFICIENTS, and that is the finding. The gather
+    # and the scatter size with the rider count, so they land in `c`, not in `F`.
+    # Subtracting them inside F therefore reads as zero -- which it does below --
+    # and an F-only decomposition cannot see them at all.
+    print(" WHERE THE SECOND ATTENTION PASS ACTUALLY LIVES")
     print()
-    print(" against this job's own base drift of %.2f ms" % drift)
-    print(" and M18's independent estimate of the remainder, %.2f ms"
-          % REM_MEASURED)
+    print(" %-46s %9s" % ("in F (fixed, per step)", "ms"))
+    print(" %-46s %9.2f" % ("  whole pass        base - noattend", whole))
+    print(" %-46s %9.2f" % ("  kernel + launch   base - nokernel", in_F_kernel))
+    print(" %-46s %9.2f" % ("  gather + scatter  (residual in F)",
+                            noatt - nokern))
+    print()
+    print(" %-46s %9s" % ("in c (per rider)", "ms/rider"))
+    print(" %-46s %9.3f" % ("  gather + scatter  base - noattend", in_c_gather))
+    print(" %-46s %9.3f" % ("  kernel only       base - nokernel",
+                            cb - c_nokern))
+    print()
+    print(" So the gather and the scatter are PER-RIDER work and sit in c, where")
+    print(" removing them is worth %.3f ms/rider. The F term is the kernel and" % in_c_gather)
+    print(" its per-layer launch. Base drift this job: F %.2f, c %.3f."
+          % (drift, max(arms[t]["c"] for t in ("FB_base_a", "FB_base_b",
+                                               "FB_base_c") if t in arms)
+             - min(arms[t]["c"] for t in ("FB_base_a", "FB_base_b", "FB_base_c")
+                   if t in arms)))
+    print()
+    print(" M18 inferred the remainder at %.2f ms. Measured directly it is %.2f,"
+          % (REM_MEASURED, whole))
+    print(" so that inference was high by %.0f%% -- one more reason to ablate"
+          % ((REM_MEASURED / whole - 1) * 100 if whole else 0))
+    print(" rather than subtract.")
     print()
 
-    # ---- the decision ----
+    # ---- what fusion would actually be worth ----
+    T0, B, KNEE, L = 24.2, 7.2, 3.78, 80
+    C_NOW = 0.609
+
+    def gain(F64, c):
+        return (1 + KNEE / B) / (1 + (F64 / 64 * L + c * KNEE) / T0)
+
+    now = gain(Fb, C_NOW)
+    # FLOOR: only the per-rider gather/scatter goes. The kernel's arithmetic
+    # survives fusion, and we have not separated its launch from it.
+    floor = gain(Fb, C_NOW - in_c_gather)
+    # CEILING: the whole F term goes too, i.e. the fused call's marginal cost is
+    # zero. It is not, so this is unreachable by construction.
+    ceil = gain(noatt, C_NOW - in_c_gather)
+
+    print("=" * 78)
+    print(" WHAT FUSING WOULD BE WORTH, at the GH200 target (L=80, ctx 8192)")
+    print("=" * 78)
+    print("   today                                    %.3fx" % now)
+    print("   + per-rider gather/scatter removed       %.3fx   (+%.1f pts)"
+          % (floor, (floor - now) * 100))
+    print("   + the whole F term as well (CEILING)     %.3fx   (+%.1f pts)"
+          % (ceil, (ceil - now) * 100))
+    print()
+    print(" The middle line is what fusing is WORTH ON THE EVIDENCE. The bottom")
+    print(" line requires the fused call to cost nothing, which it cannot.")
+    print()
+
     resolvable = whole > 2 * drift
-    passes = whole >= GATE_MS and resolvable
-    print("=" * 78)
-    if passes:
-        print(" GATE PASSED: %.2f ms recoverable, %.1fx this job's drift."
-              % (whole, whole / drift if drift else float("inf")))
-        print(" Fusing is worth building -- but note the UPPER BOUND is what was")
-        print(" measured. A fused call still performs the attention arithmetic,")
-        print(" so the realistic prize is nearer the %.2f ms of gather/scatter"
-              % movement)
-        print(" plus the launch share of the %.2f ms kernel term." % kernel)
-    elif not resolvable:
-        print(" INCONCLUSIVE: the effect (%.2f ms) is within 2x the drift (%.2f)."
+    if not resolvable:
+        print(" INCONCLUSIVE: %.2f ms is within 2x the drift (%.2f). Do not act."
               % (whole, drift))
-        print(" Do NOT build on this. Re-run with more base arms first.")
+    elif (floor - now) * 100 >= 5.0:
+        print(" BUILD IT: the defensible saving alone is +%.1f points."
+              % ((floor - now) * 100))
     else:
-        print(" GATE FAILED: only %.2f ms is recoverable, under the %.1f ms bar."
-              % (whole, GATE_MS))
-        print(" Solution 1 step 3 is NOT worth days of attention-backend work,")
-        print(" and the +10 point projection should be retracted rather than")
-        print(" shipped.")
+        print(" DO NOT BUILD IT YET, and the reason is not the size of the")
+        print(" ceiling but its composition. The part fusion certainly removes --")
+        print(" the per-rider gather and scatter -- is worth +%.1f points. The"
+              % ((floor - now) * 100))
+        print(" rest sits in a %.2f ms term that is kernel PLUS launch, and a"
+              % in_F_kernel)
+        print(" fused call still performs the attention arithmetic. Nothing here")
+        print(" bounds the launch share, so the true prize is somewhere in")
+        print(" +%.1f to +%.1f points for days of attention-backend work."
+              % ((floor - now) * 100, (ceil - now) * 100))
+        print()
+        print(" ONE CHEAP MEASUREMENT CLOSES THIS: price one varlen call against")
+        print(" two at equal total attention work, off-engine, in")
+        print(" launch_pattern_bench. That separates launch from kernel and turns")
+        print(" the range above into a number. Hours, no engine, no allocation.")
     print("=" * 78)
-
-    # What it would be worth at the target, if the whole bound were realised.
-    T0, B, C, KNEE, L = 24.2, 7.2, 0.609, 3.78, 80
-
-    def gain(F64):
-        return (1 + KNEE / B) / (1 + (F64 / 64 * L + C * KNEE) / T0)
-
-    print()
-    print(" at the GH200 target (L=80, ctx 8192, C2C), if fully realised:")
-    print("   today            F@64 %.2f -> %.3fx" % (Fb, gain(Fb)))
-    print("   fusion ceiling   F@64 %.2f -> %.3fx" % (noatt, gain(noatt)))
-    print(" The second line is a CEILING, not a projection.")
     return 0
 
 

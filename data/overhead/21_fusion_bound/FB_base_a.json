@@ -1,11 +1,11 @@
 {
   "fit": {
     "per_rider_ms": 1.6961030119521912,
-    "knee_riders": 28.15669977250763,
-    "overhead_ms": 5.177421309053898,
-    "compute_step_ms": 47.75666329078376,
+    "knee_riders": 28.15497091779088,
+    "overhead_ms": 5.232909740880132,
+    "compute_step_ms": 47.75373097509146,
     "r_best": 8,
-    "gain_at_r_best": 1.3532867428937336
+    "gain_at_r_best": 1.351861440822494
   },
   "model": "Qwen/Qwen2.5-32B-Instruct",
   "ctx": 128,
@@ -26,7 +26,7 @@
     "VLLM_KVPIPE_RUNGD_XFER_MODE": "real",
     "VLLM_KVPIPE_TIER_POLICY": "arrival"
   },
-  "git_head": "4cfc50735",
+  "git_head": "dfd7f682a",
   "short_len": 8,
   "long_len": 48,
   "connector": true,
@@ -46,18 +46,18 @@
   "attend_mode": "full",
   "numerically_valid": true,
   "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
-  "git_commit": "4cfc507359ea",
+  "git_commit": "dfd7f682a0df",
   "git_dirty": false,
-  "slurm_job_id": "2182024",
+  "slurm_job_id": "2182025",
   "hostname": "nova07",
   "n_rows_usable": 8,
   "n_rows": 8,
   "rows": [
     {
       "riders": 0,
-      "step_ms": 47.75666329078376,
-      "step_ms_direct": 47.750312,
-      "step_ms_delta_pct": -0.013299276679130232,
+      "step_ms": 47.75373097509146,
+      "step_ms_direct": 47.742634,
+      "step_ms_delta_pct": -0.02323792270229762,
       "stream_gb_per_step": 0.0,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.0,
@@ -71,7 +71,7 @@
       "reps": [
         {
           "riders_requested": 0,
-          "step_ms": 47.75666329078376,
+          "step_ms": 47.79821331612766,
           "purity": {
             "ok": true,
             "long": {
@@ -91,11 +91,11 @@
               "cpu_max": 0,
               "hbm_mode": 16,
               "cpu_mode": 0,
-              "step_ms_direct": 47.747808,
+              "step_ms_direct": 47.705836,
               "n_intervals": 47,
-              "step_ms_direct_p10": 47.227612,
-              "step_ms_direct_p90": 48.50783,
-              "step_ms_direct_iqr": 0.22916299999999978
+              "step_ms_direct_p10": 47.520081,
+              "step_ms_direct_p90": 48.087295,
+              "step_ms_direct_iqr": 0.24616800000000438
             },
             "short": {
               "n_steps": 8,
@@ -118,12 +118,12 @@
           "tiers_long": {
             "hbm": 16
           },
-          "wall_short_s": 0.4456945024430752,
-          "wall_long_s": 2.3559610340744257
+          "wall_short_s": 0.4439552277326584,
+          "wall_long_s": 2.3558837603777647
         },
         {
           "riders_requested": 0,
-          "step_ms": 47.75237594731152,
+          "step_ms": 47.743655322119594,
           "purity": {
             "ok": true,
             "long": {
@@ -143,11 +143,11 @@
               "cpu_max": 0,
               "hbm_mode": 16,
               "cpu_mode": 0,
-              "step_ms_direct": 47.753332,
+              "step_ms_direct": 47.751448,
               "n_intervals": 47,
-              "step_ms_direct_p10": 47.561064,
-              "step_ms_direct_p90": 48.016712,
-              "step_ms_direct_iqr": 0.13678700000000532
+              "step_ms_direct_p10": 47.538408,
+              "step_ms_direct_p90": 47.923314,
+              "step_ms_direct_iqr": 0.18449400000000082
             },
             "short": {
               "n_steps": 8,
@@ -170,12 +170,12 @@
           "tiers_long": {
             "hbm": 16
           },
-          "wall_short_s": 0.4455695580691099,
-          "wall_long_s": 2.3556645959615707
+          "wall_short_s": 0.44477000646293163,
+          "wall_long_s": 2.3545162193477154
         },
         {
           "riders_requested": 0,
-          "step_ms": 47.7861765306443,
+          "step_ms": 47.72714483551681,
           "purity": {
             "ok": true,
             "long": {
@@ -195,11 +195,11 @@
               "cpu_max": 0,
               "hbm_mode": 16,
               "cpu_mode": 0,
-              "step_ms_direct": 47.769236,
+              "step_ms_direct": 47.734874,
               "n_intervals": 47,
-              "step_ms_direct_p10": 47.410584,
-              "step_ms_direct_p90": 48.357693,
-              "step_ms_direct_iqr": 0.12754400000000032
+              "step_ms_direct_p10": 47.571386,
+              "step_ms_direct_p90": 47.884822,
+              "step_ms_direct_iqr": 0.12141600000000352
             },
             "short": {
               "n_steps": 8,
@@ -222,12 +222,12 @@
           "tiers_long": {
             "hbm": 16
           },
-          "wall_short_s": 0.44495351798832417,
-          "wall_long_s": 2.356400579214096
+          "wall_short_s": 0.444387711584568,
+          "wall_long_s": 2.3534735050052404
         },
         {
           "riders_requested": 0,
-          "step_ms": 47.76341882534325,
+          "step_ms": 47.75373097509146,
           "purity": {
             "ok": true,
             "long": {
@@ -247,11 +247,11 @@
               "cpu_max": 0,
               "hbm_mode": 16,
               "cpu_mode": 0,
-              "step_ms_direct": 47.750312,
+              "step_ms_direct": 47.742634,
               "n_intervals": 47,
-              "step_ms_direct_p10": 47.481327,
-              "step_ms_direct_p90": 48.230699,
-              "step_ms_direct_iqr": 0.1158579999999958
+              "step_ms_direct_p10": 47.619071,
+              "step_ms_direct_p90": 47.90152,
+              "step_ms_direct_iqr": 0.13705699999999865
             },
             "short": {
               "n_steps": 8,
@@ -274,12 +274,12 @@
           "tiers_long": {
             "hbm": 16
           },
-          "wall_short_s": 0.4455097522586584,
-          "wall_long_s": 2.3560465052723885
+          "wall_short_s": 0.4440382421016693,
+          "wall_long_s": 2.3541874811053276
         },
         {
           "riders_requested": 0,
-          "step_ms": 47.75259145535529,
+          "step_ms": 47.79430259950459,
           "purity": {
             "ok": true,
             "long": {
@@ -299,11 +299,11 @@
               "cpu_max": 0,
               "hbm_mode": 16,
               "cpu_mode": 0,
-              "step_ms_direct": 47.73964,
+              "step_ms_direct": 47.753685,
               "n_intervals": 47,
-              "step_ms_direct_p10": 47.507028,
-              "step_ms_direct_p90": 47.907191,
-              "step_ms_direct_iqr": 0.16610400000000425
+              "step_ms_direct_p10": 47.644217,
+              "step_ms_direct_p90": 47.906881,
+              "step_ms_direct_iqr": 0.12326600000000099
             },
             "short": {
               "n_steps": 8,
@@ -326,8 +326,8 @@
           "tiers_long": {
             "hbm": 16
           },
-          "wall_short_s": 0.4450128674507141,
-          "wall_long_s": 2.3551165256649256
+          "wall_short_s": 0.44441286846995354,
+          "wall_long_s": 2.356184972450137
         }
       ],
       "dT_ms": 0.0,
@@ -337,9 +337,9 @@
     },
     {
       "riders": 1,
-      "step_ms": 51.221147272735834,
-      "step_ms_direct": 51.207077,
-      "step_ms_delta_pct": -0.027469655571977624,
+      "step_ms": 51.23499953188002,
+      "step_ms_direct": 51.223745,
+      "step_ms_delta_pct": -0.02196649162262059,
       "stream_gb_per_step": 0.0425721856,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.0425721856,
@@ -354,7 +354,7 @@
       "reps": [
         {
           "riders_requested": 1,
-          "step_ms": 51.25343771651387,
+          "step_ms": 51.210137363523245,
           "purity": {
             "ok": true,
             "long": {
@@ -374,11 +374,11 @@
               "cpu_max": 1,
               "hbm_mode": 16,
               "cpu_mode": 1,
-              "step_ms_direct": 51.288579,
+              "step_ms_direct": 51.223745,
               "n_intervals": 47,
-              "step_ms_direct_p10": 50.878091,
-              "step_ms_direct_p90": 51.487312,
-              "step_ms_direct_iqr": 0.2976019999999977
+              "step_ms_direct_p10": 50.733004,
+              "step_ms_direct_p90": 51.758224,
+              "step_ms_direct_iqr": 0.5521419999999964
             },
             "short": {
               "n_steps": 8,
@@ -403,12 +403,12 @@
             "hbm": 16,
             "cpu": 1
           },
-          "wall_short_s": 0.4931609705090523,
-          "wall_long_s": 2.543298479169607
+          "wall_short_s": 0.49584643729031086,
+          "wall_long_s": 2.5442519318312407
         },
         {
           "riders_requested": 1,
-          "step_ms": 51.16241937503219,
+          "step_ms": 51.23499953188002,
           "purity": {
             "ok": true,
             "long": {
@@ -428,11 +428,11 @@
               "cpu_max": 1,
               "hbm_mode": 16,
               "cpu_mode": 1,
-              "step_ms_direct": 51.206956,
+              "step_ms_direct": 51.217178,
               "n_intervals": 47,
-              "step_ms_direct_p10": 50.913808,
-              "step_ms_direct_p90": 51.734431,
-              "step_ms_direct_iqr": 0.3440039999999982
+              "step_ms_direct_p10": 50.761406,
+              "step_ms_direct_p90": 51.656291,
+              "step_ms_direct_iqr": 0.39274300000000295
             },
             "short": {
               "n_steps": 8,
@@ -457,12 +457,12 @@
             "hbm": 16,
             "cpu": 1
           },
-          "wall_short_s": 0.4964809902012348,
-          "wall_long_s": 2.5429777652025223
+          "wall_short_s": 0.4947090893983841,
+          "wall_long_s": 2.544109070673585
         },
         {
           "riders_requested": 1,
-          "step_ms": 51.221147272735834,
+          "step_ms": 51.2020340654999,
           "purity": {
             "ok": true,
             "long": {
@@ -482,11 +482,11 @@
               "cpu_max": 1,
               "hbm_mode": 16,
               "cpu_mode": 1,
-              "step_ms_direct": 51.161941,
+              "step_ms_direct": 51.244269,
               "n_intervals": 47,
-              "step_ms_direct_p10": 50.928933,
-              "step_ms_direct_p90": 51.47259,
-              "step_ms_direct_iqr": 0.2630529999999993
+              "step_ms_direct_p10": 50.898789,
+              "step_ms_direct_p90": 51.605107,
+              "step_ms_direct_iqr": 0.38456100000000504
             },
             "short": {
               "n_steps": 8,
@@ -511,12 +511,12 @@
             "hbm": 16,
             "cpu": 1
           },
-          "wall_short_s": 0.49280143342912197,
-          "wall_long_s": 2.5416473243385553
+          "wall_short_s": 0.4938069339841604,
+          "wall_long_s": 2.5418882966041565
         },
         {
           "riders_requested": 1,
-          "step_ms": 54.50362195260823,
+          "step_ms": 51.2793367728591,
           "purity": {
             "ok": true,
             "long": {
@@ -536,11 +536,11 @@
               "cpu_max": 1,
               "hbm_mode": 16,
               "cpu_mode": 1,
-              "step_ms_direct": 51.224336,
+              "step_ms_direct": 51.226721,
               "n_intervals": 47,
-              "step_ms_direct_p10": 50.917681,
-              "step_ms_direct_p90": 64.507332,
-              "step_ms_direct_iqr": 0.5665779999999998
+              "step_ms_direct_p10": 50.707046,
+              "step_ms_direct_p90": 51.590573,
+              "step_ms_direct_iqr": 0.4194000000000031
             },
             "short": {
               "n_steps": 8,
@@ -565,12 +565,12 @@
             "hbm": 16,
             "cpu": 1
           },
-          "wall_short_s": 0.4916412625461817,
-          "wall_long_s": 2.671786140650511
+          "wall_short_s": 0.49168714694678783,
+          "wall_long_s": 2.5428606178611517
         },
         {
           "riders_requested": 1,
-          "step_ms": 50.767529755830765,
+          "step_ms": 53.33251394331455,
           "purity": {
             "ok": true,
             "long": {
@@ -590,11 +590,11 @@
               "cpu_max": 1,
               "hbm_mode": 16,
               "cpu_mode": 1,
-              "step_ms_direct": 51.207077,
+              "step_ms_direct": 51.187531,
               "n_intervals": 47,
-              "step_ms_direct_p10": 50.68435,
-              "step_ms_direct_p90": 51.659163,
-              "step_ms_direct_iqr": 0.42997199999999935
+              "step_ms_direct_p10": 50.770812,
+              "step_ms_direct_p90": 52.239056,
+              "step_ms_direct_iqr": 0.39434099999999717
             },
             "short": {
               "n_steps": 8,
@@ -619,20 +619,20 @@
             "hbm": 16,
             "cpu": 1
           },
-          "wall_short_s": 0.5110893361270428,
-          "wall_long_s": 2.5417905263602734
+          "wall_short_s": 0.4923565648496151,
+          "wall_long_s": 2.625657122582197
         }
       ],
-      "dT_ms": 3.464483981952071,
-      "dT_per_rider_ms": 3.464483981952071,
+      "dT_ms": 3.4812685567885637,
+      "dT_per_rider_ms": 3.4812685567885637,
       "link_ms": 1.6961030119521912,
-      "eta": -1.042614132242179
+      "eta": -1.0525100965310306
     },
     {
       "riders": 2,
-      "step_ms": 52.37205410376191,
-      "step_ms_direct": 52.320469,
-      "step_ms_delta_pct": -0.0984973849979339,
+      "step_ms": 52.46703461743891,
+      "step_ms_direct": 52.247789,
+      "step_ms_delta_pct": -0.41787308743010704,
       "stream_gb_per_step": 0.0851443712,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.0851443712,
@@ -647,7 +647,7 @@
       "reps": [
         {
           "riders_requested": 2,
-          "step_ms": 52.22253412939608,
+          "step_ms": 52.867575688287616,
           "purity": {
             "ok": true,
             "long": {
@@ -667,11 +667,11 @@
               "cpu_max": 2,
               "hbm_mode": 16,
               "cpu_mode": 2,
-              "step_ms_direct": 52.29047,
+              "step_ms_direct": 52.310599,
               "n_intervals": 47,
-              "step_ms_direct_p10": 51.839522,
-              "step_ms_direct_p90": 53.459306,
-              "step_ms_direct_iqr": 0.43169800000000436
+              "step_ms_direct_p10": 51.846617,
+              "step_ms_direct_p90": 53.770455,
+              "step_ms_direct_iqr": 0.5578660000000042
             },
             "short": {
               "n_steps": 8,
@@ -696,12 +696,12 @@
             "hbm": 16,
             "cpu": 2
           },
-          "wall_short_s": 0.5313505101948977,
-          "wall_long_s": 2.620251875370741
+          "wall_short_s": 0.5280525591224432,
+          "wall_long_s": 2.642755586653948
         },
         {
           "riders_requested": 2,
-          "step_ms": 52.37205410376191,
+          "step_ms": 52.46703461743891,
           "purity": {
             "ok": true,
             "long": {
@@ -721,11 +721,11 @@
               "cpu_max": 2,
               "hbm_mode": 16,
               "cpu_mode": 2,
-              "step_ms_direct": 52.281476,
+              "step_ms_direct": 52.215366,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.002154,
-              "step_ms_direct_p90": 52.658415,
-              "step_ms_direct_iqr": 0.3564280000000011
+              "step_ms_direct_p10": 51.973484,
+              "step_ms_direct_p90": 52.515709,
+              "step_ms_direct_iqr": 0.3105600000000024
             },
             "short": {
               "n_steps": 8,
@@ -750,12 +750,12 @@
             "hbm": 16,
             "cpu": 2
           },
-          "wall_short_s": 0.521510312333703,
-          "wall_long_s": 2.6163924764841795
+          "wall_short_s": 0.5216809436678886,
+          "wall_long_s": 2.620362328365445
         },
         {
           "riders_requested": 2,
-          "step_ms": 52.72781066596508,
+          "step_ms": 53.59126585535705,
           "purity": {
             "ok": true,
             "long": {
@@ -775,11 +775,11 @@
               "cpu_max": 2,
               "hbm_mode": 16,
               "cpu_mode": 2,
-              "step_ms_direct": 52.34302,
+              "step_ms_direct": 52.269365,
               "n_intervals": 47,
-              "step_ms_direct_p10": 51.967403,
-              "step_ms_direct_p90": 53.180111,
-              "step_ms_direct_iqr": 0.30616799999999955
+              "step_ms_direct_p10": 51.817975,
+              "step_ms_direct_p90": 53.346438,
+              "step_ms_direct_iqr": 0.40990599999999944
             },
             "short": {
               "n_steps": 8,
@@ -804,12 +804,12 @@
             "hbm": 16,
             "cpu": 2
           },
-          "wall_short_s": 0.5209017489105463,
-          "wall_long_s": 2.6300141755491495
+          "wall_short_s": 0.5456592533737421,
+          "wall_long_s": 2.689309887588024
         },
         {
           "riders_requested": 2,
-          "step_ms": 52.48977025039494,
+          "step_ms": 52.28918478824198,
           "purity": {
             "ok": true,
             "long": {
@@ -829,11 +829,11 @@
               "cpu_max": 2,
               "hbm_mode": 16,
               "cpu_mode": 2,
-              "step_ms_direct": 52.320469,
+              "step_ms_direct": 52.247789,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.025762,
-              "step_ms_direct_p90": 52.692202,
-              "step_ms_direct_iqr": 0.30439400000000205
+              "step_ms_direct_p10": 51.598075,
+              "step_ms_direct_p90": 53.258613,
+              "step_ms_direct_iqr": 0.5254620000000045
             },
             "short": {
               "n_steps": 8,
@@ -858,12 +858,12 @@
             "hbm": 16,
             "cpu": 2
           },
-          "wall_short_s": 0.5202289540320635,
-          "wall_long_s": 2.619819764047861
+          "wall_short_s": 0.5203971099108458,
+          "wall_long_s": 2.611964501440525
         },
         {
           "riders_requested": 2,
-          "step_ms": 52.36798599362373,
+          "step_ms": 52.22034086473286,
           "purity": {
             "ok": true,
             "long": {
@@ -883,11 +883,11 @@
               "cpu_max": 2,
               "hbm_mode": 16,
               "cpu_mode": 2,
-              "step_ms_direct": 52.378703,
+              "step_ms_direct": 52.220904,
               "n_intervals": 47,
-              "step_ms_direct_p10": 51.958981,
-              "step_ms_direct_p90": 52.737923,
-              "step_ms_direct_iqr": 0.41070699999999505
+              "step_ms_direct_p10": 51.924484,
+              "step_ms_direct_p90": 52.568892,
+              "step_ms_direct_iqr": 0.3016099999999966
             },
             "short": {
               "n_steps": 8,
@@ -912,20 +912,20 @@
             "hbm": 16,
             "cpu": 2
           },
-          "wall_short_s": 0.5219051912426949,
-          "wall_long_s": 2.616624630987644
+          "wall_short_s": 0.520600525662303,
+          "wall_long_s": 2.6094141602516174
         }
       ],
-      "dT_ms": 4.6153908129781485,
-      "dT_per_rider_ms": 2.3076954064890742,
+      "dT_ms": 4.713303642347455,
+      "dT_per_rider_ms": 2.3566518211737275,
       "link_ms": 3.3922060239043823,
-      "eta": -0.36058682180685997
+      "eta": -0.38945087920176125
     },
     {
       "riders": 3,
-      "step_ms": 52.6874384842813,
-      "step_ms_direct": 52.571392,
-      "step_ms_delta_pct": -0.22025455710077774,
+      "step_ms": 52.577812038362026,
+      "step_ms_direct": 52.535579,
+      "step_ms_delta_pct": -0.08032483042697461,
       "stream_gb_per_step": 0.1277165568,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.1277165568,
@@ -940,7 +940,7 @@
       "reps": [
         {
           "riders_requested": 3,
-          "step_ms": 52.6874384842813,
+          "step_ms": 52.577812038362026,
           "purity": {
             "ok": true,
             "long": {
@@ -960,11 +960,11 @@
               "cpu_max": 3,
               "hbm_mode": 16,
               "cpu_mode": 3,
-              "step_ms_direct": 52.556304,
+              "step_ms_direct": 52.535579,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.122698,
-              "step_ms_direct_p90": 53.127592,
-              "step_ms_direct_iqr": 0.4100839999999977
+              "step_ms_direct_p10": 52.287714,
+              "step_ms_direct_p90": 52.834115,
+              "step_ms_direct_iqr": 0.28655299999999784
             },
             "short": {
               "n_steps": 8,
@@ -989,12 +989,12 @@
             "hbm": 16,
             "cpu": 3
           },
-          "wall_short_s": 0.545046204701066,
-          "wall_long_s": 2.652543744072318
+          "wall_short_s": 0.5416721198707819,
+          "wall_long_s": 2.644784601405263
         },
         {
           "riders_requested": 3,
-          "step_ms": 52.733912505209446,
+          "step_ms": 52.61021014302969,
           "purity": {
             "ok": true,
             "long": {
@@ -1014,11 +1014,11 @@
               "cpu_max": 3,
               "hbm_mode": 16,
               "cpu_mode": 3,
-              "step_ms_direct": 52.573961,
+              "step_ms_direct": 52.530513,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.122086,
-              "step_ms_direct_p90": 52.862151,
-              "step_ms_direct_iqr": 0.34009900000000215
+              "step_ms_direct_p10": 52.098465,
+              "step_ms_direct_p90": 53.0416,
+              "step_ms_direct_iqr": 0.3718420000000009
             },
             "short": {
               "n_steps": 8,
@@ -1043,12 +1043,12 @@
             "hbm": 16,
             "cpu": 3
           },
-          "wall_short_s": 0.5421053599566221,
-          "wall_long_s": 2.651461860165
+          "wall_short_s": 0.5405444912612438,
+          "wall_long_s": 2.6449528969824314
         },
         {
           "riders_requested": 3,
-          "step_ms": 52.52473866567016,
+          "step_ms": 52.54216827452183,
           "purity": {
             "ok": true,
             "long": {
@@ -1068,11 +1068,11 @@
               "cpu_max": 3,
               "hbm_mode": 16,
               "cpu_mode": 3,
-              "step_ms_direct": 52.571392,
+              "step_ms_direct": 52.523377,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.22767,
-              "step_ms_direct_p90": 52.876523,
-              "step_ms_direct_iqr": 0.34200400000000286
+              "step_ms_direct_p10": 52.152771,
+              "step_ms_direct_p90": 52.78413,
+              "step_ms_direct_iqr": 0.26186000000000575
             },
             "short": {
               "n_steps": 8,
@@ -1097,12 +1097,12 @@
             "hbm": 16,
             "cpu": 3
           },
-          "wall_short_s": 0.5463057234883308,
-          "wall_long_s": 2.647295270115137
+          "wall_short_s": 0.5421294569969177,
+          "wall_long_s": 2.643816187977791
         },
         {
           "riders_requested": 3,
-          "step_ms": 52.52769780345261,
+          "step_ms": 53.46145946532488,
           "purity": {
             "ok": true,
             "long": {
@@ -1122,11 +1122,11 @@
               "cpu_max": 3,
               "hbm_mode": 16,
               "cpu_mode": 3,
-              "step_ms_direct": 52.515318,
+              "step_ms_direct": 52.602114,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.232113,
-              "step_ms_direct_p90": 52.953306,
-              "step_ms_direct_iqr": 0.21034999999999826
+              "step_ms_direct_p10": 52.092629,
+              "step_ms_direct_p90": 54.889595,
+              "step_ms_direct_iqr": 0.7115689999999972
             },
             "short": {
               "n_steps": 8,
@@ -1151,12 +1151,12 @@
             "hbm": 16,
             "cpu": 3
           },
-          "wall_short_s": 0.5459767282009125,
-          "wall_long_s": 2.647084640339017
+          "wall_short_s": 0.5433507785201073,
+          "wall_long_s": 2.6818091571331024
         },
         {
           "riders_requested": 3,
-          "step_ms": 52.702971594408154,
+          "step_ms": 52.54423534497619,
           "purity": {
             "ok": true,
             "long": {
@@ -1176,11 +1176,11 @@
               "cpu_max": 3,
               "hbm_mode": 16,
               "cpu_mode": 3,
-              "step_ms_direct": 52.609348,
+              "step_ms_direct": 52.657714,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.245744,
-              "step_ms_direct_p90": 52.947191,
-              "step_ms_direct_iqr": 0.36294199999999677
+              "step_ms_direct_p10": 52.355768,
+              "step_ms_direct_p90": 53.057441,
+              "step_ms_direct_iqr": 0.28947000000000145
             },
             "short": {
               "n_steps": 8,
@@ -1205,20 +1205,20 @@
             "hbm": 16,
             "cpu": 3
           },
-          "wall_short_s": 0.5445609446614981,
-          "wall_long_s": 2.6526798084378242
+          "wall_short_s": 0.5500774011015892,
+          "wall_long_s": 2.6518468149006367
         }
       ],
-      "dT_ms": 4.930775193497539,
-      "dT_per_rider_ms": 1.6435917311658461,
+      "dT_ms": 4.824081063270569,
+      "dT_per_rider_ms": 1.6080270210901897,
       "link_ms": 5.0883090358565735,
-      "eta": 0.0309599596347071
+      "eta": 0.05192844434644761
     },
     {
       "riders": 4,
-      "step_ms": 52.93408459983766,
-      "step_ms_direct": 53.005369,
-      "step_ms_delta_pct": 0.13466635099336272,
+      "step_ms": 52.98664071597159,
+      "step_ms_direct": 53.001779,
+      "step_ms_delta_pct": 0.028570001464250053,
       "stream_gb_per_step": 0.1702887424,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.1702887424,
@@ -1233,7 +1233,7 @@
       "reps": [
         {
           "riders_requested": 4,
-          "step_ms": 53.367742942646146,
+          "step_ms": 53.03174238651991,
           "purity": {
             "ok": true,
             "long": {
@@ -1253,11 +1253,11 @@
               "cpu_max": 4,
               "hbm_mode": 16,
               "cpu_mode": 4,
-              "step_ms_direct": 53.005369,
+              "step_ms_direct": 53.001779,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.519873,
-              "step_ms_direct_p90": 53.397394,
-              "step_ms_direct_iqr": 0.2959019999999981
+              "step_ms_direct_p10": 52.498138,
+              "step_ms_direct_p90": 53.368377,
+              "step_ms_direct_iqr": 0.4233830000000012
             },
             "short": {
               "n_steps": 8,
@@ -1282,12 +1282,12 @@
             "hbm": 16,
             "cpu": 4
           },
-          "wall_short_s": 0.5688620209693909,
-          "wall_long_s": 2.7035717386752367
+          "wall_short_s": 0.5654030200093985,
+          "wall_long_s": 2.686672715470195
         },
         {
           "riders_requested": 4,
-          "step_ms": 50.66077862866223,
+          "step_ms": 52.83933700993657,
           "purity": {
             "ok": true,
             "long": {
@@ -1307,11 +1307,11 @@
               "cpu_max": 4,
               "hbm_mode": 16,
               "cpu_mode": 4,
-              "step_ms_direct": 53.055505,
+              "step_ms_direct": 53.046122,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.054599,
-              "step_ms_direct_p90": 54.559063,
-              "step_ms_direct_iqr": 0.8148949999999999
+              "step_ms_direct_p10": 52.607612,
+              "step_ms_direct_p90": 53.315274,
+              "step_ms_direct_iqr": 0.2821729999999931
             },
             "short": {
               "n_steps": 8,
@@ -1336,12 +1336,12 @@
             "hbm": 16,
             "cpu": 4
           },
-          "wall_short_s": 0.6649391073733568,
-          "wall_long_s": 2.691370252519846
+          "wall_short_s": 0.5773971043527126,
+          "wall_long_s": 2.6909705847501755
         },
         {
           "riders_requested": 4,
-          "step_ms": 52.93408459983766,
+          "step_ms": 52.94153904542327,
           "purity": {
             "ok": true,
             "long": {
@@ -1361,11 +1361,11 @@
               "cpu_max": 4,
               "hbm_mode": 16,
               "cpu_mode": 4,
-              "step_ms_direct": 52.981885,
+              "step_ms_direct": 53.004512,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.587247,
-              "step_ms_direct_p90": 53.307188,
-              "step_ms_direct_iqr": 0.3260920000000027
+              "step_ms_direct_p10": 52.73154,
+              "step_ms_direct_p90": 53.393932,
+              "step_ms_direct_iqr": 0.3950849999999946
             },
             "short": {
               "n_steps": 8,
@@ -1390,12 +1390,12 @@
             "hbm": 16,
             "cpu": 4
           },
-          "wall_short_s": 0.5703826416283846,
-          "wall_long_s": 2.687746025621891
+          "wall_short_s": 0.5705372840166092,
+          "wall_long_s": 2.68819884583354
         },
         {
           "riders_requested": 4,
-          "step_ms": 53.065705159679055,
+          "step_ms": 55.33056100830436,
           "purity": {
             "ok": true,
             "long": {
@@ -1415,11 +1415,11 @@
               "cpu_max": 4,
               "hbm_mode": 16,
               "cpu_mode": 4,
-              "step_ms_direct": 52.906603,
+              "step_ms_direct": 52.989232,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.472344,
-              "step_ms_direct_p90": 53.986735,
-              "step_ms_direct_iqr": 0.4748179999999991
+              "step_ms_direct_p10": 52.644264,
+              "step_ms_direct_p90": 66.240645,
+              "step_ms_direct_iqr": 0.41385199999999855
             },
             "short": {
               "n_steps": 8,
@@ -1444,12 +1444,12 @@
             "hbm": 16,
             "cpu": 4
           },
-          "wall_short_s": 0.5665766261518002,
-          "wall_long_s": 2.6892048325389624
+          "wall_short_s": 0.5640648286789656,
+          "wall_long_s": 2.77728726901114
         },
         {
           "riders_requested": 4,
-          "step_ms": 52.9005772434175,
+          "step_ms": 29.302252270281315,
           "purity": {
             "ok": true,
             "long": {
@@ -1469,11 +1469,11 @@
               "cpu_max": 4,
               "hbm_mode": 16,
               "cpu_mode": 4,
-              "step_ms_direct": 53.030016,
+              "step_ms_direct": 52.958399,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.459589,
-              "step_ms_direct_p90": 53.647341,
-              "step_ms_direct_iqr": 0.2644680000000008
+              "step_ms_direct_p10": 52.583315,
+              "step_ms_direct_p90": 53.283891,
+              "step_ms_direct_iqr": 0.45817300000000216
             },
             "short": {
               "n_steps": 8,
@@ -1498,20 +1498,20 @@
             "hbm": 16,
             "cpu": 4
           },
-          "wall_short_s": 0.575689647346735,
-          "wall_long_s": 2.691712737083435
+          "wall_short_s": 1.512985486537218,
+          "wall_long_s": 2.6850755773484707
         }
       ],
-      "dT_ms": 5.177421309053898,
-      "dT_per_rider_ms": 1.2943553272634745,
+      "dT_ms": 5.232909740880132,
+      "dT_per_rider_ms": 1.308227435220033,
       "link_ms": 6.784412047808765,
-      "eta": 0.23686514430884165
+      "eta": 0.2286863321383521
     },
     {
       "riders": 5,
-      "step_ms": 53.40411537326872,
-      "step_ms_direct": 53.492212,
-      "step_ms_delta_pct": 0.1649622432944093,
+      "step_ms": 53.48010445013642,
+      "step_ms_direct": 53.371642,
+      "step_ms_delta_pct": -0.20280897214318186,
       "stream_gb_per_step": 0.212860928,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.212860928,
@@ -1526,7 +1526,7 @@
       "reps": [
         {
           "riders_requested": 5,
-          "step_ms": 53.44554181210697,
+          "step_ms": 53.48010445013642,
           "purity": {
             "ok": true,
             "long": {
@@ -1546,11 +1546,11 @@
               "cpu_max": 5,
               "hbm_mode": 16,
               "cpu_mode": 5,
-              "step_ms_direct": 53.444911,
+              "step_ms_direct": 53.384927,
               "n_intervals": 47,
-              "step_ms_direct_p10": 52.999705,
-              "step_ms_direct_p90": 53.914452,
-              "step_ms_direct_iqr": 0.40886799999999823
+              "step_ms_direct_p10": 52.662756,
+              "step_ms_direct_p90": 54.670868,
+              "step_ms_direct_iqr": 0.5036770000000033
             },
             "short": {
               "n_steps": 8,
@@ -1575,12 +1575,12 @@
             "hbm": 16,
             "cpu": 5
           },
-          "wall_short_s": 0.5908280685544014,
-          "wall_long_s": 2.72864974103868
+          "wall_short_s": 0.5872943699359894,
+          "wall_long_s": 2.7264985479414463
         },
         {
           "riders_requested": 5,
-          "step_ms": 53.33956875838339,
+          "step_ms": 52.753263618797064,
           "purity": {
             "ok": true,
             "long": {
@@ -1600,11 +1600,11 @@
               "cpu_max": 5,
               "hbm_mode": 16,
               "cpu_mode": 5,
-              "step_ms_direct": 53.492212,
+              "step_ms_direct": 53.305581,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.027365,
-              "step_ms_direct_p90": 53.996177,
-              "step_ms_direct_iqr": 0.48034799999999933
+              "step_ms_direct_p10": 52.999206,
+              "step_ms_direct_p90": 53.615282,
+              "step_ms_direct_iqr": 0.2504159999999942
             },
             "short": {
               "n_steps": 8,
@@ -1629,12 +1629,12 @@
             "hbm": 16,
             "cpu": 5
           },
-          "wall_short_s": 0.5962660312652588,
-          "wall_long_s": 2.7298487816005945
+          "wall_short_s": 0.6084349788725376,
+          "wall_long_s": 2.71856552362442
         },
         {
           "riders_requested": 5,
-          "step_ms": 53.40411537326872,
+          "step_ms": 53.32615654915571,
           "purity": {
             "ok": true,
             "long": {
@@ -1654,11 +1654,11 @@
               "cpu_max": 5,
               "hbm_mode": 16,
               "cpu_mode": 5,
-              "step_ms_direct": 53.510689,
+              "step_ms_direct": 53.363986,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.169873,
-              "step_ms_direct_p90": 53.776301,
-              "step_ms_direct_iqr": 0.35555300000000045
+              "step_ms_direct_p10": 52.986943,
+              "step_ms_direct_p90": 53.744088,
+              "step_ms_direct_iqr": 0.37095099999999803
             },
             "short": {
               "n_steps": 8,
@@ -1683,12 +1683,12 @@
             "hbm": 16,
             "cpu": 5
           },
-          "wall_short_s": 0.5957715213298798,
-          "wall_long_s": 2.7319361362606287
+          "wall_short_s": 0.5854426603764296,
+          "wall_long_s": 2.718488922342658
         },
         {
           "riders_requested": 5,
-          "step_ms": 53.81577596999705,
+          "step_ms": 55.31135522760451,
           "purity": {
             "ok": true,
             "long": {
@@ -1708,11 +1708,11 @@
               "cpu_max": 5,
               "hbm_mode": 16,
               "cpu_mode": 5,
-              "step_ms_direct": 53.49076,
+              "step_ms_direct": 53.466401,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.004883,
-              "step_ms_direct_p90": 54.160539,
-              "step_ms_direct_iqr": 0.42980099999999766
+              "step_ms_direct_p10": 52.904754,
+              "step_ms_direct_p90": 66.350194,
+              "step_ms_direct_iqr": 0.46684700000000134
             },
             "short": {
               "n_steps": 8,
@@ -1737,12 +1737,12 @@
             "hbm": 16,
             "cpu": 5
           },
-          "wall_short_s": 0.5915584545582533,
-          "wall_long_s": 2.7441894933581352
+          "wall_short_s": 0.5850618667900562,
+          "wall_long_s": 2.7975160758942366
         },
         {
           "riders_requested": 5,
-          "step_ms": 52.847319608554244,
+          "step_ms": 53.493098821491,
           "purity": {
             "ok": true,
             "long": {
@@ -1762,11 +1762,11 @@
               "cpu_max": 5,
               "hbm_mode": 16,
               "cpu_mode": 5,
-              "step_ms_direct": 53.496905,
+              "step_ms_direct": 53.371642,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.142387,
-              "step_ms_direct_p90": 53.790451,
-              "step_ms_direct_iqr": 0.3077210000000008
+              "step_ms_direct_p10": 52.93834,
+              "step_ms_direct_p90": 53.937437,
+              "step_ms_direct_iqr": 0.37703900000000345
             },
             "short": {
               "n_steps": 8,
@@ -1791,20 +1791,20 @@
             "hbm": 16,
             "cpu": 5
           },
-          "wall_short_s": 0.6610347982496023,
-          "wall_long_s": 2.774927582591772
+          "wall_short_s": 0.5856917686760426,
+          "wall_long_s": 2.7254157215356827
         }
       ],
-      "dT_ms": 5.647452082484961,
-      "dT_per_rider_ms": 1.1294904164969921,
+      "dT_ms": 5.726373475044966,
+      "dT_per_rider_ms": 1.1452746950089931,
       "link_ms": 8.480515059760956,
-      "eta": 0.33406732460373134
+      "eta": 0.3247611218549764
     },
     {
       "riders": 6,
-      "step_ms": 53.92035339027643,
-      "step_ms_direct": 53.817336,
-      "step_ms_delta_pct": -0.19105473870097442,
+      "step_ms": 53.91126307658851,
+      "step_ms_direct": 53.819669,
+      "step_ms_delta_pct": -0.16989784946865685,
       "stream_gb_per_step": 0.2554331136,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.2554331136,
@@ -1819,7 +1819,7 @@
       "reps": [
         {
           "riders_requested": 6,
-          "step_ms": 54.037227435037494,
+          "step_ms": 53.91126307658851,
           "purity": {
             "ok": true,
             "long": {
@@ -1839,11 +1839,11 @@
               "cpu_max": 6,
               "hbm_mode": 16,
               "cpu_mode": 6,
-              "step_ms_direct": 53.817336,
+              "step_ms_direct": 53.779577,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.367261,
-              "step_ms_direct_p90": 54.208482,
-              "step_ms_direct_iqr": 0.33142200000000344
+              "step_ms_direct_p10": 53.262257,
+              "step_ms_direct_p90": 54.402609,
+              "step_ms_direct_iqr": 0.6123869999999982
             },
             "short": {
               "n_steps": 8,
@@ -1868,12 +1868,12 @@
             "hbm": 16,
             "cpu": 6
           },
-          "wall_short_s": 0.615698978304863,
-          "wall_long_s": 2.7771880757063627
+          "wall_short_s": 0.6108677443116903,
+          "wall_long_s": 2.767318267375231
         },
         {
           "riders_requested": 6,
-          "step_ms": 54.928766656666994,
+          "step_ms": 53.639638517051935,
           "purity": {
             "ok": true,
             "long": {
@@ -1893,11 +1893,11 @@
               "cpu_max": 6,
               "hbm_mode": 16,
               "cpu_mode": 6,
-              "step_ms_direct": 53.836596,
+              "step_ms_direct": 53.855483,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.438726,
-              "step_ms_direct_p90": 66.927491,
-              "step_ms_direct_iqr": 0.3903700000000043
+              "step_ms_direct_p10": 53.514156,
+              "step_ms_direct_p90": 54.224394,
+              "step_ms_direct_iqr": 0.37490600000000285
             },
             "short": {
               "n_steps": 8,
@@ -1922,12 +1922,12 @@
             "hbm": 16,
             "cpu": 6
           },
-          "wall_short_s": 0.6263719610869884,
-          "wall_long_s": 2.823522627353668
+          "wall_short_s": 0.6228232383728027,
+          "wall_long_s": 2.76840877905488
         },
         {
           "riders_requested": 6,
-          "step_ms": 53.79232517443597,
+          "step_ms": 54.5147237367928,
           "purity": {
             "ok": true,
             "long": {
@@ -1947,11 +1947,11 @@
               "cpu_max": 6,
               "hbm_mode": 16,
               "cpu_mode": 6,
-              "step_ms_direct": 53.855495,
+              "step_ms_direct": 53.849066,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.387864,
-              "step_ms_direct_p90": 54.129132,
-              "step_ms_direct_iqr": 0.4149499999999975
+              "step_ms_direct_p10": 53.371041,
+              "step_ms_direct_p90": 54.36198,
+              "step_ms_direct_iqr": 0.4590689999999995
             },
             "short": {
               "n_steps": 8,
@@ -1976,12 +1976,12 @@
             "hbm": 16,
             "cpu": 6
           },
-          "wall_short_s": 0.6169656366109848,
-          "wall_long_s": 2.7686586435884237
+          "wall_short_s": 0.6141142062842846,
+          "wall_long_s": 2.7947031557559967
         },
         {
           "riders_requested": 6,
-          "step_ms": 53.92035339027643,
+          "step_ms": 53.790576197206974,
           "purity": {
             "ok": true,
             "long": {
@@ -2001,11 +2001,11 @@
               "cpu_max": 6,
               "hbm_mode": 16,
               "cpu_mode": 6,
-              "step_ms_direct": 53.743365,
+              "step_ms_direct": 53.706713,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.323817,
-              "step_ms_direct_p90": 54.888369,
-              "step_ms_direct_iqr": 0.39079900000000123
+              "step_ms_direct_p10": 53.226138,
+              "step_ms_direct_p90": 54.178913,
+              "step_ms_direct_iqr": 0.4269400000000019
             },
             "short": {
               "n_steps": 8,
@@ -2030,12 +2030,12 @@
             "hbm": 16,
             "cpu": 6
           },
-          "wall_short_s": 0.6145016979426146,
-          "wall_long_s": 2.771315833553672
+          "wall_short_s": 0.6140500269830227,
+          "wall_long_s": 2.7656730748713017
         },
         {
           "riders_requested": 6,
-          "step_ms": 53.760793805122375,
+          "step_ms": 54.18398240581155,
           "purity": {
             "ok": true,
             "long": {
@@ -2055,11 +2055,11 @@
               "cpu_max": 6,
               "hbm_mode": 16,
               "cpu_mode": 6,
-              "step_ms_direct": 53.746825,
+              "step_ms_direct": 53.819669,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.379734,
-              "step_ms_direct_p90": 54.156562,
-              "step_ms_direct_iqr": 0.35283799999999843
+              "step_ms_direct_p10": 53.360735,
+              "step_ms_direct_p90": 54.449457,
+              "step_ms_direct_iqr": 0.4672470000000004
             },
             "short": {
               "n_steps": 8,
@@ -2084,20 +2084,20 @@
             "hbm": 16,
             "cpu": 6
           },
-          "wall_short_s": 0.6173228286206722,
-          "wall_long_s": 2.7677545808255672
+          "wall_short_s": 0.6099431440234184,
+          "wall_long_s": 2.7773024402558804
         }
       ],
-      "dT_ms": 6.163690099492669,
-      "dT_per_rider_ms": 1.027281683248778,
+      "dT_ms": 6.157532101497054,
+      "dT_per_rider_ms": 1.026255350249509,
       "link_ms": 10.176618071713147,
-      "eta": 0.39432824774811814
+      "eta": 0.39493336016878877
     },
     {
       "riders": 8,
-      "step_ms": 54.98718931339681,
-      "step_ms_direct": 54.801405,
-      "step_ms_delta_pct": -0.3378683575513203,
+      "step_ms": 54.99551857355982,
+      "step_ms_direct": 54.769519,
+      "step_ms_delta_pct": -0.4109417992986648,
       "stream_gb_per_step": 0.3405774848,
       "writeback_gb_per_step": 0.0,
       "nominal_gb_per_step": 0.3405774848,
@@ -2112,7 +2112,7 @@
       "reps": [
         {
           "riders_requested": 8,
-          "step_ms": 55.227282736450434,
+          "step_ms": 23.40148063376546,
           "purity": {
             "ok": true,
             "long": {
@@ -2132,11 +2132,11 @@
               "cpu_max": 8,
               "hbm_mode": 16,
               "cpu_mode": 8,
-              "step_ms_direct": 54.795558,
+              "step_ms_direct": 54.632083,
               "n_intervals": 47,
-              "step_ms_direct_p10": 54.377497,
-              "step_ms_direct_p90": 55.189127,
-              "step_ms_direct_iqr": 0.4385380000000012
+              "step_ms_direct_p10": 54.091804,
+              "step_ms_direct_p90": 55.858083,
+              "step_ms_direct_iqr": 0.5166830000000004
             },
             "short": {
               "n_steps": 8,
@@ -2161,12 +2161,12 @@
             "hbm": 16,
             "cpu": 8
           },
-          "wall_short_s": 0.6596693526953459,
-          "wall_long_s": 2.8687606621533632
+          "wall_short_s": 1.9195039868354797,
+          "wall_long_s": 2.855563212186098
         },
         {
           "riders_requested": 8,
-          "step_ms": 59.20115835033357,
+          "step_ms": 54.788524797186255,
           "purity": {
             "ok": true,
             "long": {
@@ -2186,11 +2186,11 @@
               "cpu_max": 8,
               "hbm_mode": 16,
               "cpu_mode": 8,
-              "step_ms_direct": 54.938279,
+              "step_ms_direct": 54.667461,
               "n_intervals": 47,
-              "step_ms_direct_p10": 53.916216,
-              "step_ms_direct_p90": 68.235155,
-              "step_ms_direct_iqr": 1.6613330000000062
+              "step_ms_direct_p10": 54.203604,
+              "step_ms_direct_p90": 55.034328,
+              "step_ms_direct_iqr": 0.3933109999999971
             },
             "short": {
               "n_steps": 8,
@@ -2215,12 +2215,12 @@
             "hbm": 16,
             "cpu": 8
           },
-          "wall_short_s": 0.6543448176234961,
-          "wall_long_s": 3.022391151636839
+          "wall_short_s": 0.6552341990172863,
+          "wall_long_s": 2.8467751909047365
         },
         {
           "riders_requested": 8,
-          "step_ms": 54.82001323252916,
+          "step_ms": 59.9426724947989,
           "purity": {
             "ok": true,
             "long": {
@@ -2240,11 +2240,11 @@
               "cpu_max": 8,
               "hbm_mode": 16,
               "cpu_mode": 8,
-              "step_ms_direct": 54.747759,
+              "step_ms_direct": 54.769519,
               "n_intervals": 47,
-              "step_ms_direct_p10": 54.355198,
-              "step_ms_direct_p90": 55.165825,
-              "step_ms_direct_iqr": 0.3800910000000002
+              "step_ms_direct_p10": 54.195813,
+              "step_ms_direct_p90": 68.271569,
+              "step_ms_direct_iqr": 13.588599999999992
             },
             "short": {
               "n_steps": 8,
@@ -2269,12 +2269,12 @@
             "hbm": 16,
             "cpu": 8
           },
-          "wall_short_s": 0.658218139782548,
-          "wall_long_s": 2.8510186690837145
+          "wall_short_s": 0.6543031483888626,
+          "wall_long_s": 3.0520100481808186
         },
         {
           "riders_requested": 8,
-          "step_ms": 53.35847777314484,
+          "step_ms": 54.9860411323607,
           "purity": {
             "ok": true,
             "long": {
@@ -2294,11 +2294,11 @@
               "cpu_max": 8,
               "hbm_mode": 16,
               "cpu_mode": 8,
-              "step_ms_direct": 54.801405,
+              "step_ms_direct": 54.823606,
               "n_intervals": 47,
-              "step_ms_direct_p10": 54.363898,
-              "step_ms_direct_p90": 56.447005,
-              "step_ms_direct_iqr": 0.5797179999999997
+              "step_ms_direct_p10": 54.421482,
+              "step_ms_direct_p90": 55.858053,
+              "step_ms_direct_iqr": 0.4745890000000017
             },
             "short": {
               "n_steps": 8,
@@ -2323,12 +2323,12 @@
             "hbm": 16,
             "cpu": 8
           },
-          "wall_short_s": 0.7347339168190956,
-          "wall_long_s": 2.8690730277448893
+          "wall_short_s": 0.6629365626722574,
+          "wall_long_s": 2.8623782079666853
         },
         {
           "riders_requested": 8,
-          "step_ms": 54.98718931339681,
+          "step_ms": 55.004996014758945,
           "purity": {
             "ok": true,
             "long": {
@@ -2348,11 +2348,11 @@
               "cpu_max": 8,
               "hbm_mode": 16,
               "cpu_mode": 8,
-              "step_ms_direct": 54.828498,
+              "step_ms_direct": 54.791036,
               "n_intervals": 47,
-              "step_ms_direct_p10": 54.405154,
-              "step_ms_direct_p90": 55.401539,
-              "step_ms_direct_iqr": 0.38326699999999647
+              "step_ms_direct_p10": 54.396533,
+              "step_ms_direct_p90": 55.939463,
+              "step_ms_direct_iqr": 0.6266419999999968
             },
             "short": {
               "n_steps": 8,
@@ -2377,14 +2377,14 @@
             "hbm": 16,
             "cpu": 8
           },
-          "wall_short_s": 0.6610780116170645,
-          "wall_long_s": 2.860565584152937
+          "wall_short_s": 0.6636555436998606,
+          "wall_long_s": 2.8638553842902184
         }
       ],
-      "dT_ms": 7.2305260226130486,
-      "dT_per_rider_ms": 0.9038157528266311,
+      "dT_ms": 7.241787598468363,
+      "dT_per_rider_ms": 0.9052234498085454,
       "link_ms": 13.56882409561753,
-      "eta": 0.4671221344119001
+      "eta": 0.46629217480921414
     }
   ]
 }
