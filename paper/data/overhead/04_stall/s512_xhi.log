@@ -1,0 +1,530 @@
+==================================================================
+ 4.2b RIDER COST CURVE   Qwen/Qwen2.5-32B-Instruct
+ ctx 512  batch 16 (fixed)  riders [0, 20, 24]
+ step time by differencing 24 vs 136 tokens -- prefill cancels
+ rig: DECODE NODE (connector, prefill skipped)
+==================================================================
+INFO 10-01 10:50:30 [utils.py:267] non-default args: {'dtype': 'float16', 'max_model_len': 712, 'enable_prefix_caching': False, 'max_num_seqs': 40, 'enforce_eager': True, 'kv_transfer_config': KVTransferConfig(kv_connector='PipelinedDecodeBenchConnector', engine_id='b8f04b96-4476-4079-93fe-004628f531e3', kv_buffer_device='cuda', kv_buffer_size=1000000000.0, kv_role='kv_both', kv_rank=None, kv_parallel_size=1, kv_ip='127.0.0.1', kv_port=14579, kv_connector_extra_config={'fill_mean': 0.015, 'fill_std': 0.0}, kv_connector_module_path=None, enable_permute_local_kv=False, kv_load_failure_policy='recompute'), 'enable_transfer_aware_admission': True, 'enable_hybrid_kv_tiers': True, 'hybrid_b_hbm_max': 16, 'hybrid_pcie_gbps': 25.1, 'hybrid_itl_ms': 1000000000.0, 'model': 'Qwen/Qwen2.5-32B-Instruct'}
+WARNING 10-01 10:50:30 [arg_utils.py:1322] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-01 10:50:31 [model.py:530] Resolved architecture: Qwen2ForCausalLM
+WARNING 10-01 10:50:31 [model.py:1871] Casting torch.bfloat16 to torch.float16.
+INFO 10-01 10:50:31 [model.py:1547] Using max model len 712
+INFO 10-01 10:50:31 [scheduler.py:301] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 10-01 10:50:31 [vllm.py:632] Asynchronous scheduling is enabled.
+INFO 10-01 10:50:31 [vllm.py:639] Disabling NCCL for DP synchronization when using async scheduling.
+WARNING 10-01 10:50:31 [vllm.py:667] Enforce eager set, overriding optimization level to -O0
+INFO 10-01 10:50:31 [vllm.py:767] Cudagraph is disabled under eager mode
+WARNING 10-01 10:50:31 [vllm.py:1027] Turning off hybrid kv cache manager because `--kv-transfer-config` is set. This will reduce the performance of vLLM on LLMs with sliding window attention or Mamba attention. If you are a developer of kv connector, please consider supporting hybrid kv cache manager for your connector by making sure your connector is a subclass of `SupportsHMA` defined in kv_connector/v1/base.py and use --no-disable-hybrid-kv-cache-manager to start vLLM.
+INFO 10-01 10:50:32 [core.py:96] Initializing a V1 LLM engine (v0.1.dev13032+g3661a60c1.d20260603) with config: model='Qwen/Qwen2.5-32B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2.5-32B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=712, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2.5-32B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'splitting_ops': [], 'compile_mm_encoder': False, 'compile_sizes': [], 'compile_ranges_split_points': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'eliminate_noops': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': True}, 'local_cache_dir': None}
+INFO 10-01 10:50:34 [parallel_state.py:1212] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://192.168.20.67:45495 backend=nccl
+INFO 10-01 10:50:35 [parallel_state.py:1423] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A
+INFO 10-01 10:50:35 [gpu_model_runner.py:4547] Starting to load model Qwen/Qwen2.5-32B-Instruct...
+/mnt/beegfs/benishay/vllm-kvpipe/.claude/worktrees/overhead-char/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+We recommend installing via `pip install torch-c-dlpack-ext`
+  warnings.warn(
+INFO 10-01 10:50:39 [cuda.py:351] Using FLASH_ATTN attention backend out of potential backends: ('FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION')
+INFO 10-01 10:50:42 [weight_utils.py:510] Time spent downloading weights for Qwen/Qwen2.5-32B-Instruct: 2.535665 seconds
+Loading safetensors checkpoint shards:   0% Completed | 0/17 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:   6% Completed | 1/17 [00:02<00:33,  2.08s/it]
+Loading safetensors checkpoint shards:  12% Completed | 2/17 [00:04<00:30,  2.06s/it]
+Loading safetensors checkpoint shards:  18% Completed | 3/17 [00:06<00:28,  2.04s/it]
+Loading safetensors checkpoint shards:  24% Completed | 4/17 [00:08<00:26,  2.04s/it]
+Loading safetensors checkpoint shards:  29% Completed | 5/17 [00:10<00:24,  2.06s/it]
+Loading safetensors checkpoint shards:  35% Completed | 6/17 [00:12<00:23,  2.12s/it]
+Loading safetensors checkpoint shards:  41% Completed | 7/17 [00:14<00:20,  2.07s/it]
+Loading safetensors checkpoint shards:  47% Completed | 8/17 [00:16<00:17,  1.94s/it]
+Loading safetensors checkpoint shards:  53% Completed | 9/17 [00:18<00:15,  2.00s/it]
+Loading safetensors checkpoint shards:  59% Completed | 10/17 [00:20<00:13,  2.00s/it]
+Loading safetensors checkpoint shards:  65% Completed | 11/17 [00:22<00:12,  2.03s/it]
+Loading safetensors checkpoint shards:  71% Completed | 12/17 [00:24<00:10,  2.05s/it]
+Loading safetensors checkpoint shards:  76% Completed | 13/17 [00:26<00:08,  2.03s/it]
+Loading safetensors checkpoint shards:  82% Completed | 14/17 [00:28<00:06,  2.06s/it]
+Loading safetensors checkpoint shards:  88% Completed | 15/17 [00:30<00:04,  2.03s/it]
+Loading safetensors checkpoint shards:  94% Completed | 16/17 [00:32<00:02,  2.09s/it]
+Loading safetensors checkpoint shards: 100% Completed | 17/17 [00:34<00:00,  2.05s/it]
+Loading safetensors checkpoint shards: 100% Completed | 17/17 [00:34<00:00,  2.04s/it]
+
+INFO 10-01 10:51:17 [default_loader.py:291] Loading weights took 34.82 seconds
+INFO 10-01 10:51:18 [gpu_model_runner.py:4644] Model loading took 61.04 GiB memory and 41.492660 seconds
+INFO 10-01 10:51:21 [gpu_worker.py:355] Available KV cache memory: 8.66 GiB
+INFO 10-01 10:51:21 [kv_cache_utils.py:1102] KV pipelining: hybrid tiers enabled — full HBM KV layout; CPU-tier transfers via CpuKvTable only.
+INFO 10-01 10:51:21 [kv_cache_utils.py:1574] GPU KV cache size: 35,472 tokens
+INFO 10-01 10:51:21 [kv_cache_utils.py:1579] Maximum concurrency for 712 tokens per request: 49.27x
+INFO 10-01 10:51:21 [factory.py:64] Creating v1 connector with name: PipelinedDecodeBenchConnector and engine_id: b8f04b96-4476-4079-93fe-004628f531e3
+WARNING 10-01 10:51:21 [base.py:166] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+INFO 10-01 10:51:21 [kv_pipelining_direct_window.py:107] DirectKWindow: wrap-around prefetch enabled (layers 60..63 save → prefetch 0..3); bootstrap off
+INFO 10-01 10:51:21 [utils.py:38] Connectors do not specify a kv cache layout, defaulting to NHD.
+INFO 10-01 10:51:21 [kv_pipelining_direct_window.py:289] DirectKWindow: 64 layers, unique GPU KV tensors=64 (expected 5 for K=4 decode_only=False), allocator GPU KV=8.66 GiB
+INFO 10-01 10:51:21 [core.py:293] init engine (profile, create kv cache, warmup model) took 3.51 seconds
+INFO 10-01 10:51:21 [transfer_aware_admission.py:201] hybrid KV bytes/token = 262144 (model-derived)
+INFO 10-01 10:51:21 [factory.py:64] Creating v1 connector with name: PipelinedDecodeBenchConnector and engine_id: b8f04b96-4476-4079-93fe-004628f531e3
+WARNING 10-01 10:51:21 [base.py:166] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+INFO 10-01 10:51:21 [kv_pipelining_direct_window.py:107] DirectKWindow: wrap-around prefetch enabled (layers 60..63 save → prefetch 0..3); bootstrap off
+INFO 10-01 10:51:22 [llm.py:347] Supported tasks: ('generate',)
+decode-purity gate attached (per-step, non-perturbing)
+
+warming up (one throwaway generation)
+INFO 10-01 10:51:22 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.085s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:22 [pipelined_decode_bench_connector.py:435] HYBRID cohort split: 16 hbm + 0 cpu decode reqs (stream_cpu=False, hbm_only_path=True)
+INFO 10-01 10:51:23 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.060s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:24 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.061s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:27 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 100: cumulative fill=0.206s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:51:31 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.069s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:32 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 200: cumulative fill=0.275s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:51:32 [loggers.py:257] Engine 000: Avg prompt throughput: 3206.3 tokens/s, Avg generation throughput: 313.1 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 23.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:51:32 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.060s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:37 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 300: cumulative fill=0.334s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 0 rep1: step   49.39 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep1] PURITY OK  steps=136 running=16 hbm=16 cpu=0 waiting_max=0 prefill_tok=0
+INFO 10-01 10:51:39 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.060s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:40 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.060s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:42 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 400: cumulative fill=0.455s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:51:42 [loggers.py:257] Engine 000: Avg prompt throughput: 2449.1 tokens/s, Avg generation throughput: 317.3 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 24.5%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:51:47 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 500: cumulative fill=0.455s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 0 rep2: step   49.50 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep2] PURITY OK  steps=136 running=16 hbm=16 cpu=0 waiting_max=0 prefill_tok=0
+INFO 10-01 10:51:47 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.069s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.060s, staged to CPU in 0.000s (16 requests)
+INFO 10-01 10:51:52 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 600: cumulative fill=0.584s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:51:52 [loggers.py:257] Engine 000: Avg prompt throughput: 1632.4 tokens/s, Avg generation throughput: 318.8 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 26.7%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+  r= 0 rep3: step   49.45 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep3] PURITY OK  steps=136 running=16 hbm=16 cpu=0 waiting_max=0 prefill_tok=0
+INFO 10-01 10:51:59 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.135s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 160-9d490cc9 (32 blocks total, 1080 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 161-81ae6b9e (64 blocks total, 1112 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 162-8e9fc7f2 (96 blocks total, 1144 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 163-815d00e0 (128 blocks total, 1176 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 164-b9578710 (160 blocks total, 1208 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 165-95fd851c (192 blocks total, 1240 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 166-8c8dd3d2 (224 blocks total, 1272 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 167-8af50920 (256 blocks total, 1304 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 168-b542963d (288 blocks total, 1336 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 169-bd2069be (320 blocks total, 1368 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 170-b17edc77 (352 blocks total, 1400 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 171-acff4b6f (384 blocks total, 1432 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 172-bd614a3d (416 blocks total, 1464 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 173-b283da43 (448 blocks total, 1496 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 174-868c7bbf (480 blocks total, 1528 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 175-8f3be28d (512 blocks total, 1560 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 176-bb4fc69a (544 blocks total, 1592 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 177-9df270d2 (576 blocks total, 1624 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 178-a6f91492 (608 blocks total, 1656 free)
+INFO 10-01 10:51:59 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 179-90dba22e (640 blocks total, 1688 free)
+INFO 10-01 10:52:02 [loggers.py:257] Engine 000: Avg prompt throughput: 1840.0 tokens/s, Avg generation throughput: 182.9 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 24.5%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:52:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.142s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 196-97189eb8 (672 blocks total, 1080 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 197-84fdaf5d (704 blocks total, 1112 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 198-b96581b5 (736 blocks total, 1144 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 199-9ce8aecb (768 blocks total, 1176 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 200-bcaccbe5 (800 blocks total, 1208 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 201-8fc18aec (832 blocks total, 1240 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 202-8fdc3b80 (864 blocks total, 1272 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 203-bd7246bc (896 blocks total, 1304 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 204-adb58d1f (928 blocks total, 1336 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 205-a7f73f5d (960 blocks total, 1368 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 206-b0497717 (992 blocks total, 1400 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 207-b4bcc461 (1024 blocks total, 1432 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 208-86dd0187 (1056 blocks total, 1464 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 209-a9d1e948 (1088 blocks total, 1496 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 210-ac486fad (1120 blocks total, 1528 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 211-9d98ed82 (1152 blocks total, 1560 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 212-b74955c4 (1184 blocks total, 1592 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 213-a8529e0a (1216 blocks total, 1624 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 214-bcde91d3 (1248 blocks total, 1656 free)
+INFO 10-01 10:52:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 215-a4819e34 (1280 blocks total, 1688 free)
+INFO 10-01 10:52:05 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 700: cumulative fill=0.860s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:52:12 [loggers.py:257] Engine 000: Avg prompt throughput: 1830.0 tokens/s, Avg generation throughput: 243.0 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 26.7%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:52:19 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 800: cumulative fill=0.860s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:52:22 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 241.9 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 29.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:52:23 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.133s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 232-a57b4ddf (1312 blocks total, 1080 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 233-b524baec (1344 blocks total, 1112 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 234-a9d0d639 (1376 blocks total, 1144 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 235-943cc0c9 (1408 blocks total, 1176 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 236-b6f55675 (1440 blocks total, 1208 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 237-98d69c66 (1472 blocks total, 1240 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 238-b8e334e9 (1504 blocks total, 1272 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 239-b55bf964 (1536 blocks total, 1304 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 240-a7ba5f9e (1568 blocks total, 1336 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 241-96dca1b4 (1600 blocks total, 1368 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 242-9cdc4556 (1632 blocks total, 1400 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 243-a9e8a9f5 (1664 blocks total, 1432 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 244-8ca99040 (1696 blocks total, 1464 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 245-98d8b6d8 (1728 blocks total, 1496 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 246-8581baeb (1760 blocks total, 1528 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 247-b4630544 (1792 blocks total, 1560 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 248-bf7cb046 (1824 blocks total, 1592 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 249-9ceff7df (1856 blocks total, 1624 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 250-aed884bd (1888 blocks total, 1656 free)
+INFO 10-01 10:52:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 251-8c57b479 (1920 blocks total, 1688 free)
+INFO 10-01 10:52:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.142s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 268-b637e9c8 (1952 blocks total, 1080 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 269-881dcc25 (1984 blocks total, 1112 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 270-96a9b816 (2016 blocks total, 1144 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 271-973c09ba (2048 blocks total, 1176 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 272-b6b14a86 (2080 blocks total, 1208 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 273-85b1f3e9 (2112 blocks total, 1240 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 274-a5d00977 (2144 blocks total, 1272 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 275-ba230e72 (2176 blocks total, 1304 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 276-b203db9c (2208 blocks total, 1336 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 277-b30080fa (2240 blocks total, 1368 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 278-86794a4e (2272 blocks total, 1400 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 279-b3a47fda (2304 blocks total, 1432 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 280-a4db1fd9 (2336 blocks total, 1464 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 281-b7014f4c (2368 blocks total, 1496 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 282-bd66d06c (2400 blocks total, 1528 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 283-a70c77af (2432 blocks total, 1560 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 284-8f73cc48 (2464 blocks total, 1592 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 285-8032d557 (2496 blocks total, 1624 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 286-ad9611b9 (2528 blocks total, 1656 free)
+INFO 10-01 10:52:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 287-b6d903a9 (2560 blocks total, 1688 free)
+INFO 10-01 10:52:32 [loggers.py:257] Engine 000: Avg prompt throughput: 3674.7 tokens/s, Avg generation throughput: 226.1 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 25.3%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:52:34 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 900: cumulative fill=1.136s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:52:42 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 252.1 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 28.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+  r=20 rep1: step  144.03 ms, stream  3.140 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 20}
+[r=20 rep1] PURITY OK  steps=136 running=36 hbm=16 cpu=20 waiting_max=0 prefill_tok=0
+INFO 10-01 10:52:47 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.142s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 304-b573f848 (2592 blocks total, 1080 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 305-bff5c9e2 (2624 blocks total, 1112 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 306-bce8aef3 (2656 blocks total, 1144 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 307-b9a71524 (2688 blocks total, 1176 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 308-a3100445 (2720 blocks total, 1208 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 309-89c71046 (2752 blocks total, 1240 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 310-890107ca (2784 blocks total, 1272 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 311-892b1fac (2816 blocks total, 1304 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 312-89228bf6 (2848 blocks total, 1336 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 313-9ff1220f (2880 blocks total, 1368 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 314-bc8c90c1 (2912 blocks total, 1400 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 315-aacae141 (2944 blocks total, 1432 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 316-8751d334 (2976 blocks total, 1464 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 317-96f11464 (3008 blocks total, 1496 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 318-90c7a4e3 (3040 blocks total, 1528 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 319-ba647807 (3072 blocks total, 1560 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 320-97644c1c (3104 blocks total, 1592 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 321-96382a41 (3136 blocks total, 1624 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 322-88e53917 (3168 blocks total, 1656 free)
+INFO 10-01 10:52:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 323-a4352610 (3200 blocks total, 1688 free)
+INFO 10-01 10:52:49 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1000: cumulative fill=1.278s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:52:51 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.133s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 340-a4582e93 (3232 blocks total, 1080 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 341-a8ef7d73 (3264 blocks total, 1112 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 342-9192abf1 (3296 blocks total, 1144 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 343-b523462b (3328 blocks total, 1176 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 344-a29c1d4f (3360 blocks total, 1208 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 345-8d37e822 (3392 blocks total, 1240 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 346-bd904648 (3424 blocks total, 1272 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 347-aaab3bc7 (3456 blocks total, 1304 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 348-93cce0de (3488 blocks total, 1336 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 349-ab1c9c49 (3520 blocks total, 1368 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 350-8d089f32 (3552 blocks total, 1400 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 351-8552e7fc (3584 blocks total, 1432 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 352-9ef0a05a (3616 blocks total, 1464 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 353-ad12415e (3648 blocks total, 1496 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 354-bdaf8ba5 (3680 blocks total, 1528 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 355-985584d0 (3712 blocks total, 1560 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 356-a8da5fc6 (3744 blocks total, 1592 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 357-a748862e (3776 blocks total, 1624 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 358-b3f79bb9 (3808 blocks total, 1656 free)
+INFO 10-01 10:52:52 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 359-b6014e71 (3840 blocks total, 1688 free)
+INFO 10-01 10:52:52 [loggers.py:257] Engine 000: Avg prompt throughput: 3646.8 tokens/s, Avg generation throughput: 210.1 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 23.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:02 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 263.4 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 27.4%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:04 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1100: cumulative fill=1.410s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r=20 rep2: step  143.44 ms, stream  3.140 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 20}
+[r=20 rep2] PURITY OK  steps=136 running=36 hbm=16 cpu=20 waiting_max=0 prefill_tok=0
+INFO 10-01 10:53:11 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.142s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 376-a5653344 (3872 blocks total, 1080 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 377-8c05e507 (3904 blocks total, 1112 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 378-adf9d2db (3936 blocks total, 1144 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 379-9e8af556 (3968 blocks total, 1176 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 380-bb46b1b3 (4000 blocks total, 1208 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 381-bfaa5997 (4032 blocks total, 1240 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 382-ac2e0b63 (4064 blocks total, 1272 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 383-8282b579 (4096 blocks total, 1304 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 384-88533318 (4128 blocks total, 1336 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 385-acbb7584 (4160 blocks total, 1368 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 386-af8f52fc (4192 blocks total, 1400 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 387-a4d56216 (4224 blocks total, 1432 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 388-a38153cf (4256 blocks total, 1464 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 389-88c06f9a (4288 blocks total, 1496 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 390-9fa08c77 (4320 blocks total, 1528 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 391-9b5d5e7e (4352 blocks total, 1560 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 392-92c276f9 (4384 blocks total, 1592 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 393-a9d50d89 (4416 blocks total, 1624 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 394-a2391a46 (4448 blocks total, 1656 free)
+INFO 10-01 10:53:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 395-bf8715d9 (4480 blocks total, 1688 free)
+INFO 10-01 10:53:13 [loggers.py:257] Engine 000: Avg prompt throughput: 1835.0 tokens/s, Avg generation throughput: 222.2 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 23.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:16 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.133s, staged to CPU in 0.000s (36 requests)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 412-86873210 (4512 blocks total, 1080 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 413-b8dad4f4 (4544 blocks total, 1112 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 414-99e43169 (4576 blocks total, 1144 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 415-a42119c8 (4608 blocks total, 1176 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 416-a40b43a2 (4640 blocks total, 1208 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 417-a98db67d (4672 blocks total, 1240 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 418-bd018e37 (4704 blocks total, 1272 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 419-b2e609e8 (4736 blocks total, 1304 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 420-ba82e4e2 (4768 blocks total, 1336 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 421-83b222c8 (4800 blocks total, 1368 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 422-8c8154ac (4832 blocks total, 1400 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 423-a2c8bcc9 (4864 blocks total, 1432 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 424-83490f0f (4896 blocks total, 1464 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 425-a834aa60 (4928 blocks total, 1496 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 426-855acd87 (4960 blocks total, 1528 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 427-a33c8296 (4992 blocks total, 1560 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 428-a01301c9 (5024 blocks total, 1592 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 429-81af9466 (5056 blocks total, 1624 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 430-b01892ef (5088 blocks total, 1656 free)
+INFO 10-01 10:53:16 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 431-bdf40742 (5120 blocks total, 1688 free)
+INFO 10-01 10:53:20 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1200: cumulative fill=1.685s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:53:23 [loggers.py:257] Engine 000: Avg prompt throughput: 1837.7 tokens/s, Avg generation throughput: 247.7 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 26.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:33 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 246.8 tokens/s, Running: 36 reqs, Waiting: 0 reqs, GPU KV cache usage: 28.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:34 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1300: cumulative fill=1.685s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r=20 rep3: step  144.33 ms, stream  3.140 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 20}
+[r=20 rep3] PURITY OK  steps=136 running=36 hbm=16 cpu=20 waiting_max=0 prefill_tok=0
+INFO 10-01 10:53:36 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.157s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 448-aa554f95 (5152 blocks total, 952 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 449-a5c4e1e8 (5184 blocks total, 984 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 450-aab05aaa (5216 blocks total, 1016 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 451-b6448f21 (5248 blocks total, 1048 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 452-935d0efb (5280 blocks total, 1080 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 453-8f15520a (5312 blocks total, 1112 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 454-843ee3ef (5344 blocks total, 1144 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 455-9e3838e5 (5376 blocks total, 1176 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 456-9a264361 (5408 blocks total, 1208 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 457-92aaf9a1 (5440 blocks total, 1240 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 458-b6591931 (5472 blocks total, 1272 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 459-9b08f73c (5504 blocks total, 1304 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 460-9dc760e9 (5536 blocks total, 1336 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 461-8ac96609 (5568 blocks total, 1368 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 462-8936f679 (5600 blocks total, 1400 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 463-b5b98fcc (5632 blocks total, 1432 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 464-a1e3e3a6 (5664 blocks total, 1464 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 465-a5d15534 (5696 blocks total, 1496 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 466-94dfefdc (5728 blocks total, 1528 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 467-8fb6b852 (5760 blocks total, 1560 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 468-8789d920 (5792 blocks total, 1592 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 469-b41f06ab (5824 blocks total, 1624 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 470-ab6031fb (5856 blocks total, 1656 free)
+INFO 10-01 10:53:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 471-ad2bf444 (5888 blocks total, 1688 free)
+INFO 10-01 10:53:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.156s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 488-b930ed29 (5920 blocks total, 952 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 489-8c875c83 (5952 blocks total, 984 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 490-bcf6212a (5984 blocks total, 1016 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 491-9d3bbe06 (6016 blocks total, 1048 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 492-9b189e6f (6048 blocks total, 1080 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 493-8c65a344 (6080 blocks total, 1112 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 494-aac8a020 (6112 blocks total, 1144 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 495-ac13ded1 (6144 blocks total, 1176 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 496-900fa4e6 (6176 blocks total, 1208 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 497-98e7ccca (6208 blocks total, 1240 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 498-bcb9ca13 (6240 blocks total, 1272 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 499-8233d88e (6272 blocks total, 1304 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 500-903a66aa (6304 blocks total, 1336 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 501-86265369 (6336 blocks total, 1368 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 502-a82cebaf (6368 blocks total, 1400 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 503-bd52069a (6400 blocks total, 1432 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 504-9e1af82a (6432 blocks total, 1464 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 505-88761a1e (6464 blocks total, 1496 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 506-83b15a0d (6496 blocks total, 1528 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 507-b74004a8 (6528 blocks total, 1560 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 508-991e291c (6560 blocks total, 1592 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 509-a1a77eb6 (6592 blocks total, 1624 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 510-be9e6837 (6624 blocks total, 1656 free)
+INFO 10-01 10:53:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 511-b1df20ce (6656 blocks total, 1688 free)
+INFO 10-01 10:53:43 [loggers.py:257] Engine 000: Avg prompt throughput: 4089.5 tokens/s, Avg generation throughput: 197.7 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 23.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:53:52 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1400: cumulative fill=1.998s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:53:53 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 245.4 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 26.7%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:03 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 224.5 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 29.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:05 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.147s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 528-b4e230f7 (6688 blocks total, 952 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 529-8fb7e6ba (6720 blocks total, 984 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 530-973cb23f (6752 blocks total, 1016 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 531-a58effec (6784 blocks total, 1048 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 532-acc2d073 (6816 blocks total, 1080 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 533-8869227c (6848 blocks total, 1112 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 534-85f25ff1 (6880 blocks total, 1144 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 535-a70e72fd (6912 blocks total, 1176 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 536-8ec7a56b (6944 blocks total, 1208 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 537-821bfb0d (6976 blocks total, 1240 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 538-82ebb672 (7008 blocks total, 1272 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 539-a511bd69 (7040 blocks total, 1304 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 540-889fddea (7072 blocks total, 1336 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 541-9fd90420 (7104 blocks total, 1368 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 542-99f489d1 (7136 blocks total, 1400 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 543-8218ca17 (7168 blocks total, 1432 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 544-8b7a73bb (7200 blocks total, 1464 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 545-ba40dab3 (7232 blocks total, 1496 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 546-97ec43e2 (7264 blocks total, 1528 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 547-896410a4 (7296 blocks total, 1560 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 548-8dd2a380 (7328 blocks total, 1592 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 549-b6a1eda3 (7360 blocks total, 1624 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 550-b17be8e0 (7392 blocks total, 1656 free)
+INFO 10-01 10:54:05 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 551-8cbe371c (7424 blocks total, 1688 free)
+INFO 10-01 10:54:09 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.148s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 568-b752acd7 (7456 blocks total, 952 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 569-91d1722f (7488 blocks total, 984 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 570-9ff51e43 (7520 blocks total, 1016 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 571-8c2b698f (7552 blocks total, 1048 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 572-b2d0296a (7584 blocks total, 1080 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 573-bf02180e (7616 blocks total, 1112 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 574-b720961d (7648 blocks total, 1144 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 575-bba18eb6 (7680 blocks total, 1176 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 576-80eb9595 (7712 blocks total, 1208 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 577-98c5ec60 (7744 blocks total, 1240 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 578-80e17c7e (7776 blocks total, 1272 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 579-a549e0d0 (7808 blocks total, 1304 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 580-8eaba9bb (7840 blocks total, 1336 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 581-bef81ea0 (7872 blocks total, 1368 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 582-a9d8cb13 (7904 blocks total, 1400 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 583-8b8edd2a (7936 blocks total, 1432 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 584-ad92f1b9 (7968 blocks total, 1464 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 585-a95b6bfe (8000 blocks total, 1496 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 586-bc33aed3 (8032 blocks total, 1528 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 587-92a47bb6 (8064 blocks total, 1560 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 588-98699a3d (8096 blocks total, 1592 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 589-97666eeb (8128 blocks total, 1624 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 590-acda5c2c (8160 blocks total, 1656 free)
+INFO 10-01 10:54:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 591-a125c3ac (8192 blocks total, 1688 free)
+INFO 10-01 10:54:11 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1500: cumulative fill=2.294s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:54:13 [loggers.py:257] Engine 000: Avg prompt throughput: 4041.0 tokens/s, Avg generation throughput: 201.3 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 24.5%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:23 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 241.9 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 27.4%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:28 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1600: cumulative fill=2.294s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r=24 rep1: step  172.35 ms, stream  3.769 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 24}
+[r=24 rep1] PURITY OK  steps=136 running=40 hbm=16 cpu=24 waiting_max=0 prefill_tok=0
+INFO 10-01 10:54:34 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.156s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:54:34 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 200.7 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 57.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 608-a0d0d8a5 (8224 blocks total, 952 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 609-9abf6f14 (8256 blocks total, 984 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 610-9dbb145d (8288 blocks total, 1016 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 611-9a77df7d (8320 blocks total, 1048 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 612-a9dffe21 (8352 blocks total, 1080 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 613-81adc1a0 (8384 blocks total, 1112 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 614-b50d35c6 (8416 blocks total, 1144 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 615-ad0bf7e3 (8448 blocks total, 1176 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 616-b5e4bc12 (8480 blocks total, 1208 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 617-b4542b52 (8512 blocks total, 1240 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 618-9c2cf12c (8544 blocks total, 1272 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 619-85355af5 (8576 blocks total, 1304 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 620-bef1a317 (8608 blocks total, 1336 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 621-976ea3de (8640 blocks total, 1368 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 622-87ec0c1e (8672 blocks total, 1400 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 623-add43db4 (8704 blocks total, 1432 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 624-9650bcf4 (8736 blocks total, 1464 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 625-98fcb1cb (8768 blocks total, 1496 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 626-b71d876c (8800 blocks total, 1528 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 627-972cf15f (8832 blocks total, 1560 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 628-9cd64193 (8864 blocks total, 1592 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 629-ba853f0b (8896 blocks total, 1624 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 630-81af11e3 (8928 blocks total, 1656 free)
+INFO 10-01 10:54:34 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 631-a04cfbb0 (8960 blocks total, 1688 free)
+INFO 10-01 10:54:38 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.156s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 648-80e5e454 (8992 blocks total, 952 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 649-ab811b32 (9024 blocks total, 984 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 650-b8db33af (9056 blocks total, 1016 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 651-b285b71a (9088 blocks total, 1048 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 652-87bde9da (9120 blocks total, 1080 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 653-a454a942 (9152 blocks total, 1112 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 654-9f7e7bd7 (9184 blocks total, 1144 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 655-b7b61473 (9216 blocks total, 1176 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 656-8b78ff24 (9248 blocks total, 1208 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 657-a17780b8 (9280 blocks total, 1240 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 658-b3b2fa10 (9312 blocks total, 1272 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 659-ae4647e2 (9344 blocks total, 1304 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 660-893d747f (9376 blocks total, 1336 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 661-b7e163dc (9408 blocks total, 1368 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 662-a2d97b9f (9440 blocks total, 1400 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 663-bf01ca34 (9472 blocks total, 1432 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 664-a8c27336 (9504 blocks total, 1464 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 665-bd8afbff (9536 blocks total, 1496 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 666-906e7e62 (9568 blocks total, 1528 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 667-abacc6ce (9600 blocks total, 1560 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 668-b73f1335 (9632 blocks total, 1592 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 669-8f720dcf (9664 blocks total, 1624 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 670-beccd0dd (9696 blocks total, 1656 free)
+INFO 10-01 10:54:39 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 671-883368d4 (9728 blocks total, 1688 free)
+INFO 10-01 10:54:44 [loggers.py:257] Engine 000: Avg prompt throughput: 4063.4 tokens/s, Avg generation throughput: 230.2 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 25.3%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:54:47 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1700: cumulative fill=2.606s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:54:54 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 237.5 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 27.4%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+  r=24 rep2: step  172.04 ms, stream  3.769 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 24}
+[r=24 rep2] PURITY OK  steps=136 running=40 hbm=16 cpu=24 waiting_max=0 prefill_tok=0
+INFO 10-01 10:55:02 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.157s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 688-a874d573 (9760 blocks total, 952 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 689-b1481737 (9792 blocks total, 984 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 690-94ca05c5 (9824 blocks total, 1016 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 691-b03ee78d (9856 blocks total, 1048 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 692-aaf8ae2f (9888 blocks total, 1080 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 693-a27f57a1 (9920 blocks total, 1112 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 694-8c860cdf (9952 blocks total, 1144 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 695-b0cc69c0 (9984 blocks total, 1176 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 696-8d5de221 (10016 blocks total, 1208 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 697-8e6efcbe (10048 blocks total, 1240 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 698-9a5cb162 (10080 blocks total, 1272 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 699-ba99b625 (10112 blocks total, 1304 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 700-bdfaa840 (10144 blocks total, 1336 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 701-8a37c6d6 (10176 blocks total, 1368 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 702-80a6feb1 (10208 blocks total, 1400 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 703-b9b7c2d3 (10240 blocks total, 1432 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 704-b1ed751a (10272 blocks total, 1464 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 705-9fb0f642 (10304 blocks total, 1496 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 706-9a3631cd (10336 blocks total, 1528 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 707-92841eef (10368 blocks total, 1560 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 708-bca9bf09 (10400 blocks total, 1592 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 709-8cdfbbe6 (10432 blocks total, 1624 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 710-ad5c0d8d (10464 blocks total, 1656 free)
+INFO 10-01 10:55:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 711-bdcfcd57 (10496 blocks total, 1688 free)
+INFO 10-01 10:55:04 [loggers.py:257] Engine 000: Avg prompt throughput: 2021.5 tokens/s, Avg generation throughput: 201.4 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 23.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:55:05 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1800: cumulative fill=2.763s, stage=0.001s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:55:07 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.151s, staged to CPU in 0.000s (40 requests)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 728-8394b004 (10528 blocks total, 952 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 729-b6e5a84c (10560 blocks total, 984 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 730-98f940f9 (10592 blocks total, 1016 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 731-bc47c018 (10624 blocks total, 1048 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 732-bd2dfb37 (10656 blocks total, 1080 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 733-83f53bb9 (10688 blocks total, 1112 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 734-b8a61bbb (10720 blocks total, 1144 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 735-bdbc5f1b (10752 blocks total, 1176 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 736-80baed50 (10784 blocks total, 1208 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 737-85b41773 (10816 blocks total, 1240 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 738-a3b732b7 (10848 blocks total, 1272 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 739-995cbb3e (10880 blocks total, 1304 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 740-931df0f7 (10912 blocks total, 1336 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 741-a9486360 (10944 blocks total, 1368 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 742-a5a88c2a (10976 blocks total, 1400 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 743-86e83dbb (11008 blocks total, 1432 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 744-b78eb0f8 (11040 blocks total, 1464 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 745-8ab08b1f (11072 blocks total, 1496 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 746-aa094946 (11104 blocks total, 1528 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 747-99a120a0 (11136 blocks total, 1560 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 748-a2a00590 (11168 blocks total, 1592 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 749-86fd2283 (11200 blocks total, 1624 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 750-b5fc393d (11232 blocks total, 1656 free)
+INFO 10-01 10:55:08 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 32 main-pool blocks from host-tier request 751-ac0d8608 (11264 blocks total, 1688 free)
+INFO 10-01 10:55:14 [loggers.py:257] Engine 000: Avg prompt throughput: 2035.8 tokens/s, Avg generation throughput: 226.6 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 25.3%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+INFO 10-01 10:55:22 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1900: cumulative fill=2.914s, stage=0.001s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 10-01 10:55:24 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 234.6 tokens/s, Running: 40 reqs, Waiting: 0 reqs, GPU KV cache usage: 28.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 99.8%
+  r=24 rep3: step  171.95 ms, stream  3.769 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 24}
+[r=24 rep3] PURITY OK  steps=136 running=40 hbm=16 cpu=24 waiting_max=0 prefill_tok=0
+
+==================================================================
+ riders   step ms    dT ms  dT/rider   GB/step   link ms    eta
+      0     49.45     0.00      0.00     0.000      0.00    nan | direct   49.47 (+0.0%)
+     20    144.03    94.58      4.73     3.140    125.12   0.24 | direct  142.67 (-0.9%)
+     24    172.04   122.59      5.11     3.769    150.14   0.18 | direct  170.39 (-1.0%)
+
+==================================================================
+ COST MODEL   step ~= max(T_compute, T_transfer) + overhead
+  per-rider transfer      =    6.26 ms (0.157 GB at 25.1 GB/s)
+  compute step            =   49.45 ms
+  KNEE r = T/per-rider    =    7.90 riders (beyond this the step IS the transfer)
+    r=20: max(compute, transfer) =  125.12 ms, measured  144.03 -> overhead  18.91 ms
+    r=24: max(compute, transfer) =  150.14 ms, measured  172.04 -> overhead  21.89 ms
+  overhead (median)       =   20.40 ms
+
+  best operating point: r = 7 riders -> 1.02x decode throughput
+  VERDICT: the feature PAYS here, best at ~7 riders.
+
+marginal rule (per measured point):
+  r=20: dT/step 0.0328 vs 1/B 0.0278 -> STOP   decode tok/s  249.9 vs  323.6 (0.772x)
+  r=24: dT/step 0.0297 vs 1/B 0.0250 -> STOP   decode tok/s  232.5 vs  323.6 (0.719x)
+
+wrote /mnt/beegfs/benishay/paper_runs/20260930/overhead/04_stall/s512_xhi.json
+[rank0]:[W1001 10:55:31.274083184 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

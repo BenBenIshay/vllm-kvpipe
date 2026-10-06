@@ -245,3 +245,14 @@ paper/.overleaf-project
 paper/.overleaf-outbox/
 paper/.overleaf-manifest.pending
 paper/out/
+
+# The paper's measurement logs ARE provenance, not build noise. `*.log` up in the
+# Django block (line ~74) came from a generic Python .gitignore and silently
+# swallowed them: `paper/data/baseline_integrity_20260912.log` is cited by
+# `% src:` in both 06-evaluation.tex and B-correctness.tex, was never committed
+# because of that rule, and `build.sh`'s dead-pointer gate therefore failed on a
+# fresh worktree. A second cited log passed the gate only because a local copy
+# happened to be lying around -- it would have failed on any clone. Negated here,
+# at the end, because in gitignore the last matching rule wins.
+!paper/data/**/*.log
+!paper/data/*.log

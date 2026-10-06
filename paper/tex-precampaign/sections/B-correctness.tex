@@ -1,0 +1,101 @@
+% Appendix B -- the correctness ladder, moved out of section 6 (2026-09-26) for
+% the page limit. A reviewer who doubts the mechanism should read this; one who
+% doubts the economics should not need to.
+
+\section{Correctness ladder}
+\label{app:correct}
+
+Placement moves bytes rather than approximating them, so these gates are
+hygiene rather than a contribution. Numerically we verify the host pool's round
+trip, the two-tier attention against a single-pass reference over the same KV
+(576 mixed decode layer-steps, $\max|\mathrm{diff}| = 0$), and the prefill
+handover across block boundaries and after the producer's memory has been
+recycled. End to end we compare generated tokens against stock vLLM.
+
+One methodological note, because it traps anyone reproducing this.
+\texttt{bf16} attention reductions are not associative, so their result depends
+on batch composition: stock vLLM produces different text for the same prompt at
+concurrency 1 and at 6, reproducibly at each. Any system that changes batching
+--- as a memory tier does --- will diverge on such prompts without being wrong.
+We therefore compare serially, batch of one on both sides, and under load only
+on prompts pre-screened as batching-stable. For calibration: on a serial greedy
+comparison our host tier matched stock vLLM on 6 of 6 prompts in one round and
+4 of 6 in another, while enabling \emph{vLLM's own prefix cache} --- changing
+nothing else --- matched on 2 of 6.
+
+
+\section{Evaluation setup in full}
+\label{app:setup}
+
+\paragraph{Exclusive access, for every absolute.} Each number we report as an
+absolute is taken on an idle, exclusively allocated device. This is not
+boilerplate: the same measurement on a contended node and on an idle one
+differed by $9.4\times$ (Appendix~\ref{app:impl}). Ratios between arms run back
+to back are robust to contention; absolutes are not.
+
+\paragraph{Models.} Qwen2.5-32B fp16 as the primary model, because on a 96\,GB
+device its weights leave $\Ckv \approx 26$\,GB, the regime \S\ref{sec:model}
+identifies as favourable. \textbf{On the A100-80 we actually run, the same
+weights leave a KV pool of $11.8$\,GB}, so $B_{\mathrm{cap}} \approx 22$ at 2048
+context: capacity-bound, as the model requires, but at a smaller
+$\HBM/\Ckv$ than the projections assume. Numbers here should be read as coming
+from that substrate, not the projected one. Llama-3.1-8B
+as a negative control, where the model predicts no benefit. We deliberately do
+not evaluate a 70B-class model: its capacity-limited batch is about seven
+requests, so a single request is 14\% and no result could separate an effect
+from a rounding artifact.
+
+\paragraph{Workloads.} Every number reported in this section comes from a
+\emph{fixed-context, fixed-output, closed-loop} run: 2048 context and 64 output
+tokens, with the offered load and resident cohort stated per experiment. That is
+the right shape for isolating a rider's cost and the wrong shape for goodput,
+which is why \S\ref{sec:eval:goodput} is a protocol rather than a result. That
+protocol calls for ShareGPT and Alpaca under Poisson arrivals, via
+\texttt{vllm bench serve}. Two properties are required rather than preferred.
+Real traces are heavy-tailed in both prompt and generation length, which is the
+variation a \emph{per-request} placement policy exists to exploit --- on a
+workload of identical requests our placement rule assigns every request the
+same score and degenerates to arrival order by construction, so measuring it
+equal to arrival order there would say nothing about the policy. And open-loop
+arrivals are needed because a closed loop of $N$ simultaneous requests is a
+different experiment from offering $\lambda$ requests per second; it also
+invites metrics that reward slowness (below). These are the workloads Pie
+reports on~\cite{pie}, which makes our numbers comparable to theirs.
+
+\paragraph{Metric.} The goodput comparison of \S\ref{sec:eval:goodput} is
+defined on \textbf{SLO-attaining goodput}: requests per second whose
+per-output-token latency met a target. That experiment is not yet run, so no
+goodput number appears in this section; what we report here is step time,
+end-to-end decode throughput, achieved concurrency and transferred bytes, each
+named where it is used.
+
+We do \emph{not} report mean concurrency. It averages over sampled steps, so an
+arm that serves requests more slowly holds them longer and scores
+\emph{higher}. It is not a goodput metric, and an earlier result of ours that
+relied on it was retracted for exactly that reason.
+
+\paragraph{Baselines.} Stock vLLM with all tiering disabled, which is also
+Pie's baseline and makes the two sets of numbers commensurable. We verify separately that our fork with the feature off matches the unmodified
+engine: across six interleaved runs on Qwen2.5-0.5B it is slower by $0.08\%$,
+% src: paper/data/baseline_integrity_20260912.log @ 5377be7c3 less than the
+spread within either arm. A baseline quietly slowed by our own additions would
+inflate every ratio reported here, and it would do so invisibly. Uniform offload at a matched byte budget represents the placement
+that Pie and DirectKV instantiate at their own granularities. Where a
+comparison against a published figure is drawn, we state which engine version
+and workload each side used rather than presenting ratios as directly
+commensurable.
+
+\subsection*{Swap semantics versus streaming}
+
+\paragraph{Swap semantics versus streaming.} A design whose offloaded unit is
+\emph{owned} by one side must write that unit back once per generated token; one
+whose device-side copy is a \emph{cache} need not (\S\ref{sec:related}). We
+measure the difference directly by writing each layer's slot back to the host
+mirror with the policy otherwise unchanged. The emulation is exact in extent:
+both arms read the same $602$\,MB, and the write-back arm moves
+\textbf{$2.00\times$} the total link traffic, with token output verified
+identical. We report this as a mechanism check rather than a performance
+result: it is measured on Qwen2.5-0.5B at $512$ context, a configuration small
+enough that the ratio isolates the write-back leg without the step-time effects
+that dominate at the primary model's scale.
+% src: paper/data/ablation_swapback_20260911.json @ 74a5d9c58
