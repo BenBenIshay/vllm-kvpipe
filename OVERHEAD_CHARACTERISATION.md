@@ -700,8 +700,8 @@ the step, gain 1.101× → 1.206×.** The first measurable movement in `F` since
 
 | component | M14 (pre-T8) | now | change |
 |---|---|---|---|
-| `F` | 5.80 | **3.23** | −2.57 |
-| mirror write | 3.95 | **1.20** | **−2.75** |
+| `F` | 5.80 | **3.49** (3.23, 3.74) | −2.31 |
+| mirror write | 3.95 | **1.46** | **−2.49** |
 | remainder (attention override) | 1.85 | **1.94** | +0.09 |
 
 **All of the improvement landed on the mirror write and none on the remainder**,
@@ -710,8 +710,21 @@ neither touches the attention path, so the mirror share had to fall and the
 remainder had to stay. It did. That is why the components can be trusted
 separately rather than only in sum.
 
-**The split has inverted: mirror write 37%, attention remainder 60%.** The thing
-§9d ranked as a third of `F` is now most of it.
+**The split has inverted: mirror write ≈42%, attention remainder ≈56%.** The
+thing §9d ranked as a third of `F` is now most of it.
+
+> **With a wide error bar, and the reason is `F`'s drift.** M18's two base arms
+> read 3.23 and 3.74 — **drift 0.51** — where M17's three read 3.26/3.30/3.25 at
+> 0.04. Across four jobs on identical configuration `F`'s within-job drift has
+> been 0.04, 0.43, 0.04, 0.51: it is **bimodal and unpredictable**, so the
+> honest error bar on any single-arm `F` figure is ±0.5 unless a tight bracket is
+> demonstrated *in that job*. Each component above is one arm, so mirror
+> ≈1.2–1.5 and remainder ≈1.9 is the defensible precision — not the 1.20 / 37% /
+> 60% an earlier draft of this section quoted from a single base arm.
+>
+> What survives the error bar: the T8 effect (5.62 → ~3.4, about 2.2 ms) is four
+> times the worst observed drift, and the remainder being the larger component
+> holds at either end of the range.
 
 ### What is left, and the recommendation
 
