@@ -47,7 +47,7 @@
 #
 #SBATCH --job-name=opt-m15
 #SBATCH --partition=supernova
-#SBATCH --nodelist=nova06
+#SBATCH --nodelist=nova07
 #SBATCH --exclusive
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=250G
