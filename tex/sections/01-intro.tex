@@ -86,13 +86,15 @@ the latency gate (\S\ref{sec:model:omits}).
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{figs/f6.pdf}
-\caption{The cost of a host-tier request is not affine. Below the knee the transfer
-still fits inside a step and is imperfectly hidden; above it the step \emph{is} the
-transfer. The shaded area is what the kink model does not carry, and it is where the
-paper's result lives: a \emph{fixed} $12.3$\,ms per step plus $2.2$\,ms per
-request. A faster link moves the knee right; it does not shrink the fixed term.
-Qwen2.5-32B, 2048 context, 16 residents, A100/PCIe at 25.1\,GB/s, 3 repeats under
-1\% spread.}
+\caption{The cost of a host-tier request, and the knee that organises it. Below the
+knee the transfer fits inside a step and hides \emph{completely}; above it the step
+\emph{is} the transfer, and fitting one line across the boundary --- which we did,
+and report in \S\ref{sec:eval:cost} --- overstates the per-rider slope while
+understating the fixed cost, from that single cause. Measured strictly below the
+knee the law is affine: a \emph{fixed} $3.4$\,ms per step at 64 layers plus
+$0.52$\,ms per request. A faster link moves the knee right, which is the whole of
+what it buys; it does not shrink either term. Qwen2.5-32B, 2048 context, 16
+residents, A100/PCIe at 25.1\,GB/s, 3 repeats under 1\% spread.}
 % src: paper/data/rider_cost_phase0.json @ fb7e9db2a
 \label{fig:costcurve}
 \end{figure}
@@ -100,22 +102,23 @@ Qwen2.5-32B, 2048 context, 16 residents, A100/PCIe at 25.1\,GB/s, 3 repeats unde
 \paragraph{What it costs, and why PCIe cannot pay.}
 Figure~\ref{fig:costcurve} is the measurement the rest of the paper turns on. Two
 host-tier requests grow a $54.1$\,ms step to $70.8$, and the curve bends where the
-aggregate transfer stops fitting inside a step. Decomposed, that growth is
-$12.3$\,ms of \emph{fixed} cost --- paid once per step for using the host path at
-all --- plus $2.2$\,ms per request, so a prefetch one layer deep hides about $90\%$
-of each transfer and what escapes is small beside the fixed term.
+aggregate transfer stops fitting inside a step. That bend --- the \emph{knee} --- is
+the structure that matters, and locating it changed our reading of everything else:
+measured below it, a rider's transfer hides completely and the per-request cost is
+$0.61$\,ms of exposed launch work carrying no bandwidth term at all
+(\S\ref{sec:eval:cost}). What a faster interconnect buys is therefore not a cheaper
+rider but a higher knee, and so more riders at the same price.
 
 That settles the PCIe case, since a larger batch pays only if the step grows by
 less: the link affords two host-tier requests on sixteen residents, a batch of
 $1.13\times$ against a step growing $1.31\times$, for a product of $0.86\times$.
-The technique needs a link affording enough riders for the batch gain to outrun a
-step growth whose largest component does not shrink with bandwidth at all --- the
-model puts that crossing at $60$\,GB/s, where PCIe gives $25$ and a coherent
-interconnect $419$~\cite{pie}. The mechanism itself we do confirm independently of
-its economics, raising peak concurrency against a fixed KV pool from 8 to 48
-(\S\ref{sec:eval:capacity}).
+The mechanism itself we confirm independently of its economics, raising peak
+concurrency against a fixed KV pool from 8 to 48 (\S\ref{sec:eval:capacity}).
 % src: paper/data/preload_capacity.json @ f3df05bdb
-On a coherent link the model then projects gains for the two weight-heavy
-configurations and losses for the other two, at margins of a few milliseconds in
-the fixed cost --- the first thing \S\ref{sec:eval} asks such a machine to
-measure.
+On a coherent link the model projects gains for all four configurations, from
+$\times 1.04$ to $\times 1.37$, ordered by how much of the device the weights
+consumed. Two things decide whether those are collected: a fixed per-step cost,
+which we cut by $74\%$ and then account for, and the integrality of the rider
+cohort --- a budget admitting $1.98$ riders admits one, so the achievable gain is a
+sawtooth in context and a $1.2\%$ change in it is worth $22\%$
+(\S\ref{sec:model:knee}).

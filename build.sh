@@ -66,11 +66,28 @@ mapfile -t marks < <(grep -rn --include='*.tex' '\\todo{\|\\needsgh{' "$PAPER_DI
 
 # The projection tables are COMPUTED, not measured, so they can drift out of
 # agreement with model/killer_v2.py silently. Fail loudly instead.
-if command -v python3 >/dev/null && [[ -f "$PAPER_DIR/model/check_tables.py" ]]; then
-  if ! (cd "$PAPER_DIR/model" && python3 check_tables.py > "$BUILD/tables.out" 2>&1); then
-    note "TABLES DISAGREE WITH THE GENERATOR" \
-         "$(grep -E '^\s+(FAIL|  -)' "$BUILD/tables.out" | head -8)" \
-         "full report: $BUILD/tables.out"
+#
+# PREFER THE VENV INTERPRETER, as pages.sh already does. The system python3 here
+# is 3.6.8, and since killer_v2 was retargeted it imports overhead_model, which
+# needs 3.7+ (`from __future__ import annotations`) and 3.10+ unions. Running the
+# gate under 3.6 fails at import and reports "TABLES DISAGREE", which would be a
+# misleading description of a SyntaxError.
+PY_CHECK=/mnt/beegfs/benishay/vllm-kvpipe/.venv/bin/python
+[[ -x "$PY_CHECK" ]] || PY_CHECK="$PAPER_DIR/../.venv/bin/python"
+[[ -x "$PY_CHECK" ]] || PY_CHECK="$(command -v python3 || true)"
+if [[ -n "$PY_CHECK" && -f "$PAPER_DIR/model/check_tables.py" ]]; then
+  if ! (cd "$PAPER_DIR/model" && "$PY_CHECK" check_tables.py \
+          > "$BUILD/tables.out" 2>&1); then
+    if grep -qE "SyntaxError|ModuleNotFoundError" "$BUILD/tables.out"; then
+      note "TABLE GATE COULD NOT RUN (interpreter too old or deps missing)" \
+           "using: $PY_CHECK ($("$PY_CHECK" --version 2>&1))" \
+           "$(grep -E "Error" "$BUILD/tables.out" | tail -2)" \
+           "full report: $BUILD/tables.out"
+    else
+      note "TABLES DISAGREE WITH THE GENERATOR" \
+           "$(grep -E '^\s+(FAIL|  -)' "$BUILD/tables.out" | head -8)" \
+           "full report: $BUILD/tables.out"
+    fi
   fi
 fi
 

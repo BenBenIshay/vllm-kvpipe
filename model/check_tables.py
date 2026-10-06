@@ -81,15 +81,34 @@ at_site("01-intro.tex", "18 against 12", "6 all-host",
         "1: the endpoint batches quoted in prose")
 
 print("\nTable 2 (03-model, tab:gain)")
-paper = {"Llama-8B  fp16": (1.22, 0.98,  4.8),
-         "Qwen-32B  fp8":  (1.28, 0.91,  6.9),
-         "Qwen-32B  fp16": (1.50, 1.01, 12.8),
-         "Llama-70B fp8":  (1.67, 1.05, 18.2)}
+# REPINNED 2026-10-06 against the FINAL coefficients. `cap` did not move at all
+# -- capacity is a memory question and neither F nor c enters it -- while every
+# `tput` rose and the 8B's F* fell. The driver is F: 12.3 -> 3.39 ms at L=64.
+#
+#   model            cap    tput was -> now    F* was -> now
+#   Llama-8B  fp16   1.22   0.98 -> 1.04       4.8 -> 4.01
+#   Qwen-32B  fp8    1.28   0.91 -> 1.08       6.9 -> 7.71
+#   Qwen-32B  fp16   1.50   1.01 -> 1.25      12.8 -> 13.45
+#   Llama-70B fp8    1.67   1.05 -> 1.37      18.2 -> 18.97
+#
+# THE 8B ROW CHANGES SIGN, and that is a paper claim, not a rounding. It was a
+# predicted NEGATIVE purely because F was large: with F at 1.70 ms for 32 layers
+# instead of 6.19, the C2C projection turns marginally positive. The measured
+# A100/PCIe negative is NOT affected -- there the 8B admits no riders at all
+# (cap_gain is exactly 1.000, it is latency-bound rather than capacity-bound), so
+# the feature can only cost and 0.979 stands. Section 6 says so explicitly.
+paper = {"Llama-8B  fp16": (1.22, 1.04,  4.01),
+         "Qwen-32B  fp8":  (1.28, 1.08,  7.71),
+         "Qwen-32B  fp16": (1.50, 1.25, 13.45),
+         "Llama-70B fp8":  (1.67, 1.37, 18.97)}
 for r in tables.gain_rows():
     cap, tput, fstar = paper[r["name"]]
     check(f"{r['name']} capacity", r["cap"], cap)
     check(f"{r['name']} tput (F+delta)", r["tput"], tput, tol=0.015)
-    check(f"{r['name']} F*", r["fstar"], fstar, tol=0.12)
+    # Tightened from 0.12: a 12% band let the 32B fp8 row pass at 6.9
+    # against a generator value of 7.71, so three of the four F* pins
+    # were not actually constraining anything.
+    check(f"{r['name']} F*", r["fstar"], fstar, tol=0.02)
     present(f"{cap:.2f}", "03-model.tex", f"{r['name']} cap in tex")
     present(f"{tput:.2f}", "03-model.tex", f"{r['name']} tput in tex")
 
@@ -153,11 +172,23 @@ print("\nDerived numbers quoted in prose, pinned to their own sentence")
 SITES = [
         ("03-model.tex", "capacity gains of $\\times$1.22", "1.67", "3.5: top of the capacity range"),
     ("03-model.tex", "capacity column ($\\times1.50$", "1.54", "3.3: capacity vs hand recomputation"),
-    ("03-model.tex", "become throughput ratios of", "1.05", "3.5: 70B throughput"),
-    ("03-model.tex", "Eq.~\\ref{eq:fstar} gives", "12.8", "3.5: F* for the primary model"),
-    ("03-model.tex", "needing $23\\%$ and", "44", "3.5: the two rows that miss"),
-    ("06-evaluation.tex", "makes it a predicted \\emph{negative}", "0.98", "6.6: 8B throughput"),
-        ("06-evaluation.tex", "the margin is $F^{*} = ", "12.3", "6.7: F* margin for the primary model"),
+    ("03-model.tex", "become throughput ratios of", "1.37", "3.5: 70B throughput"),
+    ("03-model.tex", "Eq.~\\ref{eq:fstar} gives", "13.4", "3.5: F* for the primary model"),
+    # The "two rows that miss" site is GONE: with F at 0.053 ms/layer all four
+    # rows clear F*, so there is no shortfall percentage left to pin. Replaced by
+    # the slack that now runs down the table, which is the claim that took its
+    # place.
+    # at_site scans FORWARD from the anchor only (body[i:i+window]), so the value
+    # has to follow it in the prose, not precede it.
+    ("03-model.tex", "slack widens monotonically", "2.3", "3.5: 8B slack over F*"),
+    # Section 6's 8B site changed MEANING, not just value. It is no longer a
+    # predicted negative on C2C (0.98 -> 1.04). What survives is the MEASURED
+    # A100/PCIe negative, which holds for a different reason -- no riders are
+    # admitted there at all -- so the pin follows that sentence instead.
+    ("06-evaluation.tex", "admits no riders at all", "1.000", "6.6: 8B cap_gain on PCIe"),
+    # Reworded in 6.7: F* is no longer what decides this configuration (13.4
+    # against the 3.4 it pays), so the sentence now says the knee binds instead.
+    ("06-evaluation.tex", "configuration's $F^{*}$ is", "13.4", "6.7: F* for the primary model"),
     ]
 for filename, anchor, value, label in SITES:
     at_site(filename, anchor, value, label)

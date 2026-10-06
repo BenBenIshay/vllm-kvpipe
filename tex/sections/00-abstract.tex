@@ -22,12 +22,15 @@ maximises decode throughput, and its content is that the value of a second tier
 tracks \textbf{how much of memory the weights consumed} --- not model size, and
 not context length, which cancels.
 
-We implement this in vLLM and measure the costs it turns on: a host-tier request
-adds a fixed $12.3$\,ms per step plus $2.2$\,ms per request, so a prefetch one
-layer deep hides about $90\%$ of each transfer and a per-step constant decides the
-rest. On a Grace-Hopper node the model projects $\times1.50$ and $\times1.67$ more
-served requests for the two weight-heavy configurations and throughput gains of
-$\times1.01$ and $\times1.05$, against margins of a few milliseconds in that
-constant --- the measurement we ask of such a node, and the one PCIe cannot
-supply.
+We implement this in vLLM and measure the costs it turns on. Below the point at
+which a rider's transfer stops fitting inside a step, that transfer hides
+\emph{completely}: the per-request cost is $0.61$\,ms of exposed launch and
+bookkeeping work, carries no bytes and no bandwidth term, and clears the budget a
+resident is worth by fivefold. What decides the margin is instead a fixed
+$4.2$\,ms per step, which we reduce by $74\%$ and then account for. On a
+Grace-Hopper node the model projects $\times1.50$ and $\times1.67$ more served
+requests for the two weight-heavy configurations and throughput gains of
+$\times1.25$ and $\times1.37$. Because riders are integral, the achievable gain is
+a \emph{sawtooth} in context, and choosing the operating point with that in mind is
+worth more than any of our implementation work.
 \end{abstract}

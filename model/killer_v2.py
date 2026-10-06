@@ -17,25 +17,70 @@ EFF_W, EFF_FLOPS, OVERHEAD = 0.75, 0.70, 4e9
 # fragmentation. It is subtracted from HBM before C, so the paper must document
 # it: weights + C does NOT equal HBM.
 #
-# THE COST OF A HOST-TIER REQUEST, measured, in two parts. Until 2026-09-27
-# this was expressed as an "overlap efficiency" eta_o = 0.62, which was a
-# mistake twice over: it is (F + unhidden)/link_time, so it counted F twice when
-# the throughput form also charged F, and dividing a FIXED cost by a link time
-# made it slide with context (0.32 at 1K, 0.83 at 8K) for no physical reason.
+# ===========================================================================
+# THE COST OF A HOST-TIER REQUEST. RETARGETED 2026-10-06 to the measured
+# coefficients in overhead_model.FINAL. The tombstones below record what this
+# file used to say, because the shape of the error is instructive.
+# ===========================================================================
 #
-# The honest decomposition, from step(r) = ITL_0 + F + c*r below the knee:
-#   F  fixed per step, launch-bound, ~12.3 ms on a 64-layer model
-#   c  per request, the part of its transfer that does not hide behind compute
-# Two runs give c = 2.20 and 2.91 ms at 2048 context, i.e. 10-13% of a rider's
-# link time -- so the prefetch hides ~88%, not the 62% the old figure implied.
-UNHIDDEN = 0.12          # fraction of a rider's transfer that lands on the step
+# This went wrong twice, each time by treating `c` as a FRACTION OF LINK TIME.
+#
+#   1. Until 2026-09-27: an "overlap efficiency" eta_o = 0.62. That counted F
+#      twice, since the throughput form charges F separately, and dividing a
+#      fixed cost by a link time made it slide with context (0.32 at 1K, 0.83 at
+#      8K) for no physical reason.
+#   2. Until today: UNHIDDEN = 0.12, "the fraction of a rider's transfer that
+#      lands on the step". Better, but still proportional to bytes and therefore
+#      still wrong in kind.
+#
+# WHAT WAS ACTUALLY MEASURED. Both of those were fitted over rider sweeps whose
+# top points sat AT the knee, which raises the fitted slope and lowers the fitted
+# intercept together -- one cause, two wrong numbers. Re-fitting strictly BELOW
+# the knee on the shipped code gives a `c` that is **not a fraction of the
+# transfer at all**: below the knee the rider bytes hide COMPLETELY. Removing the
+# bytes while keeping the launches (the `minbytes` arm) moves `c` by -0.010 ms,
+# and what survives is context-independent -- 0.532 ms at ctx 128 against 0.488
+# at ctx 256. `c` is exposed launch and host bookkeeping, nothing else.
+#
+# So `delta_ms` below no longer scales with `u` or with link bandwidth. That is
+# the single biggest structural change to this model, and it is why a faster
+# interconnect buys the KNEE (how many riders can be admitted before the transfer
+# stops hiding) rather than a cheaper rider.
+#
+# TOMBSTONES -- superseded, kept because tables.py prints them in its header and
+# because the superseded reasoning should stay auditable:
+UNHIDDEN = 0.12          # SUPERSEDED: c is not a fraction of the transfer
+F_REF_MS, F_REF_LAYERS = 12.3, 64   # SUPERSEDED: F is 0.053 ms per layer
 
-F_REF_MS, F_REF_LAYERS = 12.3, 64
+# The live coefficients. Imported rather than retyped, so there is exactly one
+# place they are defined and `overhead_model --selftest` guards them.
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from overhead_model import FINAL, final_F, final_c  # noqa: E402
 
 
 def f_fixed_ms(m):
-    """The fixed per-step host-path cost for a model of m.L layers."""
-    return F_REF_MS * m.L / F_REF_LAYERS
+    """The fixed per-step host-path cost for a model of m.L layers.
+
+    `FINAL["f_per_layer_post_t8"]` = 0.053 ms/layer, measured after T1, T2, T7a
+    and T8 below the knee. 4.24 ms at L=80, against the 12.3 this used to return.
+    Carries +-0.5 at L=64: F's within-job drift has been 0.04 / 0.43 / 0.04 /
+    0.51 across four jobs on identical configuration, so it is bimodal and a
+    single-arm figure is not tighter than that.
+    """
+    return final_F(m.L)
+
+
+def c_per_rider_ms(m):
+    """The per-rider cost in ms. CONTEXT- AND BANDWIDTH-INDEPENDENT.
+
+    `c(L) = 0.177 + 0.00540*L` -> 0.61 ms at L=80. Exposed work only: launches
+    plus host bookkeeping. It does NOT take S or hw, and that is the finding, not
+    an omission -- see the block above.
+    """
+    return final_c(m.L)
 
 
 F_FIXED_MS = F_REF_MS          # retained for callers that want the reference
@@ -182,9 +227,15 @@ def analyze(m, S, hw, slo_ms, kwin=4, stage=1.0, unhidden=None):
     B_res = min(B0, max(0.0, C/u - n*f))
     T = step_ms(m, hw, S, B_res, n, stage=stage, f=f) if n > 0 else T0
     B_tot = B_res + n
-    # Per-request cost: the part of each rider's transfer that does not hide.
+    # Per-request cost. MEASURED BELOW THE KNEE, so it is a flat ms-per-rider
+    # and not a share of the transfer: the bytes hide completely down there.
     # F is charged separately and is NOT in here -- that was the double count.
-    delta_ms = (UNHIDDEN if unhidden is None else unhidden) * (n*u/hw.x) * 1e3
+    #
+    # `unhidden` is kept as an override for callers that want the OLD
+    # fraction-of-link-time form, since that is what the superseded tables were
+    # built from and reproducing them has to stay possible.
+    delta_ms = (c_per_rider_ms(m) * n if unhidden is None
+                else unhidden * (n*u/hw.x) * 1e3)
     cap_gain = B_tot/B0 if B0 > 0 else 0.0
     return dict(B_cap=B_cap, B_slo=B_slo, B0=B0, T0=T0, capb=cap_bound,
                 n=n, B_tot=B_tot, T=T, delta_ms=delta_ms, cap_gain=cap_gain,
