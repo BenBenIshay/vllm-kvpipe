@@ -107,6 +107,16 @@ class Stub:
         # that skipped it would pass while the thing it protects was broken.
         self._copy_stream = None
         self._mirror_ev = None
+        # T7a state. The stub exercises the PER-LAYER scatter (the fallback),
+        # which is what these 18 cases are the reference for; the vectorised
+        # path has its own test in unified_mirror_equiv_test.py, since it
+        # deliberately renumbers nothing but cannot be checked against this
+        # reference without the unified allocation.
+        self._unified_mirror = False
+        self._host_k_all = None
+        self._host_v_all = None
+        self._wt_layer_off = None
+        self._wt_uniform = True
         # Set explicitly even though the two guards above short-circuit before
         # reading it: relying on short-circuit order would make this stub pass
         # for a reason unrelated to what it is testing.

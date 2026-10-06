@@ -88,14 +88,65 @@ class RungdHostPool:
         # indexing a block-major tensor yields a strided view flash cannot take.
         _, _, bs, nkv, hd = kv_shape
         hshape = (self.h_max, bs, nkv, hd)
-        self.host_k: dict[str, torch.Tensor] = {
-            ln: torch.empty(hshape, dtype=dtype, device="cpu", pin_memory=True)
-            for ln in self.layers
-        }
-        self.host_v: dict[str, torch.Tensor] = {
-            ln: torch.empty(hshape, dtype=dtype, device="cpu", pin_memory=True)
-            for ln in self.layers
-        }
+        # T7a. ONE pinned allocation per tensor, with per-layer VIEWS, rather
+        # than L separate allocations.
+        #
+        # Nothing about the per-layer interface changes: `_host_k_all[i]` is a
+        # contiguous [h_max, bs, nkv, hd] tensor, pinned (a view of pinned
+        # memory is pinned), so every existing path -- _issue_runs, seed_layer,
+        # restore_layer, preload_layer, writeback_layer, stash_from_host -- sees
+        # exactly what it saw before. Checked that none of them depends on the
+        # mirrors being distinct allocations: they all go through `host_k[ln]`
+        # indexing, and the one place that combines them (`host`) stacks views
+        # just as happily.
+        #
+        # WHY IT IS WORTH DOING. The deferred scatter of T2 is 2*L
+        # `index_copy_` calls per step -- one per layer per tensor -- measured
+        # at 0.018 ms/layer, 29% of the mirror write's 0.061. With the layers in
+        # ONE tensor the whole scatter becomes 2 calls with a vectorised index,
+        # because a rider's row within its extent does not depend on the layer:
+        # the global row is `host_pos + layer * h_max * bs`. See
+        # flush_token_writes.
+        self._unified_mirror = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_UNIFIED_MIRROR", "1") == "1"
+        )
+        if self._unified_mirror:
+            self._host_k_all = torch.empty(
+                (len(self.layers),) + hshape, dtype=dtype, device="cpu",
+                pin_memory=True)
+            self._host_v_all = torch.empty(
+                (len(self.layers),) + hshape, dtype=dtype, device="cpu",
+                pin_memory=True)
+            self.host_k: dict[str, torch.Tensor] = {
+                ln: self._host_k_all[i] for i, ln in enumerate(self.layers)
+            }
+            self.host_v: dict[str, torch.Tensor] = {
+                ln: self._host_v_all[i] for i, ln in enumerate(self.layers)
+            }
+        else:
+            self._host_k_all = None
+            self._host_v_all = None
+            self.host_k = {
+                ln: torch.empty(hshape, dtype=dtype, device="cpu",
+                                pin_memory=True)
+                for ln in self.layers
+            }
+            self.host_v = {
+                ln: torch.empty(hshape, dtype=dtype, device="cpu",
+                                pin_memory=True)
+                for ln in self.layers
+            }
+        # Row offset of each layer inside the unified mirror, precomputed so the
+        # fast scatter allocates nothing on the hot path.
+        self._wt_layer_off = (
+            torch.arange(len(self.layers), dtype=torch.int64) * (self.h_max * bs)
+            if self._unified_mirror else None
+        )
+        # Do all pending writes in a step share one host_pos and n? They do in
+        # steady state -- a rider's row within its extent is the same for every
+        # layer -- and that is what lets the scatter be one vectorised call.
+        # Tracked rather than assumed, with the per-layer loop as the fallback.
+        self._wt_uniform = True
         # k_window GPU rolling slots, sized to the compact region.
         rshape = (self.w_max, bs, nkv, hd)
         self.rolling_k: list[torch.Tensor] = [
@@ -1266,6 +1317,7 @@ class RungdHostPool:
             n_dropped = sum(x[2] for x in self._wt_pending)
             self._wt_pending.clear()
             self._wt_dirty = False
+            self._wt_uniform = True
             PT.count("wt_flush_suppressed_rows", n_dropped)
             return 0
         if self._wt_event is not None:
@@ -1338,17 +1390,47 @@ class RungdHostPool:
                 self._mirror_ev.synchronize()
         _tf = PT.now()
         rows = 0
-        for li, host_pos, n in self._wt_pending:
-            ln = self.layers[li]
-            hk, hv = self.host_k[ln], self.host_v[ln]
-            bs = hk.shape[1]
-            hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(
-                0, host_pos, self._wt_k[li, :n])
-            hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(
-                0, host_pos, self._wt_v[li, :n])
-            rows += n
+        # T7a FAST PATH: the whole scatter as ONE index_copy_ per tensor.
+        #
+        # Conditions, all checked:
+        #   * the mirror is one allocation, so a single flat view spans layers;
+        #   * every pending write shares host_pos and n (`_wt_uniform`), which
+        #     holds because a rider's row inside its extent does not depend on
+        #     the layer; and
+        #   * the pending layers are 0..nl-1, so the source is a slice rather
+        #     than a gather.
+        # Any of them false and the per-layer loop below runs instead, which is
+        # the pre-T7 behaviour exactly.
+        lis = [e[0] for e in self._wt_pending]
+        nl = len(lis)
+        fast = (self._unified_mirror and self._wt_uniform and nl > 1
+                and lis == list(range(nl)))
+        if fast:
+            pos, n = self._wt_pending[0][1], self._wt_pending[0][2]
+            tail = tuple(self._host_k_all.shape[3:])
+            # global row = layer_offset + host_pos, vectorised over both
+            idx = (pos.view(1, -1)
+                   + self._wt_layer_off[:nl].view(-1, 1)).reshape(-1)
+            self._host_k_all.view(-1, *tail).index_copy_(
+                0, idx, self._wt_k[:nl, :n].reshape(-1, *tail))
+            self._host_v_all.view(-1, *tail).index_copy_(
+                0, idx, self._wt_v[:nl, :n].reshape(-1, *tail))
+            rows = nl * n
+            PT.count("wt_flush_vectorised")
+        else:
+            for li, host_pos, n in self._wt_pending:
+                ln = self.layers[li]
+                hk, hv = self.host_k[ln], self.host_v[ln]
+                bs = hk.shape[1]
+                hk.view(hk.shape[0] * bs, *hk.shape[2:]).index_copy_(
+                    0, host_pos, self._wt_k[li, :n])
+                hv.view(hv.shape[0] * bs, *hv.shape[2:]).index_copy_(
+                    0, host_pos, self._wt_v[li, :n])
+                rows += n
+            PT.count("wt_flush_per_layer")
         self._wt_pending.clear()
         self._wt_dirty = False
+        self._wt_uniform = True
         self.wt_flushes += 1
         self.wt_deferred_rows += rows
         PT.count("wt_flush_rows", rows)
@@ -1436,6 +1518,16 @@ class RungdHostPool:
             # host_pos is derived once per step by the caller and handed to
             # every layer, so it may be a buffer that gets reused. The scatter
             # reads it a step later, so hold a COPY rather than aliasing it.
+            # Does every layer in this step write the same rows? It does in
+            # steady state -- a rider's row inside its extent does not depend
+            # on the layer -- and that is the condition the vectorised scatter
+            # in flush_token_writes needs. Tracked here rather than rechecked
+            # there, so the check costs one comparison per layer instead of a
+            # scan of the whole pending list.
+            if self._wt_pending and self._wt_uniform:
+                p0, n0 = self._wt_pending[0][1], self._wt_pending[0][2]
+                if n != n0 or not torch.equal(host_pos, p0):
+                    self._wt_uniform = False
             self._wt_pending.append((li, host_pos.clone(), n))
             self._wt_dirty = True
             PT.add("write_token_d2h_async", _td)

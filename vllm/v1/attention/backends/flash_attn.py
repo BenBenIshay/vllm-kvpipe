@@ -522,6 +522,39 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         return use_cascade_attention(*args, **kwargs)
 
 
+def _rider_buf(owner, name: str, m: int, like: torch.Tensor):
+    """A grown-only scratch buffer of shape [m, *like.shape[1:]] on `owner`.
+
+    T7b. The rider override allocated FOUR tensors per layer per step -- two
+    `index_select`s for key and value, one for the query, and an `empty` for the
+    output -- all with shapes fixed by the rider count and the head geometry.
+    M14 measured the surrounding work (`rider_gather_alloc` + `rider_scatter`)
+    at 0.026 ms/layer, 42% of the 0.061 the whole mirror write costs, so these
+    allocations are worth removing rather than tolerating.
+
+    Cached on the ATTENTION IMPL, which vLLM instantiates per layer, so each
+    layer keeps its own buffers: allocated once on the first step, reused on
+    every step after.
+
+    REUSE IS SAFE, and the reason needs stating because this is exactly where a
+    silent race would live. The key/value buffers feed a `non_blocking=True`
+    D2H into pinned staging, so overwriting one while its copy is in flight
+    would corrupt the mirror. It cannot happen: the buffer is per layer, so the
+    earliest overwrite is the SAME layer on the NEXT step, and
+    `flush_token_writes` synchronises the write event at the top of every
+    `build_step` before any layer runs. The copy is therefore complete before
+    the buffer can be touched again.
+    """
+    buf = getattr(owner, name, None)
+    if (buf is None or buf.shape[0] < m or buf.dtype != like.dtype
+            or buf.device != like.device
+            or tuple(buf.shape[1:]) != tuple(like.shape[1:])):
+        buf = torch.empty((m,) + tuple(like.shape[1:]),
+                          dtype=like.dtype, device=like.device)
+        setattr(owner, name, buf)
+    return buf[:m]
+
+
 class FlashAttentionImpl(AttentionImpl):
     can_return_lse_for_decode: bool = True
 
@@ -621,22 +654,28 @@ class FlashAttentionImpl(AttentionImpl):
         handle = backend.prepare_layer(lidx)
         PT.add("prepare_layer", _tp)
         if key is not None and value is not None and split.cpu_cur_compact:
+            _m = cpu_idx.numel()
+            _kb = _rider_buf(self, "_rb_key", _m, key)
+            _vb = _rider_buf(self, "_rb_val", _m, value)
+            torch.index_select(key, 0, cpu_idx, out=_kb)
+            torch.index_select(value, 0, cpu_idx, out=_vb)
             backend.write_token(
                 lidx, split.cpu_cur_compact, split.cpu_cur_offset,
                 split.cpu_cur_hostblock,
-                key.index_select(0, cpu_idx), value.index_select(0, cpu_idx),
+                _kb, _vb,
                 split.cpu_slot_pos, split.cpu_host_pos,
             )
         _tg = PT.now()
         m = cpu_idx.numel()
         out = output[:num_actual_tokens]
-        q_sub = query[:num_actual_tokens].index_select(0, cpu_idx)
-        # Allocate EXACTLY as the pre-refactor code did: from the model's own
+        _q = query[:num_actual_tokens]
+        q_sub = _rider_buf(self, "_rb_q", m, _q)
+        torch.index_select(_q, 0, cpu_idx, out=q_sub)
+        # Shaped EXACTLY as the pre-refactor code did: from the model's own
         # output tensor, not from q_sub. A backend must not be able to change
-        # the result's shape/dtype.
-        out_sub = torch.empty(
-            (m,) + tuple(out.shape[1:]), dtype=out.dtype, device=out.device
-        )
+        # the result's shape/dtype. T7b only stops it being reallocated every
+        # layer of every step.
+        out_sub = _rider_buf(self, "_rb_out", m, out)
         descale_shape = (m, self.num_kv_heads)
         PT.add("rider_gather_alloc", _tg)
         from vllm.v1.kv_tier_backend import TierAttendCtx
