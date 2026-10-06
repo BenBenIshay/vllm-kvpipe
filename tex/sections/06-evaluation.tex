@@ -107,14 +107,13 @@ compute, plus a fixed per-step overhead. \emph{Prediction.} Both terms are
 non-zero, and the second does not shrink with the link.
 
 We measure this with a fixed resident batch of 16 and riders on top, taking step time
-by differencing two generation lengths so prefill cancels by construction. An earlier
-four-point sweep gave a different answer and is set aside in
-Appendix~\ref{app:ridercost}, which says why. Two caveats belong with the direct
-measurement: its machine-readable output was not archived, so the numbers below are
-transcribed from the run's own record rather than read from an artifact --- the data
-files say so in their own provenance field --- and it is a single unreplicated
-comparison where we report repeats and spreads elsewhere. Re-running it is the first
-item for new hardware, alongside $F$.
+by differencing two generation lengths so prefill cancels by construction. Every
+point is gated per step on decode purity --- no prefill tokens, nothing queued, and
+the admitted tier counts matching the request exactly --- and a point failing the
+gate is discarded rather than adjusted. The two-rider table below predates that
+discipline: it is a single unreplicated comparison transcribed from a run whose
+machine-readable output was not archived, and Appendix~\ref{app:ridercost} says why
+the four-point sweep that accompanied it is set aside.
 %
 \begin{center}\small
 \begin{tabular}{rrrr}
@@ -131,20 +130,15 @@ riders & step (ms) & GB/step & growth \\
 At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
 of $1/(N{+}r) = 0.056$, and decode throughput --- derived as $B/\mathrm{ITL}$
 from the step times, not measured end to end --- is $254$ tok/s against $296$ at
-$r{=}0$. \textbf{The A100 does not show the benefit}, which is what
-the crossover bandwidth predicts. Setting the unhidden transfer equal to what
-the freed capacity buys gives $\Xlink^{*} = K_{\mathrm{res}}\,c/(T\,\ell)$, where $\ell$ is a
-rider's link time and $K_{\mathrm{res}}$ is the
-\emph{resident cohort's} KV --- a different quantity from $\Ckv$, and
-$8.59$\,GB at 16 requests and 2048 context ---
-and $T$ the rider-free step of $54.10$\,ms: $\Xlink^{*} = 60$\,GB/s. Our link
-runs at $25.1$, or $0.42\times$ the crossing, so the loss is predicted rather
-than surprising. The same number puts a coherent link's $419$\,GB/s well above
-it --- but that is a \emph{bandwidth} argument, and
-\S\ref{sec:model:omits} shows the fixed cost binds first, so clearing
-$\Xlink^{*}$ is necessary and not sufficient. An earlier
-$+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
-by hand from a co-located run, and we withdraw it.
+$r{=}0$. \textbf{The A100 does not show the benefit}, and the reason is the knee
+rather than the per-rider price. At $25.1$\,GB/s, $r^{*} = 2.4$: the link admits two
+riders, and two riders on sixteen residents cannot outrun the fixed cost. Earlier
+drafts derived a crossover bandwidth of $60$\,GB/s by setting the \emph{unhidden
+transfer} equal to what freed capacity buys; we withdraw that derivation, because
+below the knee no part of the transfer is unhidden and the quantity it balanced does
+not exist. The conclusion is unchanged and now rests on Eq.~\ref{eq:knee}. An
+earlier $+7.7\%$ on the decode phase was an artifact of subtracting prefill by hand
+from a co-located run, and we withdraw that too.
 
 \paragraph{The law is affine, and our first reading of it was not.}
 We previously reported this cost curve as \textbf{not affine} --- $\Delta T$ per
