@@ -261,13 +261,31 @@ collapses to $\times 1.05$. So the recommendation is not to sit just under a
 crossing but to leave margin: targeting $r^{*} \approx 2.2$ gives $\times 1.21$ and
 holds both riders through a $9\%$ error in $\mathrm{ITL}_0$.
 
-That error bar cuts one way only, and in our favour. $\mathrm{ITL}_0$ is
-\emph{under}-estimated if real HBM efficiency is below the $0.75$ we assume, and a
-larger $\mathrm{ITL}_0$ both raises $r^{*}$ and shrinks $F/\mathrm{ITL}_0$. Taking
-the lowest GH200 HBM throughput anyone reports --- $1.9$ of $4$\,TB/s, measured by
-DirectKV for a zero-copy attention kernel~\cite{directkv} --- would put
-$\mathrm{ITL}_0$ at $38$\,ms, admit five riders rather than three, and raise the
-gain to $\times 1.43$. We therefore keep $0.75$: it is the conservative end.
+\paragraph{$\mathrm{ITL}_0$ checks out against a published GH200 measurement.}
+Our step-time model is $\mathrm{ITL}_0 = (W + \text{KV read})/(\mathrm{BW} \cdot
+\eta_w)$ with $\eta_w = 0.75$ taken from A100 weight reads, and we have no
+Grace-Hopper part to test it on. BOOST reports one~\cite{boost}: Llama-3.3 70B at
+$1$K/$8$K context on a GH200, HBM-only, batch $6$ in $81.6$\,GB, measured
+\textbf{TPOT $= 27.1$\,ms}. Reconstructing that configuration --- FP8 weights plus
+an FP16 KV cache over a mean sequence of $5$K tokens, which recovers their stated
+capacity to $1.5\%$ --- our expression gives $\mathbf{26.8}$\,\textbf{ms}, a
+$1.1\%$ error, and implies an achieved HBM efficiency of $0.742$ against the
+$0.75$ we assume. The KV precision is not stated in their table and we infer it
+from the capacity arithmetic, so this is a cross-check rather than a validation;
+but it is the only published GH200 decode step time for a 70B-class model we could
+find, and our model lands on it.
+
+It also settles which step time the knee should use. The same comparison puts the
+\emph{weights-only} figure at $23.5$\,ms, $13\%$ below the measurement --- so
+omitting the resident KV read, as we do above, understates the hideable window, and
+the rider counts in this subsection are conservative by about that much.
+
+The residual error bar then cuts one way only, and in our favour. If real
+efficiency is \emph{below} $0.75$, $\mathrm{ITL}_0$ rises, which both raises $r^{*}$
+and shrinks $F/\mathrm{ITL}_0$. At the lowest GH200 HBM throughput anyone reports
+--- $1.9$ of $4$\,TB/s, measured by DirectKV for a zero-copy attention
+kernel~\cite{directkv} --- the gain would rise to $\times 1.43$ on five riders. We
+keep $0.75$ because it is both the measured value and the conservative end.
 % src: paper/model/operating_point.py (selftest pins each figure in this
 % paragraph; coefficients from overhead_model.py FINAL)
 
