@@ -1,0 +1,18 @@
+============================================================
+ BASELINE INTEGRITY   Qwen/Qwen2.5-0.5B-Instruct
+ STOCK = vllm/ at main   OFF = vllm/ at hybrid-kv-tiers (no hybrid flags)
+ 48 prompts at 6 req/s, 3 repeats, interleaved
+============================================================
+  rep 1   STOCK    5.593 req/s (357.9 tok/s)   OFF    5.587 req/s (357.6 tok/s)
+  rep 2   STOCK    5.585 req/s (357.4 tok/s)   OFF    5.580 req/s (357.1 tok/s)
+  rep 3   STOCK    5.590 req/s (357.8 tok/s)   OFF    5.588 req/s (357.6 tok/s)
+
+  STOCK mean   5.589 req/s
+  OFF   mean   5.585 req/s
+  disabled-path cost: -0.08%
+
+PASS -- arm A is stock within 3%. Ratios against it are honest.
+
+restoring vllm/ to hybrid-kv-tiers ...
+restored: clean
+exit=0

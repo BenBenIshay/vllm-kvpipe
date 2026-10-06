@@ -1,0 +1,49 @@
+% PROVENANCE: this section derives from \S\ref{sec:model} and \S\ref{sec:eval} and
+% introduces no new measurements; where it quotes a number it points at the section
+% that sourced it.
+%
+% CUT TO ~0.7pp 2026-09-27. The four subsections are now two plus limitations. The
+% expanded forms -- composition with orthogonal techniques, the third-tier
+% structure, the per-limitation detail -- are in appendix F.
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{The window is a result, and it is shrinking}
+
+Eq.~\ref{eq:gate} and Eq.~\ref{eq:gain-exact} together form a deployment rule that
+can be evaluated before building anything: a second KV tier pays when the latency
+target exceeds the full-pool step time plus $F$, and it pays in proportion to
+$\HBM/\Ckv$. Both exclude configurations the field routinely evaluates on. We state
+the window as a finding rather than a caveat because the alternative is worse --- a
+technique whose applicability is unstated gets evaluated where it happens to win.
+
+The gain also \textbf{shrinks as device memory grows}, and for our primary model it
+does not merely shrink: Qwen2.5-32B on a 144\,GB device leaves $\Ckv \approx
+71$\,GB, at which point the gate stops admitting at all. Both factors of
+Eq.~\ref{eq:gain-exact} trend that way across a hardware generation, since HBM
+bandwidth and capacity have grown faster than host-to-device bandwidth --- the same
+structural decay we identify in compute-offload systems (\S\ref{sec:related}), and
+it would be dishonest to cite that against them without stating it about ourselves.
+Model growth bears the other way: 405B-class models push $\HBM/\Ckv$ up, so the
+favourable configurations are becoming more common even as each device generation
+makes them rarer. Weight \emph{precision} cuts against us for the same reason ---
+quantizing weights returns memory to $\Ckv$ and removes the amplifier, where
+quantizing KV scales both cohorts and leaves their ratio unchanged, so a memory
+system and a precision decision are not independent.
+
+Nothing in the design is specific to host DRAM or to one attention kernel --- what
+it asks of a tier is the three properties of \S\ref{sec:background}, and moving
+platform means re-measuring five quantities: the two read bandwidths, the link, and
+the host path's fixed and per-request costs. Appendix~\ref{app:coherence} works
+that through, with the third-tier structure and the staging-versus-zero-copy
+crossover.
+
+\paragraph{Limitations.} Four bound the result and
+Appendix~\ref{app:coherence} gives each in full: the evaluation is one device on the
+wrong link, so every positive claim is marked a prediction; the model assumes dense
+GQA attention and uniform context, so it covers neither MoE nor MLA-class models and
+charges nothing for host DRAM bandwidth; the regime is real but not universal, since
+an operator whose weights fill the device can also quantize them or add a GPU; and
+the headline is bounded by an engineering number, since $F$ is a floor of the current
+design rather than a tuned result. The prefill transport is also emulated
+(\S\ref{sec:impl:stash}).

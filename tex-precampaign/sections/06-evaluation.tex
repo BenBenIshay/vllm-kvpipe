@@ -1,0 +1,236 @@
+\section{Evaluation}
+\label{sec:eval}
+
+Every measurement here is on A100/PCIe, which \S\ref{sec:model:omits} predicts
+cannot pay. So this section establishes the mechanism, the cost structure and the
+model's \emph{negative} predictions, and states the two questions it cannot close
+--- whether the model's positive prediction holds, and whether a second tier
+raises \emph{goodput} rather than raw throughput --- as protocols with predictions
+attached. Each subsection opens with its question, the claim under test, and what
+the model predicts, before any number.
+
+\subsection{Setup}
+\label{sec:eval:setup}
+
+\paragraph{Hardware.} A100-80 over PCIe~4. What rules PCIe out is not the latency
+gate of \S\ref{sec:model:gate}, which contains no $\Xlink$ and so says nothing about
+an interconnect, but the bandwidth crossover and fixed cost of
+\S\ref{sec:model:omits}; a GH200-96 over NVLink-C2C is the substrate the positive
+claims require, and those experiments are in progress. We measure the PCIe link at
+$25.1$\,GB/s for the per-layer bulk copy, falling to $0.52$ at 4\,KB granularity,
+which is why the transfer path issues runs rather than blocks
+(\S\ref{sec:impl:pool}).
+% src: paper/model/transfer_bw_a100.json @ 2bfc6ca5e For C2C we use
+an \emph{independent} measurement of the same part, $419$\,GB/s
+host-to-device~\cite{pie}, rather than the widely cited 900\,GB/s, which is
+bidirectional where a KV stream is not; we have not measured C2C.
+
+\paragraph{Method.} Every absolute is taken on an idle, exclusively allocated device
+--- the same measurement on a contended node differed by $9.4\times$
+(Appendix~\ref{app:impl}) --- from a fixed-context, fixed-output, closed-loop run at
+2048 context and 64 output tokens, with offered load and resident cohort stated per
+experiment. That shape isolates a host-tier request's cost and is the wrong shape for
+goodput, which is why \S\ref{sec:eval:goodput} is a protocol. The baseline is stock
+vLLM with tiering disabled, matching the unmodified engine to within $0.08\%$ across
+six interleaved runs (Appendix~\ref{app:setup}).
+% src: paper/data/baseline_integrity_20260912.log @ 5377be7c3
+Appendix~\ref{app:setup} gives the models, the pools, the metric definitions and
+the comparability rules for the arms.
+
+\subsection{Does the mechanism work? Are host-tier requests additive?}
+\label{sec:eval:capacity}
+
+\emph{Question.} Does admitting a host-tier request consume device blocks?
+\emph{Claim under test.} That it does not, so the host cohort adds to the resident
+cohort rather than displacing it --- the property Table~\ref{tab:endpoints}'s
+interior point depends on. \emph{Prediction.} Concurrency rises past the all-HBM
+capacity of the same pool, without the device pool growing.
+
+Against a fixed KV pool, host-tier requests raise peak concurrency from 8 to 48,
+and 48 is a lower bound because it was the entire offered load. \textbf{Both arms
+completed all 48 requests, and the mixture took $89.7$\,s against the all-HBM
+arm's $47.8$\,s} --- $0.53\times$ the throughput for identical work, with 42
+reclaims.
+% src: paper/data/preload_capacity.json @ f3df05bdb
+This is a \textbf{mechanism check and not a performance result}, and three things
+bound what it shows: KV is delivered synthetically, so the generated tokens are not
+meaningful; no latency target is applied and none is met, since the admission
+roofline of \S\ref{sec:design:admission} permits two host-tier requests at this
+context, so serving 48 implies step times far outside any SLO; and the pool is
+deliberately small, the same device-shrinking we criticise elsewhere, justified only
+because the quantity under test is whether admission touches the pool at all. What
+it establishes is that zero-block admission decouples the host cohort from the
+device pool; whether that decoupling pays is \S\ref{sec:eval:cost}.
+
+It also isolates why the system model matters. An earlier design capped a host-tier
+request's block \emph{growth} while leaving its prefill resident: it freed about
+11\% of the footprint while still paying full interconnect every step, and the
+served total crept toward the all-HBM capacity from below without ever passing it,
+at any resident cap. A request whose prefill stays resident is strictly worse than
+one left in device memory, at any link speed --- which makes the disaggregated
+decode-node assumption (\S\ref{sec:background:pd}) load-bearing rather than
+convenient.
+
+\subsection{Is the placement policy load-bearing?}
+\label{sec:eval:ablation}
+
+If uniform offloading at the same interconnect budget performs as well, the policy
+is decoration and the contribution reduces to the analysis. The arms add one
+mechanism each: uniform offload at a matched byte budget, our admission controller
+choosing how many while arrival order chooses which, scored placement, and
+migration.
+
+\textbf{Matched bytes, not matched request count.} Capping how many requests are
+host-tier does not control this comparison: the policies select requests of
+different context lengths and so move different volume, and part of any difference
+would be a difference in offload ratio wearing the appearance of a policy win. We
+count bytes in both directions per arm and treat arms differing by more than
+$1.25\times$ in traffic as not comparable. A parallel control matches the
+resident-cohort cap, since an arm with a different cap is a different
+\emph{allocation} rather than a different policy --- on A100 that distinction
+accounted for most of an apparent 14.5\% difference.
+
+The adaptive probe of \S\ref{sec:design:migration} is implemented but not reported,
+for the reason that blocks the ablation: its verdict compares goodput before and
+after a demotion, and where the budget admits two host-tier requests a demotion
+moves one of them, so the change is inside the noise the probe's own margin absorbs.
+We state its prediction instead --- revert on PCIe, keep on a coherent link. If it
+keeps on PCIe or reverts on C2C, the model is wrong about which term dominates, and
+that is the finding we would report.
+
+\subsection{What a host-tier request costs}
+\label{sec:eval:cost}
+
+\emph{Question.} What does one host-tier request add to a decode step?
+\emph{Claim under test.} That the cost is a transfer partly hidden behind
+compute, plus a fixed per-step overhead. \emph{Prediction.} Both terms are
+non-zero, and the second does not shrink with the link.
+
+We measure this with a fixed resident batch of 16 and riders on top, taking step time
+by differencing two generation lengths so prefill cancels by construction. An earlier
+four-point sweep gave a different answer and is set aside in
+Appendix~\ref{app:ridercost}, which says why. Two caveats belong with the direct
+measurement: its machine-readable output was not archived, so the numbers below are
+transcribed from the run's own record rather than read from an artifact --- the data
+files say so in their own provenance field --- and it is a single unreplicated
+comparison where we report repeats and spreads elsewhere. Re-running it is the first
+item for new hardware, alongside $F$.
+%
+\begin{center}\small
+\begin{tabular}{rrrr}
+\toprule
+riders & step (ms) & GB/step & growth \\
+\midrule
+0 & 54.10 & 0.000 & --- \\
+2 & 70.79 & 1.115 & 0.62 \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/rider_cost_4p2b.json @ 21ea9b18d
+%
+At that cost the marginal test fails: $\Delta T/T = 0.236$ against a threshold
+of $1/(N{+}r) = 0.056$, and decode throughput --- derived as $B/\mathrm{ITL}$
+from the step times, not measured end to end --- is $254$ tok/s against $296$ at
+$r{=}0$. \textbf{The A100 does not show the benefit}, which is what
+the crossover bandwidth predicts. Setting the unhidden transfer equal to what
+the freed capacity buys gives $\Xlink^{*} = K_{\mathrm{res}}\,c/(T\,\ell)$, where $\ell$ is a
+rider's link time and $K_{\mathrm{res}}$ is the
+\emph{resident cohort's} KV --- a different quantity from $\Ckv$, and
+$8.59$\,GB at 16 requests and 2048 context ---
+and $T$ the rider-free step of $54.10$\,ms: $\Xlink^{*} = 60$\,GB/s. Our link
+runs at $25.1$, or $0.42\times$ the crossing, so the loss is predicted rather
+than surprising. The same number puts a coherent link's $419$\,GB/s well above
+it --- but that is a \emph{bandwidth} argument, and
+\S\ref{sec:model:omits} shows the fixed cost binds first, so clearing
+$\Xlink^{*}$ is necessary and not sufficient. An earlier
+$+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
+by hand from a co-located run, and we withdraw it.
+
+Two properties of the cost curve matter for the coherent-link projection. It is
+\textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
+($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$; Fig.~\ref{fig:costcurve}), so
+$\Delta T = F + cr$ fits a negative fixed cost and the fixed-versus-slope split of
+Appendix~\ref{app:ridercost} is not a meaningful decomposition. What the data fits
+is a kink at $r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
+where the byte budget of \S\ref{sec:design:admission} also lands --- so a faster
+link raises the knee but does not remove the overhead. Three points do not resolve
+that overhead: it measures $18.1$, $8.6$ and $13.5$\,ms at $r = 2, 4, 6$,
+non-monotone, with the knee falling between the first two. Even its smallest value
+is $8.6$\,ms on a $53$\,ms step, most of what two extra requests buy. Whether it
+survives onto a coherent interconnect cannot be extrapolated from this substrate.
+% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
+
+\subsection{Does the capacity model predict it?}
+\label{sec:eval:model}
+
+Two parameters of Eq.~\ref{eq:step} are re-measured on each platform: $\BW_w$, and
+$\BW_{kv}$ against working-set size. The second is the larger risk to our own
+projections and we run it early for that reason --- it sits in the capacity
+denominator, so a kernel generation that reads paged KV \emph{more} efficiently
+shortens the step, shrinks the transfer budget, and lowers the predicted gain.
+
+\textbf{Neither factor of the multiplier is yet measured} (\S\ref{sec:model:gain}),
+so what this section establishes is narrower: the step-time model of
+Eq.~\ref{eq:step} holds within each model across 41 configurations, the mechanism is
+additive, and the cost of a host-tier request is decomposed on the substrate we
+have. A reader who discounts the parameter fit and the agreement with a published
+system (\S\ref{sec:model:directkv}) should read Table~\ref{tab:gain} as a prediction
+awaiting its experiment.
+
+\subsection{When does it not pay?}
+\label{sec:eval:negative}
+
+\emph{Below the applicability gate.} Eq.~\ref{eq:gate} predicts no benefit when the
+target is tighter than the full-pool step time; the tightest points of the goodput
+sweep test that directly.
+
+\emph{When the weights are small.} Llama-3.1-8B leaves 75.9\,GB of a 96\,GB part
+after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is $\times$1.03 ---
+barely anything once its riders are billed for the HBM bandwidth they consume. The
+second gate then makes it a predicted \emph{negative}: charging its own $F$
+($6.2$\,ms at 32 layers) and the per-request cost gives $\times$0.98, and its
+$F^{*}$ of $4.8$\,ms is below the $6.2$ it pays, so the residual alone exceeds what
+its capacity buys. The prediction is therefore unusually strong --- 8B should lose on
+\emph{any} implementation, however cheap the fixed cost.
+
+\emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered through
+the prefill handover, throughput is 2.3\% \emph{below} not offloading at all, and
+the same run's median ITL rises from $50.5$ to $70.9$\,ms ($+40\%$) --- so the
+throughput figure understates the loss, since at a target anywhere near the
+baseline's own step time that arm attains no goodput at all.
+% src: paper/data/pd_decode_goodput.json @ f3df05bdb
+That is what the model predicts for a 25\,GB/s link, and DirectKV reaches the same
+boundary from the kernel side, concluding that on PCIe theirs ``should be viewed
+primarily as a capacity-extension mechanism\ldots bounded by CPU--GPU interconnect
+bandwidth''. We report it as a validated negative fixing one end of the bandwidth
+axis rather than as a disappointment.
+
+\subsection{Does a second tier raise goodput?}
+\label{sec:eval:goodput}
+
+\emph{Question.} The one an operator actually asks. \emph{Claim under test.} That at
+a matched latency target the mixture serves more requests per second than either
+endpoint. \emph{Prediction.} On this substrate, \textbf{no} --- and the capacity term
+does not rescue it, since the margin is $F^{*} = 12.8$\,ms against the $12.3$ that
+configuration pays, so half a millisecond of $F$ decides it.
+
+We state the protocol here because it is the experiment the positive claim requires
+and it is not yet run. Hold model, device, workload and substrate fixed; vary only
+whether a second tier is used; sweep arrival rate until goodput stops rising; and
+report at a target anchored to the baseline's own measured full-pool step time
+rather than a round number, since a target below an arm's step time is
+unsatisfiable by every arm and measures nothing. That anchor is also the target a
+host-tier request is \emph{least} able to meet, because it adds per-step latency,
+while a very loose target discriminates nothing --- the informative regime is
+between them. The PCIe half of the comparison is already
+\S\ref{sec:eval:negative}: $2.3\%$ below not offloading, the predicted sign.
+
+\subsection{Correctness}
+\label{sec:eval:correct}
+
+A memory system that returns different tokens is not a faster memory system. We
+verify in-process that a host-tier request's attention output is bitwise identical to
+the same request served resident, over 576 mixed decode layer-steps; end to end,
+greedy decoding matched stock vLLM on 6 of 6 prompts in one round and 4 of 6 in
+another, the divergences being bf16 accumulation order rather than placement.
+Appendix~\ref{app:correct} gives the ladder and the evidence for that reading.

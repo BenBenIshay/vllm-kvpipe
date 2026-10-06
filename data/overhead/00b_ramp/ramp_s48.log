@@ -1,0 +1,346 @@
+==================================================================
+ 4.2b RIDER COST CURVE   Qwen/Qwen2.5-32B-Instruct
+ ctx 2048  batch 16 (fixed)  riders [0, 2, 4, 6]
+ step time by differencing 48 vs 176 tokens -- prefill cancels
+ rig: DECODE NODE (connector, prefill skipped)
+==================================================================
+INFO 09-30 16:14:03 [utils.py:267] non-default args: {'dtype': 'float16', 'max_model_len': 2288, 'enable_prefix_caching': False, 'max_num_seqs': 22, 'enforce_eager': True, 'kv_transfer_config': KVTransferConfig(kv_connector='PipelinedDecodeBenchConnector', engine_id='1d081e64-15c1-4504-a0d1-02de33eee46f', kv_buffer_device='cuda', kv_buffer_size=1000000000.0, kv_role='kv_both', kv_rank=None, kv_parallel_size=1, kv_ip='127.0.0.1', kv_port=14579, kv_connector_extra_config={'fill_mean': 0.015, 'fill_std': 0.0}, kv_connector_module_path=None, enable_permute_local_kv=False, kv_load_failure_policy='recompute'), 'enable_transfer_aware_admission': True, 'enable_hybrid_kv_tiers': True, 'hybrid_b_hbm_max': 16, 'hybrid_pcie_gbps': 25.1, 'hybrid_itl_ms': 1000000000.0, 'model': 'Qwen/Qwen2.5-32B-Instruct'}
+WARNING 09-30 16:14:03 [arg_utils.py:1322] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-30 16:14:04 [model.py:530] Resolved architecture: Qwen2ForCausalLM
+WARNING 09-30 16:14:04 [model.py:1871] Casting torch.bfloat16 to torch.float16.
+INFO 09-30 16:14:04 [model.py:1547] Using max model len 2288
+INFO 09-30 16:14:04 [scheduler.py:301] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 09-30 16:14:04 [vllm.py:632] Asynchronous scheduling is enabled.
+INFO 09-30 16:14:04 [vllm.py:639] Disabling NCCL for DP synchronization when using async scheduling.
+WARNING 09-30 16:14:04 [vllm.py:667] Enforce eager set, overriding optimization level to -O0
+INFO 09-30 16:14:04 [vllm.py:767] Cudagraph is disabled under eager mode
+WARNING 09-30 16:14:04 [vllm.py:1027] Turning off hybrid kv cache manager because `--kv-transfer-config` is set. This will reduce the performance of vLLM on LLMs with sliding window attention or Mamba attention. If you are a developer of kv connector, please consider supporting hybrid kv cache manager for your connector by making sure your connector is a subclass of `SupportsHMA` defined in kv_connector/v1/base.py and use --no-disable-hybrid-kv-cache-manager to start vLLM.
+INFO 09-30 16:14:05 [core.py:96] Initializing a V1 LLM engine (v0.1.dev13032+g3661a60c1.d20260603) with config: model='Qwen/Qwen2.5-32B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2.5-32B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=2288, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2.5-32B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'splitting_ops': [], 'compile_mm_encoder': False, 'compile_sizes': [], 'compile_ranges_split_points': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'eliminate_noops': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': True}, 'local_cache_dir': None}
+INFO 09-30 16:14:07 [parallel_state.py:1212] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://192.168.20.67:45513 backend=nccl
+INFO 09-30 16:14:07 [parallel_state.py:1423] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A
+INFO 09-30 16:14:08 [gpu_model_runner.py:4547] Starting to load model Qwen/Qwen2.5-32B-Instruct...
+/mnt/beegfs/benishay/vllm-kvpipe/.claude/worktrees/overhead-char/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+We recommend installing via `pip install torch-c-dlpack-ext`
+  warnings.warn(
+INFO 09-30 16:14:12 [cuda.py:351] Using FLASH_ATTN attention backend out of potential backends: ('FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION')
+INFO 09-30 16:14:15 [weight_utils.py:510] Time spent downloading weights for Qwen/Qwen2.5-32B-Instruct: 2.687286 seconds
+Loading safetensors checkpoint shards:   0% Completed | 0/17 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:   6% Completed | 1/17 [00:02<00:33,  2.07s/it]
+Loading safetensors checkpoint shards:  12% Completed | 2/17 [00:04<00:31,  2.09s/it]
+Loading safetensors checkpoint shards:  18% Completed | 3/17 [00:06<00:28,  2.07s/it]
+Loading safetensors checkpoint shards:  24% Completed | 4/17 [00:08<00:26,  2.06s/it]
+Loading safetensors checkpoint shards:  29% Completed | 5/17 [00:10<00:24,  2.06s/it]
+Loading safetensors checkpoint shards:  35% Completed | 6/17 [00:12<00:23,  2.12s/it]
+Loading safetensors checkpoint shards:  41% Completed | 7/17 [00:14<00:20,  2.07s/it]
+Loading safetensors checkpoint shards:  47% Completed | 8/17 [00:16<00:17,  1.93s/it]
+Loading safetensors checkpoint shards:  53% Completed | 9/17 [00:18<00:15,  1.99s/it]
+Loading safetensors checkpoint shards:  59% Completed | 10/17 [00:20<00:13,  1.97s/it]
+Loading safetensors checkpoint shards:  65% Completed | 11/17 [00:22<00:12,  2.02s/it]
+Loading safetensors checkpoint shards:  71% Completed | 12/17 [00:24<00:10,  2.03s/it]
+Loading safetensors checkpoint shards:  76% Completed | 13/17 [00:26<00:08,  2.03s/it]
+Loading safetensors checkpoint shards:  82% Completed | 14/17 [00:28<00:06,  2.06s/it]
+Loading safetensors checkpoint shards:  88% Completed | 15/17 [00:30<00:04,  2.02s/it]
+Loading safetensors checkpoint shards:  94% Completed | 16/17 [00:32<00:02,  2.09s/it]
+Loading safetensors checkpoint shards: 100% Completed | 17/17 [00:34<00:00,  2.06s/it]
+Loading safetensors checkpoint shards: 100% Completed | 17/17 [00:34<00:00,  2.04s/it]
+
+INFO 09-30 16:14:50 [default_loader.py:291] Loading weights took 34.79 seconds
+INFO 09-30 16:14:51 [gpu_model_runner.py:4644] Model loading took 61.04 GiB memory and 41.589441 seconds
+INFO 09-30 16:14:54 [gpu_worker.py:355] Available KV cache memory: 8.66 GiB
+INFO 09-30 16:14:54 [kv_cache_utils.py:1102] KV pipelining: hybrid tiers enabled — full HBM KV layout; CPU-tier transfers via CpuKvTable only.
+INFO 09-30 16:14:54 [kv_cache_utils.py:1574] GPU KV cache size: 35,472 tokens
+INFO 09-30 16:14:54 [kv_cache_utils.py:1579] Maximum concurrency for 2,288 tokens per request: 15.50x
+INFO 09-30 16:14:54 [factory.py:64] Creating v1 connector with name: PipelinedDecodeBenchConnector and engine_id: 1d081e64-15c1-4504-a0d1-02de33eee46f
+WARNING 09-30 16:14:54 [base.py:166] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+INFO 09-30 16:14:54 [kv_pipelining_direct_window.py:107] DirectKWindow: wrap-around prefetch enabled (layers 60..63 save → prefetch 0..3); bootstrap off
+INFO 09-30 16:14:54 [utils.py:38] Connectors do not specify a kv cache layout, defaulting to NHD.
+INFO 09-30 16:14:54 [kv_pipelining_direct_window.py:289] DirectKWindow: 64 layers, unique GPU KV tensors=64 (expected 5 for K=4 decode_only=False), allocator GPU KV=8.66 GiB
+INFO 09-30 16:14:54 [core.py:293] init engine (profile, create kv cache, warmup model) took 3.54 seconds
+INFO 09-30 16:14:54 [transfer_aware_admission.py:201] hybrid KV bytes/token = 262144 (model-derived)
+INFO 09-30 16:14:54 [factory.py:64] Creating v1 connector with name: PipelinedDecodeBenchConnector and engine_id: 1d081e64-15c1-4504-a0d1-02de33eee46f
+WARNING 09-30 16:14:54 [base.py:166] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+INFO 09-30 16:14:54 [kv_pipelining_direct_window.py:107] DirectKWindow: wrap-around prefetch enabled (layers 60..63 save → prefetch 0..3); bootstrap off
+INFO 09-30 16:14:55 [llm.py:347] Supported tasks: ('generate',)
+decode-purity gate attached (per-step, non-perturbing)
+
+warming up (one throwaway generation)
+INFO 09-30 16:14:55 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.091s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:14:55 [pipelined_decode_bench_connector.py:435] HYBRID cohort split: 16 hbm + 0 cpu decode reqs (stream_cpu=False, hbm_only_path=True)
+INFO 09-30 16:14:57 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.074s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:00 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.073s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:00 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 100: cumulative fill=0.238s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:05 [loggers.py:257] Engine 000: Avg prompt throughput: 9619.8 tokens/s, Avg generation throughput: 289.7 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 96.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:15:06 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 200: cumulative fill=0.238s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 0 rep1: step   64.21 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep1] PURITY FAIL steps=191 -- DISCARDING
+[r=0 rep1]   - prefill leaked into the window: 2208 tokens over 1 steps (need --connector for decode-node emulation)
+INFO 09-30 16:15:11 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.073s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:12 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 300: cumulative fill=0.311s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:14 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.073s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:15 [loggers.py:257] Engine 000: Avg prompt throughput: 6521.6 tokens/s, Avg generation throughput: 253.2 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:15:17 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 400: cumulative fill=0.384s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:22 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 500: cumulative fill=0.384s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 0 rep2: step   64.21 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep2] PURITY FAIL steps=191 -- DISCARDING
+[r=0 rep2]   - prefill leaked into the window: 2208 tokens over 1 steps (need --connector for decode-node emulation)
+INFO 09-30 16:15:24 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.073s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:25 [loggers.py:257] Engine 000: Avg prompt throughput: 3270.3 tokens/s, Avg generation throughput: 255.5 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.1%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:15:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.073s, staged to CPU in 0.000s (16 requests)
+INFO 09-30 16:15:28 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 600: cumulative fill=0.531s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:34 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 700: cumulative fill=0.531s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:35 [loggers.py:257] Engine 000: Avg prompt throughput: 3273.1 tokens/s, Avg generation throughput: 295.7 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 99.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 0 rep3: step   64.31 ms, stream  0.000 GB/step, back 0.000, tiers {'hbm': 16}
+[r=0 rep3] PURITY FAIL steps=191 -- DISCARDING
+[r=0 rep3]   - prefill leaked into the window: 2208 tokens over 1 steps (need --connector for decode-node emulation)
+      DISCARDED 3/3 rep(s) on the decode-purity gate
+INFO 09-30 16:15:44 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:15:44 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 128-b827b616 (128 blocks total, 152 free)
+INFO 09-30 16:15:44 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:15:44 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 129-ad5d6fd5 (256 blocks total, 152 free)
+INFO 09-30 16:15:45 [loggers.py:257] Engine 000: Avg prompt throughput: 3685.3 tokens/s, Avg generation throughput: 71.0 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.1%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:15:47 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 800: cumulative fill=0.612s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:15:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 146-a6560b48 (384 blocks total, 152 free)
+INFO 09-30 16:15:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:15:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 147-b4bf8f18 (512 blocks total, 152 free)
+INFO 09-30 16:15:54 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 900: cumulative fill=0.693s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:15:55 [loggers.py:257] Engine 000: Avg prompt throughput: 3664.1 tokens/s, Avg generation throughput: 241.5 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 97.5%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:16:03 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1000: cumulative fill=0.693s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 2 rep1: step   45.34 ms, stream  0.990 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 2}
+[r=2 rep1] PURITY FAIL steps=193 -- DISCARDING
+[r=2 rep1]   - prefill leaked into the window: 6622 tokens over 1 steps (need --connector for decode-node emulation)
+INFO 09-30 16:16:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 164-ab07ff28 (640 blocks total, 152 free)
+INFO 09-30 16:16:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:04 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 165-8893001e (768 blocks total, 152 free)
+INFO 09-30 16:16:05 [loggers.py:257] Engine 000: Avg prompt throughput: 3684.9 tokens/s, Avg generation throughput: 179.9 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:16:07 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:07 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 182-8486c725 (896 blocks total, 152 free)
+INFO 09-30 16:16:07 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:07 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 183-a6abb01d (1024 blocks total, 152 free)
+INFO 09-30 16:16:10 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1100: cumulative fill=0.855s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:16:15 [loggers.py:257] Engine 000: Avg prompt throughput: 3683.4 tokens/s, Avg generation throughput: 241.0 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 97.5%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:16:17 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1200: cumulative fill=0.855s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 2 rep2: step   90.50 ms, stream  0.990 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 2}
+[r=2 rep2] PURITY FAIL steps=193 -- DISCARDING
+[r=2 rep2]   - prefill leaked into the window: 6622 tokens over 1 steps (need --connector for decode-node emulation)
+INFO 09-30 16:16:23 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 200-9833c9b1 (1152 blocks total, 152 free)
+INFO 09-30 16:16:23 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:23 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 201-b4a818c7 (1280 blocks total, 152 free)
+INFO 09-30 16:16:25 [loggers.py:257] Engine 000: Avg prompt throughput: 3675.2 tokens/s, Avg generation throughput: 179.5 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 94.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:16:26 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1300: cumulative fill=0.936s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:16:26 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 218-9524e223 (1408 blocks total, 152 free)
+INFO 09-30 16:16:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 219-841af2fc (1536 blocks total, 152 free)
+INFO 09-30 16:16:34 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1400: cumulative fill=1.017s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:16:35 [loggers.py:257] Engine 000: Avg prompt throughput: 3681.9 tokens/s, Avg generation throughput: 240.9 tokens/s, Running: 18 reqs, Waiting: 0 reqs, GPU KV cache usage: 98.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 2 rep3: step   90.45 ms, stream  0.990 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 2}
+[r=2 rep3] PURITY FAIL steps=193 -- DISCARDING
+[r=2 rep3]   - prefill leaked into the window: 6622 tokens over 1 steps (need --connector for decode-node emulation)
+      DISCARDED 3/3 rep(s) on the decode-purity gate
+      discarded 1 implausible sample(s) below the 61.0 ms baseline
+INFO 09-30 16:16:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:42 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 236-a032b8e7 (1664 blocks total, 152 free)
+INFO 09-30 16:16:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:42 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 237-9adcb256 (1792 blocks total, 152 free)
+INFO 09-30 16:16:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:43 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1500: cumulative fill=1.102s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:16:43 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 238-b2dbe1c4 (1920 blocks total, 152 free)
+INFO 09-30 16:16:43 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:43 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 239-bd80e53a (2048 blocks total, 152 free)
+INFO 09-30 16:16:45 [loggers.py:257] Engine 000: Avg prompt throughput: 4068.6 tokens/s, Avg generation throughput: 162.5 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:16:47 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:16:47 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 256-97594173 (2176 blocks total, 152 free)
+INFO 09-30 16:16:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 257-b3dab541 (2304 blocks total, 152 free)
+INFO 09-30 16:16:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 258-89953027 (2432 blocks total, 152 free)
+INFO 09-30 16:16:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:16:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 259-a40a6298 (2560 blocks total, 152 free)
+INFO 09-30 16:16:52 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1600: cumulative fill=1.196s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:16:55 [loggers.py:257] Engine 000: Avg prompt throughput: 4080.0 tokens/s, Avg generation throughput: 191.3 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 96.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:17:02 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1700: cumulative fill=1.196s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:07 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 164.5 tokens/s, Running: 5 reqs, Waiting: 0 reqs, GPU KV cache usage: 31.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 4 rep1: step  124.22 ms, stream  1.945 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 4}
+[r=4 rep1] PURITY FAIL steps=198 -- DISCARDING
+[r=4 rep1]   - prefill leaked into the window: 11027 tokens over 2 steps (need --connector for decode-node emulation)
+INFO 09-30 16:17:09 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:17:09 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 276-8c0e70af (2688 blocks total, 152 free)
+INFO 09-30 16:17:09 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:09 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 277-8dc61ac5 (2816 blocks total, 152 free)
+INFO 09-30 16:17:09 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:09 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 278-b4e6d858 (2944 blocks total, 152 free)
+INFO 09-30 16:17:09 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 279-9fd82fcd (3072 blocks total, 152 free)
+INFO 09-30 16:17:14 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1800: cumulative fill=1.285s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:14 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:17:14 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 296-9d71891e (3200 blocks total, 152 free)
+INFO 09-30 16:17:14 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:14 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 297-b744625f (3328 blocks total, 152 free)
+INFO 09-30 16:17:15 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:15 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 298-adcd6e33 (3456 blocks total, 152 free)
+INFO 09-30 16:17:15 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:15 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 299-b3f384d4 (3584 blocks total, 152 free)
+INFO 09-30 16:17:17 [loggers.py:257] Engine 000: Avg prompt throughput: 8184.1 tokens/s, Avg generation throughput: 149.1 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:17:24 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 1900: cumulative fill=1.374s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:27 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 205.9 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 98.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 4 rep2: step  124.41 ms, stream  1.945 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 4}
+[r=4 rep2] PURITY FAIL steps=198 -- DISCARDING
+[r=4 rep2]   - prefill leaked into the window: 11027 tokens over 2 steps (need --connector for decode-node emulation)
+INFO 09-30 16:17:35 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:17:36 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2000: cumulative fill=1.451s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 316-a9548bb3 (3712 blocks total, 152 free)
+INFO 09-30 16:17:36 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 317-8779b858 (3840 blocks total, 152 free)
+INFO 09-30 16:17:36 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 318-b670b31e (3968 blocks total, 152 free)
+INFO 09-30 16:17:36 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:36 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 319-a0a34761 (4096 blocks total, 152 free)
+INFO 09-30 16:17:37 [loggers.py:257] Engine 000: Avg prompt throughput: 4083.7 tokens/s, Avg generation throughput: 117.6 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.1%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:17:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.076s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:17:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 336-88593ffc (4224 blocks total, 152 free)
+INFO 09-30 16:17:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 337-a2954257 (4352 blocks total, 152 free)
+INFO 09-30 16:17:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 338-a06c9641 (4480 blocks total, 152 free)
+INFO 09-30 16:17:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:17:42 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 339-99232817 (4608 blocks total, 152 free)
+INFO 09-30 16:17:46 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2100: cumulative fill=1.553s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:47 [loggers.py:257] Engine 000: Avg prompt throughput: 4063.1 tokens/s, Avg generation throughput: 192.4 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 95.3%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:17:55 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2200: cumulative fill=1.553s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:17:57 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 202.7 tokens/s, Running: 20 reqs, Waiting: 0 reqs, GPU KV cache usage: 99.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 4 rep3: step  124.25 ms, stream  1.945 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 4}
+[r=4 rep3] PURITY FAIL steps=198 -- DISCARDING
+[r=4 rep3]   - prefill leaked into the window: 11027 tokens over 2 steps (need --connector for decode-node emulation)
+      DISCARDED 3/3 rep(s) on the decode-purity gate
+INFO 09-30 16:18:02 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.076s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:18:02 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 356-89ccf752 (4736 blocks total, 152 free)
+INFO 09-30 16:18:02 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 357-85003fc0 (4864 blocks total, 152 free)
+INFO 09-30 16:18:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 358-b629fd8b (4992 blocks total, 152 free)
+INFO 09-30 16:18:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 359-b21562a4 (5120 blocks total, 152 free)
+INFO 09-30 16:18:03 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:03 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 360-8c5a78d6 (5248 blocks total, 152 free)
+INFO 09-30 16:18:04 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:04 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 361-82ff8d46 (5376 blocks total, 152 free)
+INFO 09-30 16:18:07 [loggers.py:257] Engine 000: Avg prompt throughput: 4447.5 tokens/s, Avg generation throughput: 99.3 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:18:09 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2300: cumulative fill=1.650s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:18:10 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:18:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 378-97d9a331 (5504 blocks total, 152 free)
+INFO 09-30 16:18:10 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:10 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 379-877dff7c (5632 blocks total, 152 free)
+INFO 09-30 16:18:11 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:11 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 380-8983be6d (5760 blocks total, 152 free)
+INFO 09-30 16:18:11 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:11 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 381-94c8fa61 (5888 blocks total, 152 free)
+INFO 09-30 16:18:11 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:11 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 382-9c08f2a6 (6016 blocks total, 152 free)
+INFO 09-30 16:18:12 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:12 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 383-8ddf3d83 (6144 blocks total, 152 free)
+INFO 09-30 16:18:17 [loggers.py:257] Engine 000: Avg prompt throughput: 4496.8 tokens/s, Avg generation throughput: 138.3 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 94.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:18:23 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2400: cumulative fill=1.748s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:18:27 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 152.6 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 98.2%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:18:39 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 100.5 tokens/s, Running: 7 reqs, Waiting: 0 reqs, GPU KV cache usage: 43.7%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:18:40 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2500: cumulative fill=1.748s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 6 rep1: step  175.17 ms, stream  2.863 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 6}
+[r=6 rep1] PURITY FAIL steps=202 -- DISCARDING
+[r=6 rep1]   - prefill leaked into the window: 15425 tokens over 2 steps (need --connector for decode-node emulation)
+INFO 09-30 16:18:40 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:18:40 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 400-9909eb18 (6272 blocks total, 152 free)
+INFO 09-30 16:18:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 401-a75ba03e (6400 blocks total, 152 free)
+INFO 09-30 16:18:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 402-822599b6 (6528 blocks total, 152 free)
+INFO 09-30 16:18:41 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:41 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 403-a94bd9f7 (6656 blocks total, 152 free)
+INFO 09-30 16:18:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:42 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 404-85d5d1ab (6784 blocks total, 152 free)
+INFO 09-30 16:18:42 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:42 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 405-9db18aac (6912 blocks total, 152 free)
+INFO 09-30 16:18:48 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.077s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:18:48 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 422-a00bc377 (7040 blocks total, 152 free)
+INFO 09-30 16:18:49 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:49 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 423-986f594f (7168 blocks total, 152 free)
+INFO 09-30 16:18:49 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:49 [loggers.py:257] Engine 000: Avg prompt throughput: 8182.3 tokens/s, Avg generation throughput: 125.0 tokens/s, Running: 19 reqs, Waiting: 3 reqs, GPU KV cache usage: 98.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:18:49 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 424-9bae10a1 (7296 blocks total, 152 free)
+INFO 09-30 16:18:49 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:49 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 425-b560af69 (7424 blocks total, 152 free)
+INFO 09-30 16:18:49 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:50 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 426-ab54c2ae (7552 blocks total, 152 free)
+INFO 09-30 16:18:50 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:18:50 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 427-bdaaa7b0 (7680 blocks total, 152 free)
+INFO 09-30 16:18:53 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2600: cumulative fill=1.944s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:18:59 [loggers.py:257] Engine 000: Avg prompt throughput: 809.4 tokens/s, Avg generation throughput: 151.0 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 96.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:19:07 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2700: cumulative fill=1.944s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:19:09 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 150.6 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 98.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+  r= 6 rep2: step  175.07 ms, stream  2.863 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 6}
+[r=6 rep2] PURITY FAIL steps=202 -- DISCARDING
+[r=6 rep2]   - prefill leaked into the window: 15425 tokens over 2 steps (need --connector for decode-node emulation)
+INFO 09-30 16:19:19 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.078s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:19:19 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 444-9aaf1d34 (7808 blocks total, 152 free)
+INFO 09-30 16:19:19 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:19 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 445-82841c88 (7936 blocks total, 152 free)
+INFO 09-30 16:19:19 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:19 [loggers.py:257] Engine 000: Avg prompt throughput: 3619.9 tokens/s, Avg generation throughput: 81.1 tokens/s, Running: 19 reqs, Waiting: 3 reqs, GPU KV cache usage: 98.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:19:19 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 446-89abade5 (8064 blocks total, 152 free)
+INFO 09-30 16:19:20 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:20 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 447-8f26629c (8192 blocks total, 152 free)
+INFO 09-30 16:19:20 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:20 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 448-ae1c7259 (8320 blocks total, 152 free)
+INFO 09-30 16:19:20 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:21 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 449-8e88dcf4 (8448 blocks total, 152 free)
+INFO 09-30 16:19:23 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2800: cumulative fill=2.043s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:19:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.078s, staged to CPU in 0.000s (17 requests)
+INFO 09-30 16:19:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 466-baf8e4cc (8576 blocks total, 152 free)
+INFO 09-30 16:19:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 467-b08daf1c (8704 blocks total, 152 free)
+INFO 09-30 16:19:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:27 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 468-89996c1c (8832 blocks total, 152 free)
+INFO 09-30 16:19:27 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:28 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 469-91b148f3 (8960 blocks total, 152 free)
+INFO 09-30 16:19:28 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:28 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 470-bec84a39 (9088 blocks total, 152 free)
+INFO 09-30 16:19:28 [pipelined_decode_bench_connector.py:485] PipelinedDecodeBench: filled KV in 0.004s, staged to CPU in 0.000s (1 requests)
+INFO 09-30 16:19:28 [scheduler.py:1499] hybrid-kv tiers: RECLAIMED 128 main-pool blocks from host-tier request 471-b7689d5f (9216 blocks total, 152 free)
+INFO 09-30 16:19:29 [loggers.py:257] Engine 000: Avg prompt throughput: 5254.5 tokens/s, Avg generation throughput: 133.4 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 93.9%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:19:37 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 2900: cumulative fill=2.142s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+INFO 09-30 16:19:40 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 154.3 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 96.8%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:19:50 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 149.6 tokens/s, Running: 22 reqs, Waiting: 0 reqs, GPU KV cache usage: 99.6%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 100.0%
+INFO 09-30 16:19:51 [pipelined_decode_bench_connector.py:793] PipelinedDecodeBench step 3000: cumulative fill=2.142s, stage=0.000s, save_submit=0.000s/0 calls (avg 0.000 ms), pinned CPU memory: 0.00 GB
+  r= 6 rep3: step  175.14 ms, stream  2.863 GB/step, back 0.000, tiers {'hbm': 16, 'cpu': 6}
+[r=6 rep3] PURITY FAIL steps=202 -- DISCARDING
+[r=6 rep3]   - prefill leaked into the window: 15425 tokens over 2 steps (need --connector for decode-node emulation)
+      DISCARDED 3/3 rep(s) on the decode-purity gate
+
+==================================================================
+ riders   step ms    dT ms  dT/rider   GB/step   link ms    eta
+      0     64.21     0.00      0.00     0.000      0.00    nan  <-- IMPURE, not a rider cost
+      2     90.48    26.27     13.13     0.990     39.46   0.33  <-- IMPURE, not a rider cost
+      4    124.25    60.03     15.01     1.945     77.48   0.23  <-- IMPURE, not a rider cost
+      6    175.14   110.93     18.49     2.863    114.06   0.03  <-- IMPURE, not a rider cost
+
+==================================================================
+ COST MODEL   step ~= max(T_compute, T_transfer) + overhead
+  per-rider transfer      =   19.73 ms (0.495 GB at 25.1 GB/s)
+  compute step            =   64.21 ms
+  KNEE r = T/per-rider    =    3.25 riders (beyond this the step IS the transfer)
+    r= 2: max(compute, transfer) =   64.21 ms, measured   90.48 -> overhead  26.27 ms
+    r= 4: max(compute, transfer) =   78.92 ms, measured  124.25 -> overhead  45.33 ms
+    r= 6: max(compute, transfer) =  118.38 ms, measured  175.14 -> overhead  56.76 ms
+  overhead (median)       =   45.33 ms
+
+  best operating point: r = 3 riders -> 0.70x decode throughput
+  VERDICT: it does not pay on this substrate -- at the knee (3.3 riders) the overhead alone (45.3 ms on a 64.2 ms step) exceeds what 3 extra requests buy. A faster link raises the knee; it does not remove the overhead.
+
+marginal rule (per measured point):
+  r= 2: dT/step 0.1452 vs 1/B 0.0556 -> STOP   decode tok/s  198.9 vs  249.2 (0.798x)
+  r= 4: dT/step 0.1208 vs 1/B 0.0500 -> STOP   decode tok/s  161.0 vs  249.2 (0.646x)
+  r= 6: dT/step 0.1056 vs 1/B 0.0455 -> STOP   decode tok/s  125.6 vs  249.2 (0.504x)
+
+wrote /mnt/beegfs/benishay/paper_runs/20260930/overhead/00b_ramp/ramp_s48.json
+[rank0]:[W930 16:19:57.687890907 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

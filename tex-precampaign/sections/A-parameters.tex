@@ -1,0 +1,184 @@
+% Appendix A -- parameter measurement, moved out of section 3 (2026-09-26) to
+% keep the body within the MLSys page limit. Nothing here is needed to follow
+% the argument; all of it is needed to check it.
+
+\section{Measured parameters and sensitivity}
+\label{app:params}
+
+A100-80 PCIe; two models; 41 single-shot configurations plus a
+13-configuration $n{=}3$ repeat sweep; distinct random contexts; prefix caching
+disabled.
+% src: paper/model/p4_llama8b_a100_rep3.json @ 2bfc6ca5e
+
+\paragraph{Weight read is efficient and stable within a model.} $\effw \approx
+0.75$ of the measured $1935$\,GB/s peak ($\approx$1450\,GB/s achieved). The
+$B{=}1$ steps must have their KV term subtracted before $\effw$ is read off
+them: it is 1.6\% of the step at 2K context and 6.0\% at 8K, and leaving it in
+manufactures a drift (0.729 falling to 0.694 for Llama-3.1-8B) that is the KV
+term growing rather than the weight read degrading. Subtracted, $\effw$ is
+0.741/0.736/0.738 for Llama-3.1-8B across 2K--8K and 0.778/0.777 for
+Qwen2.5-32B --- flat within each model, and 5.3\% apart between them. We carry
+the single value 0.75, which is between them, and \S\ref{sec:model:cancel}
+reports what each choice predicts.
+
+\paragraph{Paged KV read is neither.} $\effkv$ degrades by $1.6\times$ with the
+KV working set (Table~\ref{tab:effkv}):
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+KV working set & 4.3\,GB & 8.6\,GB & 17--34\,GB & 43\,GB & 51.5\,GB \\
+\midrule
+$\effkv$ & 0.77 & 0.72 & 0.54--0.56 & 0.49 & 0.46 \\
+\bottomrule
+\end{tabular}
+\caption{Paged KV read efficiency is not a constant. Error bars from $n{=}3$
+repeats are $\pm0.02$--$0.04$; the degradation is far outside them. The
+17--34\,GB column takes 0.55 rather than the 0.747 measured at
+$B{=}16,S{=}8192$ --- the anomaly discussed below. That is the
+\emph{optimistic} choice for us, since a lower $\effkv$ lengthens the step and
+so raises the projected gain, and we note it rather than let it pass.}
+\label{tab:effkv}
+\end{table*}
+
+This is the real correction to the model. It also bears on how such models are
+built elsewhere: \textbf{a roofline that charges KV at one fixed bandwidth will
+be optimistic at the capacity-bound operating point}, because that is where
+$\effkv$ is worst. We measured this on one GPU and one kernel generation
+(A100, FlashAttention-2 era), so we state it as a property of what we measured
+rather than of the literature.
+
+\paragraph{A caveat at kernel granularity.} The claim that only total KV bytes
+matter holds at three of four same-byte test points but breaks at 17.2\,GB
+($B{=}32,S{=}4096$ gives 0.561 against $B{=}16,S{=}8192$ at 0.747). The cause
+is a reproducible anomaly at $B{=}32,S{=}4096$ that also appeared in an
+independent earlier run --- an attention-kernel scheduling artifact, most
+likely a split-KV heuristic in the attention kernel choosing a different
+partitioning at the larger batch, not measurement noise ($\pm0.61$\,ms
+against a $\sim$3\,ms deviation). The aggregate law holds; the
+per-configuration surface has kernel-regime steps.
+
+\paragraph{Compute is not the binding term.} Decode-attention arithmetic
+intensity equals the GQA group size --- 8 for 70B, 4 for 8B --- against an
+H100 balance point near 116 FLOP/byte, so attention sits 14--29$\times$ below
+the compute roof. At batch 8, 70B spends 7\% of its step on arithmetic.
+% src: paper/model/compute_check.py @ 2bfc6ca5e
+Llama-8B at 4K crosses the arithmetic-intensity balance point at batch 142, while its step remains memory-bound by about $4\times$, which is a further
+reason it is the wrong model to evaluate on.
+
+
+
+\subsection*{The step-time fits in full}
+
+\paragraph{Validated on hardware, per model.} Equation~\ref{eq:step} makes two
+claims: that ITL depends on batch and context only through their product
+$B\cdot S$, and that the intercept is the weight term $W/(\BW\effw)$. We test
+them on an A100-80 over 41 single-shot configurations --- 27 on Llama-3.1-8B, 14
+on Qwen2.5-32B --- plus 13 three-repeat points drawn from the same grid.
+
+Within each model, ITL is linear in $B\cdot S$: $R^2 = 0.975$ for Llama-3.1-8B
+with residuals unbiased across $S \in \{2048, 4096, 8192\}$ (means $+0.09$,
+$-0.09$, $+0.00$\,ms), and $R^2 = 0.92$ for Qwen2.5-32B. Unbiased in $S$ is the
+weaker statement it sounds like: grouped by KV \emph{magnitude} the same
+residuals are a clean U, from $+2$\,ms below 1\,GB through $-6.6$ in the middle
+to $+6$\,ms (8\%) at the largest points. That curvature is not noise --- it is
+the $\effkv$ degradation of \S\ref{sec:model:params} showing through a linear
+fit, which is why we use the measured $\effkv$ curve rather than the regression
+for anything that matters. $B{=}16,S{=}4096$ and
+$B{=}8,S{=}8192$ both measure $17.17$\,ms. \textbf{Pooling the two models is
+meaningless and we do not report it} --- the fit across both is $R^2 = 0.19$,
+because Eq.~\ref{eq:step}'s intercept is model-dependent, which is the whole
+content of \S\ref{sec:model:modeldep}.
+
+That intercept is the sharper test, because Eq.~\ref{eq:step} predicts it rather
+than fitting it. Predicting it needs $\effw$, which we extract from the $B{=}1$
+points after subtracting their KV term --- small but not negligible, 1.6\% of
+the step at 2K context and 6.0\% at 8K, and leaving it in produces a spurious
+drift in $\effw$ with context. Subtracted, $\effw$ is stable within each model
+(0.741, 0.736, 0.738 for Llama-3.1-8B across 2K--8K; 0.778, 0.777 for
+Qwen2.5-32B) and differs 5.3\% between them.
+
+Against those values Eq.~\ref{eq:step} predicts intercepts of $11.2$ and
+$43.6$\,ms where the regressions fit $9.4$ and $43.6$. \textbf{The decomposition
+is exact for Qwen2.5-32B --- within $0.01$\,ms --- and wrong by $1.9$\,ms, or
+20\%, for Llama-3.1-8B.} We report the split rather than the average because the
+average would hide it: a single $\effw = 0.75$ gives $11.1$ and $45.2$\,ms, both
+overshooting, which looks like uniform miscalibration and is not.
+
+The 8B gap is the model's clearest failure on the data we have. Its most likely
+source is that Eq.~\ref{eq:step} charges weights and KV at efficiencies fitted
+in separate regimes, and an 8B's step is 86\% KV (\S\ref{sec:background}), so
+almost none of it is the term the intercept isolates --- which is also why the
+8B is the row the projections should be trusted least on.
+% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
+We use differential timing --- $\mathrm{ITL} = [T(N_2) - T(N_1)]/(N_2 - N_1)$
+with identical prompts in both runs, so prefill and warmup cancel; context
+grows across the $N_2-N_1$ tokens, which the differencing does not remove.
+
+
+\subsection*{Sensitivity, and what is held out}
+
+\paragraph{Weight precision is the clean lever on $\HBM/\Ckv$, and we do not
+pull it.} Comparing models of different sizes moves the weight footprint, but
+also layer count, KV-head count and architecture, so a trend across 8B, 32B and
+70B confounds the quantity the law is about with three others. The clean
+instrument is a \emph{single} model at two weight precisions, which moves
+$\HBM/\Ckv$ and nothing else --- the two Qwen-32B rows above share an
+architecture, a tokenizer and a KV geometry and differ only in that fp8 weights
+leave 60.0\,GB for KV where fp16 leave 26.5\,GB.
+
+We report those rows as projections rather than measurements. Validating the
+$\HBM/\Ckv$ axis directly would have cost hours we judged better spent
+comparing against the closest prior system, so the law is validated across
+\emph{bandwidth} (\S\ref{sec:eval:cost}) while its amplifier rests on the
+parameter fit and on agreement with published results
+(\S\ref{sec:model:directkv}). \S\ref{sec:eval:model} states this again where
+a reviewer will look for it.
+
+The same observation has a practical edge, which \S\ref{sec:discussion} takes
+up: quantizing \emph{weights} is not neutral to a memory system, it actively
+removes its headroom, while quantizing \emph{KV} scales both cohorts together
+and composes.
+
+\paragraph{What is and is not held out.} $\effw$ is calibrated on the $B{=}1$
+points, with their KV term subtracted, and $\effkv$ on sub-capacity working
+sets, so the two come from disjoint parts of the same sweeps. The full-pool step
+times above are \emph{not} an independent check on them --- they are computed
+from those same fits, so comparing Eq.~\ref{eq:step} against them would be
+circular and we do not. The one out-of-sample test we have is the intercept
+recovery of \S\ref{sec:model:cancel}, and it passes on one model of two:
+exactly on Qwen2.5-32B, and 20\% high on Llama-3.1-8B. Measuring a real
+full-pool step on a device large enough to hold one would be the stronger test,
+and we have not run it.
+
+Several of these parameters are measured with error, so it is worth asking
+which ones the projection actually depends on. For Qwen-32B fp16 on GH200-96 at
+8K --- where Table~\ref{tab:gain} reads $\times1.45$ --- $\effw$ over 0.70--0.80
+barely moves it, spanning $\times1.41$--$\times1.47$. \textbf{$\effkv$ is a
+different matter}: $\pm20\%$ spans $\times1.31$--$\times1.47$, and the downside
+is the larger half. Charging the
+rider's HBM passes is what made it so, because $\effkv$ now prices the rider
+traffic as well as the resident cohort's, and it is the one parameter a new
+kernel generation moves. The reason is structural --- the gain depends on a
+\emph{ratio}, so a bandwidth error largely cancels between the step-time
+numerator and the capacity denominator.
+
+The other parameter that matters is the \textbf{weight footprint}. Moving it
+from 60 to 68\,GB spans $\times1.34$--$\times1.53$, because weights sit in
+$\Ckv = \HBM - W$ and are cancelled by nothing. This is why we use measured
+checkpoint sizes rather than nominal parameter counts --- for a quantized model
+the two differ by gigabytes and the error propagates undamped into the headline
+--- and it is why halving weight precision is the sharpest lever we have on
+$\HBM/\Ckv$.
+% src: paper/model/killer_v2.py sensitivity sweep, 2026-09-06
+
+Note the direction of the $\effkv$ term, because it is our main downside risk:
+a \emph{more} efficient paged-KV read shortens the step, shrinks the transfer
+budget, and \emph{lowers} the gain. The curve above is measured on FA-2-era
+kernels, and a Hopper-generation kernel~\cite{flashattention3} reads paged KV
+differently. Re-measuring it there is a prerequisite for any Hopper
+projection, and a downside risk rather than a formality: a kernel generation
+that reads paged KV \emph{more} efficiently shortens the step, shrinks the
+transfer budget, and lowers the predicted gain.

@@ -1,0 +1,94 @@
+% ============================================================================
+% Section 7 -- related work. Claim C4 and the novelty argument.
+%
+% Source: seven papers read end-to-end 2026-08-10.
+% CUT TO ~0.75pp 2026-09-27. Only the two papers a reviewer would reject on get
+% a paragraph here: DirectKV (the competing mechanism) and Pie (the closest
+% prior placement). NanoFlow's attack on the premise, the migration and
+% KV-shrinking alternatives, NEO's compute axis and the endpoint argument are all
+% in appendix C, which exists for exactly this.
+%
+% PROVENANCE: every number is attributed to the paper that reported it, which is
+% stronger than a % src: into our own data.
+% ============================================================================
+\section{Related work}
+\label{sec:related}
+
+\paragraph{The mechanism is solved; DirectKV is a competitor, not a substrate.}
+A trace-driven study of KV offloading finds device memory capacity, not token
+budget, limits batch size~\cite{bottlenecks} and names scheduler improvements as
+future work --- the premise this paper builds on.
+DirectKV~\cite{directkv} then contributes zero-copy GPU attention over
+CPU-resident KV on coherent interconnects, eliminating the staging buffer. Its
+kernel reads host memory \emph{during} the attention that needs it, where we
+prefetch layer $\ell{+}1$ while layer $\ell$ computes: they pay no device memory
+and get no overlap, we pay one $k$-window and hide about $90\%$ of the transfer.
+Neither dominates on paper and settling it needs both on one machine, which needs
+their SM90a-only kernel. Two things their paper establishes matter here. Its
+\S8.1 states the policy dimension is untouched --- the design ``does not change
+scheduling, batching, or KV-management policies'' --- and its own analysis reaches
+our PCIe conclusion from the kernel side, ``on PCIe, DirectKV should be viewed
+primarily as a capacity-extension mechanism,'' while reporting NVLink-C2C cutting
+attention latency up to $4.2\times$. Neither their evaluation nor ours covers a
+70B-class configuration, which our model identifies as the most favourable point
+of its curve, so that point is measured by nobody yet.
+
+\paragraph{The closest prior mechanism partitions by layer.} Pie~\cite{pie}
+targets the same hardware, stages KV through GPU buffers as we do, prefetches per
+layer so transfer overlaps compute, and reports up to $1.9\times$ over vLLM.
+\textbf{The difference is the axis of partition.} Pie relocates $m$ of $n$
+\emph{layers} of KV, ``using per-layer KV cache as the basic management unit'',
+and that split applies to \emph{every request identically} under one global
+expansion factor. So \textbf{no request's KV is ever fully absent from the
+device}, and \textbf{interconnect bandwidth is spent uniformly} --- a fixed
+fraction of every request's KV rather than the whole KV of requests we select,
+which is what makes \emph{which requests} a decision at all. The axes are not
+orthogonal: they spend the same link budget and in the fluid limit reach the same
+interior point, so our case for requests rests on what that limit omits
+(\S\ref{sec:intro}). One thing favours layers and we concede it --- a layer split
+has no integer quantization, so at long context it reaches operating points a
+request split cannot express.
+
+\paragraph{What else could be done instead.} Three alternatives bound the
+contribution and Appendix~\ref{app:related} treats each in full.
+NanoFlow~\cite{nanoflow} argues the opposite premise, that serving is
+\emph{compute}-bound once operations of different resource classes are overlapped
+within a device; the claims collide only above the batch a capacity limit permits,
+and at batch 142 for an 8B model at 4K the step is still memory-bound by more than
+$6\times$ (Appendix~\ref{app:params}). Llumnix~\cite{llumnix} live-migrates requests
+\emph{across} instances instead of moving KV down a tier --- an economic choice
+rather than a technical one, since migration needs a second instance with room while
+tiering needs host DRAM already installed and idle. And architectures that shrink
+the cache, MLA~\cite{deepseekv2} and sliding-window attention, do not by themselves
+close the gate: by Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales both
+cohorts and leaves their ratio unchanged. We regard a stack built entirely on
+MLA-class models as outside this paper's regime.
+
+\paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing our
+hardware assumption on the two questions that matter. What is unsolved is which
+requests live in which tier, how many a step can absorb without breaking the resident
+cohort's latency, and when a request should move --- DirectKV states as much
+explicitly, Fang et al.~\cite{calkv} close by calling for runtime policies, and
+OmniServe~\cite{omniserve} takes its service classes as externally supplied.
+
+% Single-column (2026-09-27): spanning both columns forced this to the top of a
+% page and left a gap when it could not, which four rows do not earn.
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+ & placement unit & decided by & device KV \\
+\midrule
+vLLM, SGLang & --- & --- & all of it \\
+Pie~\cite{pie} & layer, uniform & global factor & $(n{-}m)/n$ each \\
+DirectKV~\cite{directkv} & none (all host) & nothing & none \\
+\textbf{this paper} & \textbf{request} & \textbf{3 policies} & cohort only \\
+\bottomrule
+\end{tabular}
+\caption{Systems either place nothing (both endpoints) or a fixed fraction of
+everything (Pie); none decides per request. Our three policies are placement,
+admission and migration.}
+\label{tab:axes}
+\end{table}
