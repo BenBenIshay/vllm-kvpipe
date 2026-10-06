@@ -223,6 +223,34 @@ def selftest():
           "below the long-context point" % ("ok " if good else "BAD",
                                             sf["gain"]))
 
+    # THE T0 ERROR BAR CUTS ONE WAY ONLY, and section 3 now says so, so pin it.
+    # T0 = W / (HBM_bw * eff) with eff = 0.75 taken from A100 weight reads. If the
+    # real GH200 efficiency is lower, T0 RISES, which both raises the knee (more
+    # riders admissible) and shrinks F/T0. The lowest GH200 HBM throughput anyone
+    # reports is DirectKV's 1.9 of 4 TB/s for a zero-copy attention kernel, i.e.
+    # 0.475 -- a pessimistic bound for a dense weight read, not an estimate.
+    gains = [evaluate(L70, GH200, 8192, t0_scale=0.75 / e)["gain"]
+             for e in (0.75, 0.65, 0.55, 0.475)]
+    good = all(b > a for a, b in zip(gains, gains[1:]))
+    ok &= good
+    print("  [%s] a LOWER HBM efficiency only helps: gain %s as eff goes "
+          "0.75 -> 0.475, so 0.75 is the conservative end"
+          % ("ok " if good else "BAD",
+             " -> ".join("%.3f" % g for g in gains)))
+
+    # And the knee here is computed on the WEIGHT-READ-bound step, which omits the
+    # resident cohort's KV read, so it is a lower bound on the hideable window.
+    # killer_v2 charges the full step and therefore admits more riders; section 3
+    # states that these counts are the conservative ones. Guard the direction.
+    import killer_v2 as K  # noqa: E402
+    m70 = [x for x in K.MODELS if x.n.strip() == "Llama-70B fp8"][0]
+    full_t0 = K.analyze(m70, 8192, K.GH200M, slo_ms=80.0, stage=2.0)["T0"]
+    good = full_t0 > L70.t0_ms(GH200)
+    ok &= good
+    print("  [%s] our T0 (%.1f ms) is BELOW the full-step T0 (%.1f ms), so the "
+          "rider counts are conservative"
+          % ("ok " if good else "BAD", L70.t0_ms(GH200), full_t0))
+
     # Qwen-72B remains the best of the three, which the retarget got right.
     at = {n: evaluate(m, GH200, margin_point(m, GH200, 2))["gain"]
           for n, m in MODELS}

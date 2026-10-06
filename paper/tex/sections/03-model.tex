@@ -228,7 +228,11 @@ rider's bytes take longer to move than the step takes to compute, the step
 r^{*} \;=\; \frac{\mathrm{ITL}_0 \cdot \Xlink}{S \btok},
 \end{equation}
 %
-the same ratio as Eq.~\ref{eq:boff} but read as a rate rather than a capacity.
+the same ratio as Eq.~\ref{eq:boff} but read as a rate rather than a capacity. We
+evaluate $\mathrm{ITL}_0$ here at its weight-read-bound value, which omits the
+resident cohort's own KV read and is therefore a \emph{lower} bound on the compute
+window a transfer can hide inside; the rider counts below are correspondingly
+conservative, and Table~\ref{tab:gain}, which charges the full step, admits more.
 Two things follow, and together they decide where the feature should be run.
 
 \textbf{A faster link buys the knee, not a cheaper rider.} $c$ contains no
@@ -242,18 +246,28 @@ nearly irrelevant.
 admits $\lfloor r^{*} \rfloor$ riders, so gain peaks just below each integer
 crossing of Eq.~\ref{eq:knee} and drops by a whole rider's worth just above one.
 The effect is not small: for Llama-70B fp8 on GH200, 16\,384 tokens of context give
-$r^{*} = 1.98$ and therefore \emph{one} rider at $\times 1.12$, while 16\,196
-tokens give $r^{*} = 2.00$, two riders, and $\times 1.37$ --- a $22\%$ gain
-improvement for a $1.2\%$ reduction in context. A model that evaluates
+$r^{*} = 1.89$ and therefore \emph{one} rider at $\times 1.07$, while 15\,493
+tokens give $r^{*} = 2.00$, two riders, and $\times 1.25$ --- an $18\%$ gain
+improvement for a $5\%$ reduction in context. A model that evaluates
 Eq.~\ref{eq:gain-tput} at a fractional $r^{*}$ smooths this away and will choose
-the wrong context.
+the wrong context. (Qwen2.5-72B fp8, which this table does not carry, does better
+still: $\times 1.12$ against $\times 1.37$, a $22\%$ improvement for $1.2\%$ less
+context.)
 
 The practical caveat is larger than the effect. $r^{*}$ depends on
 $\mathrm{ITL}_0$, which we compute rather than measure on the target part, and a
-$2\%$ error in it moves the crossing enough to lose the rider --- $\times 1.37$
-collapses to $\times 1.11$. So the recommendation is not to sit just under a
-crossing but to leave margin: targeting $r^{*} \approx 2.2$ gives $\times 1.32$ and
-survives a $9\%$ error in $\mathrm{ITL}_0$.
+$2\%$ error in it moves the crossing enough to lose the rider --- $\times 1.25$
+collapses to $\times 1.05$. So the recommendation is not to sit just under a
+crossing but to leave margin: targeting $r^{*} \approx 2.2$ gives $\times 1.21$ and
+holds both riders through a $9\%$ error in $\mathrm{ITL}_0$.
+
+That error bar cuts one way only, and in our favour. $\mathrm{ITL}_0$ is
+\emph{under}-estimated if real HBM efficiency is below the $0.75$ we assume, and a
+larger $\mathrm{ITL}_0$ both raises $r^{*}$ and shrinks $F/\mathrm{ITL}_0$. Taking
+the lowest GH200 HBM throughput anyone reports --- $1.9$ of $4$\,TB/s, measured by
+DirectKV for a zero-copy attention kernel~\cite{directkv} --- would put
+$\mathrm{ITL}_0$ at $38$\,ms, admit five riders rather than three, and raise the
+gain to $\times 1.43$. We therefore keep $0.75$: it is the conservative end.
 % src: paper/model/operating_point.py (selftest pins each figure in this
 % paragraph; coefficients from overhead_model.py FINAL)
 
