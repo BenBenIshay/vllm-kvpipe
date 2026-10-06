@@ -676,6 +676,51 @@ copies have to be kept.
 > mechanisms, after a day spent attacking `c`, which had 5.5× of margin to
 > spare.
 
+### T7, attempted: both parts, and what each actually did (M15)
+
+Two changes, both correct, suite 10/10. Neither bought anything measurable, for
+two different reasons that are worth separating.
+
+| arm | L | `F` | `c` |
+|---|---|---|---|
+| M14 base (before T7) | 64 | 5.80 | 0.517 |
+| T7a ON | 64 | 5.74 | 0.479 |
+| T7a ON (repeat) | 64 | 5.31 | 0.494 |
+| T7a OFF (control) | 64 | 5.61 | 0.474 |
+| T7a ON | 16 | 0.95 | 0.248 |
+| T7a OFF (control) | 16 | 1.04 | 0.253 |
+
+**T7a (unified mirror) never ran.** 2352 flushes, **every one** on the per-layer
+path, zero vectorised, in all four arms. The guard required the pending layer
+indices to equal `list(range(nl))`, but the pending list is appended in
+**execution** order while `_wt_k` is indexed by the layer index the runner
+assigns from `kv_cache_groups`. Any difference between those orders makes `lis` a
+permutation and the equality fails — while the row counts (64 × n_active
+exactly) confirm every layer *was* present. So M15 measured T7a's **cost**
+(none) rather than its effect. Fixed by sorting on layer index, which costs
+nothing for 64 entries; M16 measures the effect.
+
+> This is the mechanism check earning its keep for the second time. Without it
+> the timing would have read as "the unified mirror bought nothing", and I would
+> have drawn a conclusion about the scatter from code that never executed —
+> exactly the T5 situation, one costume along.
+
+**T7b (preallocated rider buffers) ran, and bought −0.14 to −0.27 ms** — the
+same sign at both depths, which is weak corroboration that it helped slightly,
+but inside a drift of 0.25–0.43 and so **not resolvable**.
+
+And the reason is a misattribution I should have caught: I sized T7b from the
+`rider_gather_alloc` bracket (0.0175 ms/layer), reading it as allocation cost.
+That bracket wraps `index_select`, which **gathers m rows** — real work. Removing
+the allocation leaves the gather, which is most of the time. Same error as
+reading `b_per_rider_layer` as launch cost: **a timer bracket names where the
+time is spent, not what it is spent on.**
+
+> **A drift warning for anything built on these numbers.** `F`'s within-job
+> spread was **0.04** in M13 and **0.43** in M15 on identical configuration. It
+> is not stable enough to borrow, so every future claim about `F` needs its own
+> bracket — which is why M16 repeats its ON arm three times rather than twice.
+
 ### The earlier framing of this section
 
 `F = L × (residual D2H + exposed per-layer host work)`, and T4 measured the D2H
