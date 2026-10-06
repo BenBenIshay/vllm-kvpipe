@@ -1184,10 +1184,30 @@ class RungdHostPool:
         Returns bytes written (0 when disabled or the cohort is empty), so a
         harness can report traffic rather than infer it.
         """
-        # overwrites mirror rows, so pending token writes must land first
-        self.flush_token_writes()
+        # T8. RETURN BEFORE FLUSHING when the emulation is off, which is the
+        # default and therefore every production step.
+        #
+        # This method is called from the attention override on EVERY LAYER --
+        # its call site guards on `getattr(pool, "writeback_layer", None) is not
+        # None`, which tests that the method exists rather than that the
+        # emulation is enabled, so it always fires. The flush used to run before
+        # this early return, so a disabled feature was forcing a flush 64 times
+        # per step.
+        #
+        # Measured: 64 flushes per step, every one with a single pending layer,
+        # which is why T2's deferral never batched and why T7a's vectorised
+        # scatter could never fire (it needs more than one pending layer). Worse,
+        # each flush calls `_wt_event.synchronize()`, so this was 63 redundant
+        # host-side waits on the D2H per step, partially serialising the host
+        # with the copy on every layer.
+        #
+        # The flush is still required when the writeback actually runs, because
+        # that overwrites mirror rows and pending token writes must land first.
+        # It just belongs AFTER the decision to run.
         if not self._writeback or self._w_cur == 0:
             return 0
+        # overwrites mirror rows, so pending token writes must land first
+        self.flush_token_writes()
         ln_name = self.layers[layer_idx]
         hk, hv = self.host_k[ln_name], self.host_v[ln_name]
         kslot = self.rolling_k[layer_idx % self.k]

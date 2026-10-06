@@ -25,6 +25,8 @@ import sys
 
 import torch
 
+sys.path.insert(0, ".")
+
 L, H_MAX, BS, NKV, HD = 6, 12, 4, 2, 3
 
 
@@ -132,6 +134,52 @@ def main():
         else:
             print("  ok   %-52s %s" % (label,
                   "vectorised, identical" if took_fast else "fell back"))
+
+    # --- T8: a DISABLED feature must not flush -------------------------
+    # writeback_layer is called from the attention override on every layer --
+    # its call site tests that the method EXISTS, not that the emulation is
+    # enabled -- and it used to flush before checking its own flag. That forced
+    # 64 flushes per step, each with one pending layer, which defeated T2's
+    # batching and made T7a's vectorised path unreachable. Each flush also
+    # synchronised the D2H event, so it was 63 redundant host waits per step.
+    print()
+    from vllm.v1.hybrid_rungd_pool import RungdHostPool as _P
+
+    class _WB:
+        def __init__(self, enabled):
+            self._writeback = enabled
+            self._w_cur = 4
+            self.flushed = 0
+            self._wt_pending = [(0, torch.tensor([1]), 1)]
+            self._wt_dirty = True
+
+        def flush_token_writes(self):
+            self.flushed += 1
+            return 0
+        writeback_layer = _P.writeback_layer
+
+    off = _WB(False)
+    try:
+        off.writeback_layer(0)
+    except Exception:                                    # noqa: BLE001
+        pass          # it may need more state once it proceeds; we only care
+                      # that it did not flush on the disabled path
+    ok_off = off.flushed == 0
+    print("  %-5s writeback DISABLED -> flushes: %d (must be 0)"
+          % ("ok" if ok_off else "FAIL", off.flushed))
+    if not ok_off:
+        fails += 1
+
+    on = _WB(True)
+    try:
+        on.writeback_layer(0)
+    except Exception:                                    # noqa: BLE001
+        pass          # proceeds past the flush into real work we do not stub
+    ok_on = on.flushed == 1
+    print("  %-5s writeback ENABLED  -> flushes: %d (must be 1)"
+          % ("ok" if ok_on else "FAIL", on.flushed))
+    if not ok_on:
+        fails += 1
 
     # the point of the change: how many index_copy_ calls
     print()
