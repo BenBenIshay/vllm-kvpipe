@@ -87,31 +87,54 @@ fi
 # Arms. Config IDENTICAL to M13/M14/M15/M17/M18 so F and c are comparable to
 # the whole campaign, not just to each other.
 # ---------------------------------------------------------------------------
+# run <tag> <expected-attend-mode> [extra rider_cost_curve.py flags...]
+#
+# FIXED after run 2182024. Extra arguments used to be handed to `env`, copying
+# m18 -- which worked there because m18 passed KEY=VAL env assignments. Passing a
+# CLI *flag* that way makes env itself try to parse it:
+#
+#     env: unrecognized option '--attend-mode'
+#
+# so BOTH ablation arms exited instantly and the job looked like it had run five
+# arms in thirteen minutes. Extra flags now go on the python command line, where
+# they belong. Setting the env var directly instead would be worse than useless:
+# the artifact's `attend_mode` and `numerically_valid` fields come from the parsed
+# flag, so the arm would have ablated while recording itself as a valid full run.
+#
+# And because that failure was silent, each arm now ASSERTS the mode its artifact
+# reports. An arm that did not ablate must stop the job, not produce a number.
 run () {
-    local tag=$1; shift
+    local tag=$1 want=$2; shift 2
     echo
-    echo "=== $tag  $* $(date -Is)"
+    echo "=== $tag  (expect attend_mode=$want) $* $(date -Is)"
     VLLM_KVPIPE_PHASE_TIMERS=1 \
     VLLM_KVPIPE_PHASE_TIMERS_OUT="$OUT/${tag}_phases.jsonl" \
-    env "$@" "$PY" benchmarks/kv_pipelining_bench/rider_cost_curve.py \
+    "$PY" benchmarks/kv_pipelining_bench/rider_cost_curve.py \
         --model "$Q32" --ctx 128 --batch 16 --riders "$RIDERS" \
         --connector --repeats 5 --short-len 8 --long-len 48 \
         --gpu-mem-util 0.90 --link-gbps 25.1 --k-window 4 \
+        "$@" \
         --outdir "$OUT" --out "${tag}.json" 2>&1 | tail -14
     echo "--- $tag done $(date -Is)"
-    # Prove from the artifact which arm this actually was, rather than trusting
-    # the filename: the ablation counters only fire when the knob took effect.
-    echo "    attend_mode in artifact: $(grep -o '"attend_mode": "[a-z]*"' "$OUT/${tag}.json" 2>/dev/null | tail -1)"
+    local got
+    got=$(grep -o '"attend_mode": "[a-z]*"' "$OUT/${tag}.json" 2>/dev/null \
+          | tail -1 | grep -o '[a-z]*"$' | tr -d '"')
+    echo "    attend_mode in artifact: ${got:-MISSING}"
     echo "    numerically_valid:       $(grep -o '"numerically_valid": [a-z]*' "$OUT/${tag}.json" 2>/dev/null | tail -1)"
-    echo "    attend ablated:          $(grep -c 'rider_attend_ablated' "$OUT/${tag}_phases.jsonl" 2>/dev/null)"
-    echo "    kernel ablated:          $(grep -c 'rider_kernel_ablated' "$OUT/${tag}_phases.jsonl" 2>/dev/null)"
+    echo "    attend ablated lines:    $(grep -c 'rider_attend_ablated' "$OUT/${tag}_phases.jsonl" 2>/dev/null)"
+    echo "    kernel ablated lines:    $(grep -c 'rider_kernel_ablated' "$OUT/${tag}_phases.jsonl" 2>/dev/null)"
+    if [ "$got" != "$want" ]; then
+        echo "FATAL: $tag recorded attend_mode='${got:-MISSING}', expected '$want'."
+        echo "The arm did not run what it claims. Refusing to produce a result."
+        exit 30
+    fi
 }
 
-run FB_base_a
-run FB_noattend  --attend-mode noattend
-run FB_base_b
-run FB_nokernel  --attend-mode nokernel
-run FB_base_c
+run FB_base_a    full
+run FB_noattend  noattend  --attend-mode noattend
+run FB_base_b    full
+run FB_nokernel  nokernel  --attend-mode nokernel
+run FB_base_c    full
 
 # ---------------------------------------------------------------------------
 # E3 -- locate the knee empirically, which is what the context sawtooth rests
