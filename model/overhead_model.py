@@ -1136,6 +1136,33 @@ def _selftest() -> int:
                      mir - FINAL["f_mirror_launch_floor"][0], mir,
                      FINAL["f_mirror_launch_floor"][0]))
 
+    # ----- EXTERNAL CHECK on T0, the one constant we cannot measure ourselves.
+    # BOOST (arXiv 2609.13592) Table 3, verified verbatim against the PDF:
+    # Llama-3.3 70B, 1K/8K context, GH200, HBM-only at 85% mem-util, 81.6 GB
+    # capacity at batch 6 -> TPOT 27.1 ms. Reconstructing that configuration (FP8
+    # weights, FP16 KV, mean sequence 5K) recovers their capacity to 1.5%, so the
+    # KV precision inference is self-consistent. This is a cross-check, not a
+    # validation: their table does not state the KV dtype.
+    MEAS_TPOT, BS, CTX = 27.1, 6, 5000
+    w = 70.6                                   # FP8 weights of a 70.6B model, GB
+    kv = BS * CTX * (2 * 8 * 128 * 2 * 80) / 1e9   # FP16 KV, all 80 layers
+    t0_full = (w + kv) / (GH200.hbm * GH200.eff) * 1e3
+    t0_wonly = w / (GH200.hbm * GH200.eff) * 1e3
+    good = abs(t0_full / MEAS_TPOT - 1) < 0.03
+    ok &= good
+    print("  [%s] T0 vs BOOST's measured GH200 TPOT: model %.1f ms against "
+          "%.1f measured (%+.1f%%)" % ("ok " if good else "BAD", t0_full,
+                                       MEAS_TPOT, (t0_full / MEAS_TPOT - 1) * 100))
+
+    # And the weights-only form, which operating_point uses for the knee, is
+    # BELOW the measurement -- so those rider counts are conservative.
+    good = t0_wonly < MEAS_TPOT * 0.95
+    ok &= good
+    print("  [%s] the weights-only T0 (%.1f ms) is %.0f%% UNDER the measurement, "
+          "so knee counts built on it are conservative"
+          % ("ok " if good else "BAD", t0_wonly,
+             (1 - t0_wonly / MEAS_TPOT) * 100))
+
     print("\nOVERHEAD MODEL SELFTEST %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

@@ -64,6 +64,32 @@ close the gate: by Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales bot
 cohorts and leaves their ratio unchanged. We regard a stack built entirely on
 MLA-class models as outside this paper's regime.
 
+\paragraph{Two concurrent Grace-Hopper systems, and where each differs.}
+Two 2026 systems share our hardware and must be separated carefully, because one
+of them shares our granularity.
+
+\textbf{BOOST}~\cite{boost} serves roughly $9\%$ of memory accesses from host DRAM
+\emph{concurrently} with HBM, so that each wave of GPU threadblocks reads both tiers
+in proportion to their bandwidth ratio, and derives the optimal host share as
+$\alpha/(1{+}\alpha)$ for a bandwidth ratio $\alpha$. That is the same crossover as
+our Eq.~\ref{eq:knee} written per byte instead of per request, independently
+derived, and it is the strongest external support for the knee. The axis differs
+completely: BOOST chooses which \emph{accesses} within a kernel come from host
+memory, we choose which \emph{requests} do. The two compose --- BOOST's wave split
+could run inside our device tier --- and neither subsumes the other.
+
+\textbf{SuperInfer}~\cite{superinfer} is the closer of the two, and it does
+partition at request granularity on NVLink-C2C. Its \emph{rotary} scheduler
+suspends a request and moves its KV to Grace DRAM while it awaits its turn, driven
+by TTFT and TBT service objectives, and its DuplexKV engine makes C2C transfer
+full-duplex. The distinction is between \emph{time-multiplexing} and
+\emph{co-serving}: a rotated-out request is not being decoded, whereas our
+host-tier requests are decoded in the same step as the resident cohort, holding no
+device blocks at any point. Their objective is SLO attainment under head-of-line
+blocking; ours is capacity at fixed memory. \emph{We have read SuperInfer's
+abstract and not yet its body, and this paragraph should not be taken as final
+until we have.}
+
 \paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing our
 hardware assumption on the two questions that matter. What is unsolved is which
 requests live in which tier, how many a step can absorb without breaking the resident
@@ -84,11 +110,15 @@ OmniServe~\cite{omniserve} takes its service classes as externally supplied.
 vLLM, SGLang & --- & --- & all of it \\
 Pie~\cite{pie} & layer, uniform & global factor & $(n{-}m)/n$ each \\
 DirectKV~\cite{directkv} & none (all host) & nothing & none \\
-\textbf{this paper} & \textbf{request} & \textbf{3 policies} & cohort only \\
+BOOST~\cite{boost} & access/wave & bandwidth ratio & all of it \\
+SuperInfer~\cite{superinfer} & request, over \emph{time} & SLO & all or none, in turn \\
+\textbf{this paper} & \textbf{request, concurrently} & \textbf{3 policies} & cohort only \\
 \bottomrule
 \end{tabular}
-\caption{Systems either place nothing (both endpoints) or a fixed fraction of
-everything (Pie); none decides per request. Our three policies are placement,
-admission and migration.}
+\caption{Systems place nothing (both endpoints), a fixed fraction of everything
+(Pie), a bandwidth-proportional share of each access (BOOST), or whole requests in
+rotation (SuperInfer). Ours is the only one that decides per request and serves
+both tiers in the \emph{same} step. Our three policies are placement, admission
+and migration.}
 \label{tab:axes}
 \end{table}
