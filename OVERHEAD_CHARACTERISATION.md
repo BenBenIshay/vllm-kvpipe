@@ -11,6 +11,13 @@
 >    small cost share. The overlap is **load-bearing**: `c` = 0.92 with it against
 >    **7.20** without, which fails the gate by more than 2×. That leaves much less
 >    launch-side headroom than the earlier sections imply.
+> 0. **`F` is down 42%, and the win was a bug not an optimisation (§T8).** A
+>    disabled feature — the swap-semantics emulation — was flushing the deferred
+>    mirror writes on every layer because its call site tested that the *method
+>    exists* rather than that the feature is on. 64 flushes per step, 63
+>    redundant D2H waits, defeating T2's batching since T2 landed. Fixed: `F`
+>    5.62 → 3.27 at L=64, and at the target 7.02 → 4.09 ms, gain **1.101× →
+>    1.206×**.
 > 3. **`c` was fitted across the knee and is ~2.5× smaller than reported — see
 >    §0b.** Re-fitting on arms wholly below the knee gives
 >    **`c`(L) = 0.116 + 0.00382·L, context-independent** — **0.42 ms/rider** at
@@ -675,6 +682,53 @@ copies have to be kept.
 > establish is **where the prize is**: 87% of `F`, in two identified
 > mechanisms, after a day spent attacking `c`, which had 5.5× of margin to
 > spare.
+
+### T8: a disabled feature was costing 42% of `F` (M17)
+
+**`F` at L=64: 5.62 → 3.27 ms. At the GH200 target: 7.02 → 4.09 ms, 29% → 17% of
+the step, gain 1.101× → 1.206×.** The first measurable movement in `F` since T2.
+
+| state | arms | `F` | spread |
+|---|---|---|---|
+| before either change | 5.80 / 5.74 / 5.31 | 5.62 | — |
+| T8 only (per-layer scatter) | 3.61, 3.57 | **3.59** | 0.04 |
+| **T8 + T7a (vectorised)** | 3.26, 3.30, 3.25 | **3.27** | 0.04 |
+
+**T8 = −2.02 ms. T7a = −0.32 ms**, resolvable against a 0.04 drift.
+
+### The bug, and how it was found
+
+`writeback_layer` is the swap-semantics emulation — **off by default**. Its call
+site in the attention override guards on
+
+```python
+wb = getattr(pool, "writeback_layer", None)
+if wb is not None: wb(lidx)
+```
+
+which tests that the **method exists**, not that the emulation is enabled. So it
+fired on every layer of every step. And `writeback_layer` flushed the deferred
+mirror writes *before* checking its own flag.
+
+Measured consequence: **64 flushes per step, each with exactly one pending
+layer, each calling `_wt_event.synchronize()`.** So a disabled feature was
+forcing **63 redundant host-side waits on the D2H per step** and had been
+defeating T2's batching since T2 landed. The fix moves the flush after the early
+return; it is still needed when the writeback actually runs.
+
+**How it surfaced is the point.** T7a looked inert, so I made its guard
+order-independent; it was *still* inert, but the fallback counter I added then
+said `single_layer` — one pending entry. That contradicted the row counts, which
+forced counting the flushes themselves: 64 per step. **T7a's real contribution
+was failing in a way that demanded an explanation.** Its own −0.32 ms is a
+twentieth of what the explanation was worth.
+
+> **And it re-ranks the next target.** §9d's split — mirror write 3.95 ms, 68% of
+> `F`, against a remainder of 1.85 — was measured *before* T8, so the 3.95
+> included this waste. With `F` at 3.27 the mirror write is far smaller and the
+> **attention remainder is now the majority of `F`**. M18 re-measures the split
+> rather than inferring it, because `3.27 − 1.85 = 1.42` assumes the remainder is
+> untouched.
 
 ### T7, attempted: both parts, and what each actually did (M15)
 
