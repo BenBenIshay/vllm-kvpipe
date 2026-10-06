@@ -57,8 +57,9 @@ Quantity & Value & Provenance \\
 $c$ intercept       & $0.177$\,ms            & $L = 16, 32, 64$ at ctx 128 \\
 $c$ per layer       & $0.0054$\,ms           & same \\
 $F$ per layer       & $0.053$\,ms            & after T1, T2, T7a, T8 \\
-mirror write        & $1.2$--$1.5$\,ms       & ablation at $L = 64$ \\
-second attention    & $1.9$\,ms              & ablation at $L = 64$ \\
+$F$ at $L=64$       & $3.36$\,ms             & 3 arms, spread $0.09$ \\
+second attention    & $1.21$\,ms             & ablation, same job \\
+all other fixed work & $2.15$\,ms            & by difference \\
 D2H copy floor      & $0.834$\,ms            & off-engine, $2L$ copies \\
 \bottomrule
 \end{tabular}
@@ -66,15 +67,18 @@ D2H copy floor      & $0.834$\,ms            & off-engine, $2L$ copies \\
 % src: paper/data/overhead/15_clean_cf/CF_L16.json,
 % paper/data/overhead/15_clean_cf/CF_L32.json,
 % paper/data/overhead/15_clean_cf/CF_c128_a.json,
-% paper/data/overhead/20_f_split_post_t8/FS_nod2h.json,
-% paper/data/overhead/20_f_split_post_t8/FS_both.json
+% paper/data/overhead/21_fusion_bound/FB_base_a.json,
+% paper/data/overhead/21_fusion_bound/FB_noattend.json
 
-Two cautions. The fixed cost's run-to-run drift on identical configuration was
-$0.04$, $0.43$, $0.04$ and $0.51$\,ms across four jobs --- \textbf{bimodal}, so a
-tight bracket in one job licenses nothing about another; we quote $\pm 0.5$\,ms and
-re-measure the baseline inside every job. And the two components of $F$ are each a
-single arm, so they are $\pm 0.5$ individually while their sum is pinned by the
-tighter three-arm baseline.
+One caution, and it governs every figure above. The fixed cost's run-to-run drift on
+identical configuration was $0.04$, $0.43$, $0.04$ and $0.51$\,ms across four jobs
+--- \textbf{bimodal}, so a tight bracket in one job licenses nothing about another.
+We therefore quote $F$ to $\pm 0.5$\,ms \emph{between} jobs while reporting the
+within-job spread for comparisons made inside one, re-measure the baseline in every
+job, and never subtract an arm from an arm measured elsewhere. The $1.21$\,ms above
+comes from a job whose three baseline arms agreed to $0.09$\,ms, so it is resolved at
+roughly thirteen times its own noise; an earlier figure of $1.94$ for the same
+quantity came from subtracting across rounds and was high by $60\%$.
 
 \subsection{The ledger: nine attempted, four landed}
 
@@ -120,11 +124,48 @@ reported a state that contradicted the row counts.
 
 \subsection{What remains, and its measured ceiling}
 
-$56\%$ of the fixed cost is now the second attention call that the two-source design
-requires (\S\ref{sec:design:exec}). Removing it means fusing the two calls into one
---- a single varlen invocation over a concatenated block table, which needs the rider
+The largest component we have not removed is the second attention call the
+two-source design requires (\S\ref{sec:design:exec}). Removing it means fusing the two calls into one
+--- a single varlen invocation over a concatenated block table, needing the rider
 cohort's table rebuilt per layer on the hot path. Given the ledger above we declined
-to project the benefit and measured its ceiling instead, by ablating the call
-entirely: a fused implementation cannot beat not doing the work at all. The remaining
-mirror write is bounded below by $0.834$\,ms, the cost of its $2L$ copies measured
-off-engine, so at most $0.6$\,ms of it is recoverable.
+to project that benefit and measured its ceiling instead, by ablating the call: a
+fused implementation cannot beat not performing the work at all. Two arms bound it
+from opposite sides --- one dropping the gather, the kernel and the scatter together,
+one dropping only the kernel --- bracketed by three baseline arms in the same job,
+which agreed to $0.09$\,ms.
+
+\begin{center}\small
+\begin{tabular}{lrr}
+\toprule
+ & in $F$ (ms) & in $c$ (ms/rider) \\
+\midrule
+whole second pass       & $1.21$  & $0.134$ \\
+kernel and its launch   & $1.16$  & $-0.022$ \\
+gather and scatter      & $-0.05$ & $0.134$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/21_fusion_bound/FB_base_a.json,
+% paper/data/overhead/21_fusion_bound/FB_noattend.json,
+% paper/data/overhead/21_fusion_bound/FB_nokernel.json
+
+Two results, and the second is why we have not built the fusion.
+
+\textbf{The pass costs $1.21$\,ms, not the $1.94$ we inferred} by subtracting one
+ablation from another in an earlier round --- high by $60\%$. Inference across arms
+overstated a component here exactly as fitting across the knee overstated $c$.
+
+\textbf{And it is split across both coefficients, which an $F$-only decomposition
+cannot see.} The gather and the scatter size with the rider count, so they live in
+$c$, not in $F$ --- which is why subtracting them inside $F$ returns $-0.05$, a
+zero. What sits in $F$ is the kernel together with its per-layer launch, and
+\emph{a fused call still performs the attention arithmetic}. So fusion certainly
+recovers the $0.134$\,ms per rider, worth $+2.0$ points at the target, and recovers
+some unmeasured share of the $1.16$\,ms launch term, with a ceiling of $+8.5$ points
+that requires the fused call to be free. The honest statement is a range, $+2$ to
+$+8.5$ points, and we decline to spend days of backend work against its lower end.
+
+What closes it is cheap and not yet done: price one varlen call against two at equal
+total attention work, off-engine, which separates the launch from the kernel and
+turns the range into a number. The mirror write's own remainder is already bounded,
+at $0.834$\,ms for its $2L$ copies, so at most $0.6$\,ms of that is recoverable.

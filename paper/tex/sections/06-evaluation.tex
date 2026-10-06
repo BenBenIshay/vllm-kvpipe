@@ -175,9 +175,12 @@ Eq.~\ref{eq:coeffs} is that fit. Two of its properties were surprises:
 $F$ measures $3.4$\,ms at $L = 64$, not the $12.3$ this paper reported, and
 \S\ref{sec:impl:cost}'s attribution of it to $\sim$640 kernel launches does not
 survive: a measurement-only mode that cuts the launch count eightfold moves neither
-coefficient resolvably. Ablating the two mechanisms instead splits it as
-$1.2$--$1.5$\,ms of mirror write and $1.9$\,ms of \emph{second attention call},
-the latter now the larger share at $56\%$. Nine changes were attempted and four
+coefficient resolvably. Ablating the mechanisms instead puts $1.21$\,ms of it in
+the \emph{second attention call} --- $36\%$ --- with the mirror write and the
+remaining per-layer work accounting for the other $2.15$. An earlier round obtained
+that component by subtracting one ablation from another and got $1.94$\,ms, which
+would have made it the larger half; measuring it directly shows the subtraction was
+high by $60\%$. Nine changes were attempted and four
 landed; the ledger is in Appendix~\ref{app:ridercost}, including the four whose
 mechanism fired and whose benefit did not, because that ratio is the useful warning
 for anyone extending this work. The largest single win was not an optimisation at

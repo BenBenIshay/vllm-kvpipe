@@ -61,9 +61,9 @@ found the real cost. A measurement-only mode that issues whole extents, cutting 
 launch count eightfold, moved neither $F$ nor $c$ by more than their run-to-run
 drift. $F$ is not launch-bound.
 
-Ablating the mechanisms instead splits it: $1.2$--$1.5$\,ms of mirror write and
-$1.9$\,ms of the extra attention call that the two-source design requires
-(\S\ref{sec:design:exec}), the latter now the larger share. $F$ scales with layer
+Ablating the mechanisms instead puts $1.21$\,ms of it in the extra attention call
+that the two-source design requires (\S\ref{sec:design:exec}) and the other
+$2.15$ in the mirror write and the remaining per-layer work. $F$ scales with layer
 depth at $0.053$\,ms per layer, and it is \emph{not} machine-independent, so a Grace
 host may pay differently --- which is why measuring it on a coherent-link part is
 the first experiment we ask of one. Appendix~\ref{app:ridercost} gives the full

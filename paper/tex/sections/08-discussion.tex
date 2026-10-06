@@ -45,10 +45,11 @@ GQA attention and uniform context, so it covers neither MoE nor MLA-class models
 charges nothing for host DRAM bandwidth; the regime is real but not universal, since
 an operator whose weights fill the device can also quantize them or add a GPU; and
 the headline is bounded by an engineering number, since $F$ is a property of the
-current design rather than a tuned result. That last bound is now partly quantified
-rather than open: $F$ is down $74\%$, and of what remains, $56\%$ is the extra
-attention call the two-source design requires. Removing it means fusing the two
-calls, and we report the measured ceiling on that rather than projecting it
-(Appendix~\ref{app:ridercost}) --- the mirror write's own remainder is bounded below
-by $0.83$\,ms of unavoidable copies. The prefill transport is also emulated
+current design rather than a tuned result. That last bound is now quantified rather
+than open: $F$ is down $74\%$, and both halves of what remains are priced by
+ablation. Fusing the two attention calls is worth $+2$ to $+8.5$ points --- a range
+rather than a number, because the part that certainly goes is per-rider gather work
+while the rest is a kernel whose arithmetic survives fusion --- and the mirror
+write's remainder is bounded below by $0.83$\,ms of unavoidable copies
+(Appendix~\ref{app:ridercost}). The prefill transport is also emulated
 (\S\ref{sec:impl:stash}).
