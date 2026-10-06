@@ -696,6 +696,61 @@ the step, gain 1.101× → 1.206×.** The first measurable movement in `F` since
 
 **T8 = −2.02 ms. T7a = −0.32 ms**, resolvable against a 0.04 drift.
 
+### `F`'s split after T8, measured not inferred (M18)
+
+| component | M14 (pre-T8) | now | change |
+|---|---|---|---|
+| `F` | 5.80 | **3.23** | −2.57 |
+| mirror write | 3.95 | **1.20** | **−2.75** |
+| remainder (attention override) | 1.85 | **1.94** | +0.09 |
+
+**All of the improvement landed on the mirror write and none on the remainder**,
+which is the consistency check: T8 and T7a both act on the mirror write and
+neither touches the attention path, so the mirror share had to fall and the
+remainder had to stay. It did. That is why the components can be trusted
+separately rather than only in sum.
+
+**The split has inverted: mirror write 37%, attention remainder 60%.** The thing
+§9d ranked as a third of `F` is now most of it.
+
+### What is left, and the recommendation
+
+| state | `F` at L=80 | gain at C2C |
+|---|---|---|
+| **today** | **4.04** | **1.208×** |
+| fuse the attention calls (remainder → 0) | 1.62 | 1.312× |
+| + mirror write at its measured launch floor | 1.16 | 1.334× |
+
+Two items, and they are very different in character.
+
+**The attention remainder, 1.94 ms at L=64 (+10 points of gain).** It is the
+second attention call over the rider window, per layer. Removing it is the
+project's own **Solution 1 step 3** — fuse to a single unified attention call —
+which needs the rider cohort's block table rebuilt per layer on the hot path and
+most likely its own KV-cache group. That is **days of work in the attention
+backend with its own verification ladder**, not a contained change, and the
+design memo's prediction that the delta would be *second-order* is contradicted
+by this measurement.
+
+**The mirror write's residue, 1.20 → 0.83 ms (+2 points).** `launch_pattern_bench`
+measures the 2L D2H copies alone at 0.834 ms, so only 0.37 ms of the current
+1.20 is removable, and reaching it needs the write made contiguous so no scatter
+is required. T4 already established that the obvious alternative — batching the
+copies across layers — is 18% *worse*.
+
+> **Recommendation: conclude this campaign here.** The overhead characterisation
+> is complete and its coefficients are, for the first time, measured below the
+> knee on the shipped code. `c` is settled and is not the constraint. `F` is
+> down 42% and its two remaining components are identified and priced. What is
+> left is one architectural change the project has already planned and scoped as
+> part of Solution 1 — it belongs as its own piece of work with its own
+> correctness ladder, not as a continuation of a measurement campaign.
+>
+> And one honest caveat on the +10 points: it assumes fusing the attention calls
+> *removes* the remainder rather than relocating it. Nothing here shows that. On
+> this campaign's record — four changes whose mechanism fired and whose benefit
+> did not follow — that assumption deserves the same suspicion as the others.
+
 ### The bug, and how it was found
 
 `writeback_layer` is the swap-semantics emulation — **off by default**. Its call
