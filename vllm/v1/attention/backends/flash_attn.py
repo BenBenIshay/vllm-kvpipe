@@ -55,7 +55,8 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 # Measurement apparatus for the host-tier path. Imported at module level, not
 # inside the per-layer function: the subject of these measurements is small
 # per-layer costs, so the instrument must not add one.
-from vllm.v1.hybrid_measure_knobs import rungd_layer_limit
+from vllm.v1.hybrid_measure_knobs import (rider_attend_mode,
+                                          rungd_layer_limit)
 from vllm.v1.hybrid_phase_timers import PT
 
 logger = init_logger(__name__)
@@ -665,48 +666,67 @@ class FlashAttentionImpl(AttentionImpl):
                 _kb, _vb,
                 split.cpu_slot_pos, split.cpu_host_pos,
             )
-        _tg = PT.now()
-        m = cpu_idx.numel()
-        out = output[:num_actual_tokens]
-        _q = query[:num_actual_tokens]
-        q_sub = _rider_buf(self, "_rb_q", m, _q)
-        torch.index_select(_q, 0, cpu_idx, out=q_sub)
-        # Shaped EXACTLY as the pre-refactor code did: from the model's own
-        # output tensor, not from q_sub. A backend must not be able to change
-        # the result's shape/dtype. T7b only stops it being reallocated every
-        # layer of every step.
-        out_sub = _rider_buf(self, "_rb_out", m, out)
-        descale_shape = (m, self.num_kv_heads)
-        PT.add("rider_gather_alloc", _tg)
-        from vllm.v1.kv_tier_backend import TierAttendCtx
-        _ta = PT.now()
-        backend.attend(
-            lidx, handle, q_sub,
-            TierAttendCtx(
-                block_table=split.rolling_block_table,
-                seqused_k=split.rolling_seqused_k,
-                scale=self.scale,
-                sliding_window=sliding_window_size,
-                softcap=self.logits_soft_cap,
-                fa_version=self.vllm_flash_attn_version,
-                alibi_slopes=self.alibi_slopes,
-                q_descale=layer._q_scale.expand(descale_shape),
-                k_descale=layer._k_scale.expand(descale_shape),
-                v_descale=layer._v_scale.expand(descale_shape),
-                sinks=self.sinks,
-                max_seqlen_k=getattr(split, "rolling_max_seqlen_k", None),
-                cu_seqlens_q=getattr(split, "cpu_cu_seqlens_q", None),
-            ),
-            out_sub,
-        )
-        # The second flash call: one extra attention launch per layer, which
-        # exists because the riders' KV lives in the rolling slot rather than
-        # the resident pool. Intrinsic to a two-source design, and unaffected by
-        # link speed.
-        PT.add("rider_attend", _ta)
-        _ts = PT.now()
-        out.index_copy_(0, cpu_idx, out_sub)
-        PT.add("rider_scatter", _ts)
+        # MEASUREMENT KNOB, off by default ("full"). Ablates the riders' second
+        # attention pass to BOUND what fusing it into the resident call could
+        # save, without building the fusion. `noattend` drops the gather, the
+        # kernel and the scatter together, which is the upper bound; `nokernel`
+        # drops only the flash call, so the difference between them separates the
+        # data movement a fused call removes from the arithmetic it merely
+        # relocates. Numerically invalid when on -- see rider_attend_mode().
+        _am = rider_attend_mode()
+        if _am == "noattend":
+            PT.count("rider_attend_ablated")
+        else:
+            _tg = PT.now()
+            m = cpu_idx.numel()
+            out = output[:num_actual_tokens]
+            _q = query[:num_actual_tokens]
+            q_sub = _rider_buf(self, "_rb_q", m, _q)
+            torch.index_select(_q, 0, cpu_idx, out=q_sub)
+            # Shaped EXACTLY as the pre-refactor code did: from the model's own
+            # output tensor, not from q_sub. A backend must not be able to change
+            # the result's shape/dtype. T7b only stops it being reallocated every
+            # layer of every step.
+            out_sub = _rider_buf(self, "_rb_out", m, out)
+            descale_shape = (m, self.num_kv_heads)
+            PT.add("rider_gather_alloc", _tg)
+            if _am == "nokernel":
+                # The gather above and the scatter below still run; only the
+                # kernel is gone. `out_sub` therefore holds the previous step's
+                # values, which is harmless for timing and is why this arm is
+                # numerically invalid.
+                PT.count("rider_kernel_ablated")
+            else:
+                from vllm.v1.kv_tier_backend import TierAttendCtx
+                _ta = PT.now()
+                backend.attend(
+                    lidx, handle, q_sub,
+                    TierAttendCtx(
+                        block_table=split.rolling_block_table,
+                        seqused_k=split.rolling_seqused_k,
+                        scale=self.scale,
+                        sliding_window=sliding_window_size,
+                        softcap=self.logits_soft_cap,
+                        fa_version=self.vllm_flash_attn_version,
+                        alibi_slopes=self.alibi_slopes,
+                        q_descale=layer._q_scale.expand(descale_shape),
+                        k_descale=layer._k_scale.expand(descale_shape),
+                        v_descale=layer._v_scale.expand(descale_shape),
+                        sinks=self.sinks,
+                        max_seqlen_k=getattr(split, "rolling_max_seqlen_k",
+                                             None),
+                        cu_seqlens_q=getattr(split, "cpu_cu_seqlens_q", None),
+                    ),
+                    out_sub,
+                )
+                # The second flash call: one extra attention launch per layer,
+                # which exists because the riders' KV lives in the rolling slot
+                # rather than the resident pool. Intrinsic to a two-source
+                # design, and unaffected by link speed.
+                PT.add("rider_attend", _ta)
+            _ts = PT.now()
+            out.index_copy_(0, cpu_idx, out_sub)
+            PT.add("rider_scatter", _ts)
         # Swap-semantics emulation, off by default. A swap design must persist
         # this layer's whole slot before the buffer is reused; a streaming one
         # (ours) has already written the only new bytes to the authoritative

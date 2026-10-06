@@ -389,6 +389,19 @@ def main() -> int:
                         "the per-layer slope can be measured inside one model "
                         "at fixed head geometry (0 = all). NUMERICALLY INVALID "
                         "when set; implies the _UNSAFE acknowledgement.")
+    p.add_argument("--attend-mode", choices=("full", "noattend", "nokernel"),
+                   default="full",
+                   help="ablate the riders' SECOND attention pass, to bound "
+                        "what fusing it into the resident call could save "
+                        "WITHOUT building the fusion. `noattend` drops the "
+                        "gather, the kernel and the scatter -- the upper bound, "
+                        "since a fused call cannot beat skipping the work. "
+                        "`nokernel` drops only the flash call, so "
+                        "noattend-minus-nokernel is the data movement a fused "
+                        "call removes and nokernel's own saving is kernel plus "
+                        "launch, of which only the launch is recoverable. "
+                        "NUMERICALLY INVALID when set; implies the _UNSAFE "
+                        "acknowledgement.")
     p.add_argument("--allow-colocated", action="store_true",
                    help="permit running WITHOUT --connector. Required, because "
                         "co-located is not the setup this feature targets: the "
@@ -466,11 +479,15 @@ def main() -> int:
     if a.rungd_layers > 0:
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS"] = str(a.rungd_layers)
         os.environ["VLLM_KVPIPE_RUNGD_LAYERS_UNSAFE"] = "1"
+    if a.attend_mode != "full":
+        os.environ["VLLM_KVPIPE_RUNGD_ATTEND_MODE"] = a.attend_mode
+        os.environ["VLLM_KVPIPE_RUNGD_ATTEND_MODE_UNSAFE"] = "1"
     if (a.xfer_mode != "real" or a.rungd_layers > 0 or a.skip_d2h
-            or a.d2h_probe):
+            or a.d2h_probe or a.attend_mode != "full"):
         print("!" * 66)
         print("! NUMERICALLY INVALID ARM: "
-              f"xfer_mode={a.xfer_mode} layers={a.rungd_layers or 'all'}")
+              f"xfer_mode={a.xfer_mode} layers={a.rungd_layers or 'all'} "
+              f"attend={a.attend_mode}")
         print("! Generated tokens are meaningless. TIMING ONLY -- this arm must")
         print("! never be cited for correctness, quality or tokens/s.")
         print("!" * 66)
@@ -790,10 +807,12 @@ def main() -> int:
            "d2h_async": not bool(a.no_d2h_async),
            "batch_gather": bool(a.batch_gather),
            "rungd_layers": a.rungd_layers or 0,
+           "attend_mode": a.attend_mode,
            "numerically_valid": (a.xfer_mode == "real"
                                  and a.rungd_layers == 0
                                  and not a.skip_d2h
-                                 and not a.d2h_probe),
+                                 and not a.d2h_probe
+                                 and a.attend_mode == "full"),
            "purity_gate": "per-step, decode_purity.DecodePurityMonitor",
            # CODE PROVENANCE. Each arm of a sweep is a fresh process, so editing
            # the harness while a job runs means later arms pick up the change and
