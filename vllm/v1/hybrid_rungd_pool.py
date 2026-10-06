@@ -61,6 +61,7 @@ class RungdHostPool:
         dtype: torch.dtype,
         blocks_per_req: int = 0,
     ) -> None:
+        import os as _os          # bound first: env is read throughout __init__
         self.layers = list(layer_names)
         self.layer_index = {ln: i for i, ln in enumerate(self.layers)}
         self.block_size = int(block_size)
@@ -165,7 +166,6 @@ class RungdHostPool:
         # (VLLM_KVPIPE_RUNGD_ASYNC=1) until re-measured on the new layout.
         # No staging buffers: the copies now come straight from the pinned
         # mirrors, so there is nothing to double-buffer but the stream itself.
-        import os as _os
         # Swap-semantics emulation (see writeback_layer). Off by default: this
         # is measurement apparatus, not part of the design.
         self._writeback = (

@@ -31,6 +31,11 @@ run() {  # run <name> <expected-substring> <env-assignments...> -- <cmd...>
 echo "=== unit (no GPU needed) ==="
 run tier_policy_unit  "TIER POLICY UNIT PASS"  $PY $P/tier_policy_unit.py
 run migration_unit    "MIGRATION UNIT PASS"    $PY $P/migration_unit.py
+# FIRST, because it is seconds and it catches the class of break that
+# otherwise costs six failed tests and half an hour of model loads: a typo
+# in the pool constructor. T7a read an env var above the line that bound
+# _os and took out 6 of 9.
+run pool_construct    "POOL CONSTRUCTION PASS" $PY $P/pool_construct_test.py
 run controller_unit   "CONTROLLER UNIT PASS"   $PY $P/hybrid_controller_unit.py
 
 echo "=== mechanism (bitwise) ==="
@@ -51,5 +56,5 @@ run burst_recovery    "BURST RECOVERY PASS" \
     VLLM_ENABLE_V1_MULTIPROCESSING=0 $PY $P/burst_recovery.py
 
 echo "============================================================"
-if [ "$fails" -eq 0 ]; then echo "SUITE PASS (9/9)"; else echo "SUITE FAIL ($fails failing)"; fi
+if [ "$fails" -eq 0 ]; then echo "SUITE PASS (10/10)"; else echo "SUITE FAIL ($fails failing)"; fi
 exit "$fails"
