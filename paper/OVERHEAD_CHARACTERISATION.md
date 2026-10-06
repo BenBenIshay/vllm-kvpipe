@@ -654,6 +654,19 @@ append region merged lazily). T4 already established that the obvious
 alternative — batching the copies across layers — is 18% *worse*, so per-layer
 copies have to be kept.
 
+> **What T2 already won, on the same footing.** M14's last arm runs the pre-T2
+> blocking mirror write: `F` = **12.63 ms** at L=64, against **5.80** as
+> shipped. **T2 halved `F`** (−6.84 ms, 54%). So the one change in this campaign
+> that reached `F` is also the one that produced its largest improvement, while
+> T3, T4 and T5 all attacked `c` and produced nothing. `F`'s trajectory:
+>
+> | | `F` at L=64 |
+> |---|---|
+> | pre-T2 blocking write | 12.63 |
+> | as shipped | 5.80 |
+> | T7 target (see below) | ~3.2 |
+> | floor | ~0.83 |
+>
 > **What these numbers are not.** The 0.0130 ms/layer launch floor is an
 > off-engine microbenchmark, so in-engine it would land somewhat higher and
 > 1.04 ms is optimistic. The remainder is superlinear, so its contribution at
