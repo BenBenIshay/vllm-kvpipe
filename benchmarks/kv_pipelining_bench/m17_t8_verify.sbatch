@@ -39,21 +39,21 @@
 # No delay command anywhere: this cluster's submit filter rejects any batch
 # script containing one.
 #
-#SBATCH --job-name=opt-m16
+#SBATCH --job-name=opt-m17
 #SBATCH --partition=supernova
 #SBATCH --nodelist=nova07
 #SBATCH --exclusive
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=250G
 #SBATCH --time=04:00:00
-#SBATCH --output=/mnt/beegfs/benishay/paper_runs/20260930/overhead/m16_%j.out
+#SBATCH --output=/mnt/beegfs/benishay/paper_runs/20260930/overhead/m17_%j.out
 
 set -u
 SLICE=${SLICE:-A}
 
 TREE=/mnt/beegfs/benishay/vllm-kvpipe/.claude/worktrees/overhead-char
 PY="$TREE/.venv/bin/python"
-OUT=/mnt/beegfs/benishay/paper_runs/20260930/overhead/18_t7a_fixed
+OUT=/mnt/beegfs/benishay/paper_runs/20260930/overhead/19_t8
 mkdir -p "$OUT"
 cd "$TREE" || exit 1
 export HF_HUB_CACHE=/mnt/beegfs/benishay/huggingface
@@ -106,11 +106,11 @@ A)
     echo
     echo "######## 2. DID IT FIRE, AND WHAT DID IT BUY -- three ON arms, because"
     echo "########    the drift itself has to be measured, not borrowed."
-    run T7F_on_a
-    run T7F_off  VLLM_KVPIPE_RUNGD_UNIFIED_MIRROR=0
-    run T7F_on_b
-    run T7F_off2 VLLM_KVPIPE_RUNGD_UNIFIED_MIRROR=0
-    run T7F_on_c
+    run T8_on_a
+    run T8_off  VLLM_KVPIPE_RUNGD_UNIFIED_MIRROR=0
+    run T8_on_b
+    run T8_off2 VLLM_KVPIPE_RUNGD_UNIFIED_MIRROR=0
+    run T8_on_c
     ;;
 *)  echo "unknown SLICE=$SLICE"; exit 2 ;;
 esac
