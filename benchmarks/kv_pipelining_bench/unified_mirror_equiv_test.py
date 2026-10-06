@@ -40,6 +40,10 @@ def per_layer_reference(mir_k, mir_v, pending, wt_k, wt_v):
 
 def vectorised(mir_k, mir_v, pending, wt_k, wt_v):
     """T7a's fast path, with its own guard conditions."""
+    # sorted by layer index, as the real guard now does: the engine appends in
+    # EXECUTION order, which is not necessarily the layer-index order, and the
+    # first version of this guard rejected every such step
+    pending = sorted(pending, key=lambda e: e[0])
     lis = [e[0] for e in pending]
     nl = len(lis)
     pos0, n0 = pending[0][1], pending[0][2]
@@ -67,6 +71,12 @@ CASES = [
      1, True),
     ("uniform but only the first 3 layers wrote (the layer knob)",
      [(li, torch.tensor([2, 11], dtype=torch.int64), 2) for li in range(3)],
+     2, True),
+    ("PERMUTED layer order -- what the engine actually does",
+     [(li, torch.tensor([3, 17, 29], dtype=torch.int64), 3)
+      for li in (2, 0, 5, 1, 4, 3)], 3, True),
+    ("permuted and partial (knob) -- still every layer 0..2 present",
+     [(li, torch.tensor([2, 11], dtype=torch.int64), 2) for li in (1, 2, 0)],
      2, True),
     # --- must FALL BACK ---
     ("non-uniform: one layer writes different rows",

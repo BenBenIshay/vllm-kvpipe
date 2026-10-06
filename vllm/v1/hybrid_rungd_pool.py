@@ -1401,12 +1401,32 @@ class RungdHostPool:
         #     than a gather.
         # Any of them false and the per-layer loop below runs instead, which is
         # the pre-T7 behaviour exactly.
-        lis = [e[0] for e in self._wt_pending]
+        # SORT BY LAYER INDEX FIRST. The pending list is appended in EXECUTION
+        # order, while `_wt_k` is indexed by the layer index the runner assigns
+        # from kv_cache_groups. The first version of this guard required
+        # `lis == list(range(nl))`, which fails whenever those two orders differ
+        # even by a swap -- and M15 measured exactly that: 2352 flushes, every
+        # one on the slow path, with the row counts confirming all 64 layers
+        # were present. Sorting 64 ints costs nothing and makes the guard
+        # indifferent to execution order, which it should always have been.
+        pend = sorted(self._wt_pending, key=lambda e: e[0])
+        lis = [e[0] for e in pend]
         nl = len(lis)
         fast = (self._unified_mirror and self._wt_uniform and nl > 1
                 and lis == list(range(nl)))
+        if not fast:
+            # Say WHY, so a fallback is diagnosable from the artifact instead of
+            # needing a Stub repro. This is what finding the bug above cost.
+            if not self._unified_mirror:
+                PT.count("wt_fallback_not_unified")
+            elif not self._wt_uniform:
+                PT.count("wt_fallback_not_uniform")
+            elif nl <= 1:
+                PT.count("wt_fallback_single_layer")
+            else:
+                PT.count("wt_fallback_layer_gap")
         if fast:
-            pos, n = self._wt_pending[0][1], self._wt_pending[0][2]
+            pos, n = pend[0][1], pend[0][2]
             tail = tuple(self._host_k_all.shape[3:])
             # global row = layer_offset + host_pos, vectorised over both
             idx = (pos.view(1, -1)
@@ -1418,7 +1438,7 @@ class RungdHostPool:
             rows = nl * n
             PT.count("wt_flush_vectorised")
         else:
-            for li, host_pos, n in self._wt_pending:
+            for li, host_pos, n in pend:
                 ln = self.layers[li]
                 hk, hv = self.host_k[ln], self.host_v[ln]
                 bs = hk.shape[1]
