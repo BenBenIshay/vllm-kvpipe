@@ -18,7 +18,7 @@
 % $L{=}64$) or engine timings taken during development, as in
 % \S\ref{sec:impl}. Measured results all live in \S\ref{sec:eval}, which
 % carries the % src: comments.
-\section{Design}
+\section{Design: five pillars, and what each one buys}
 \label{sec:design}
 
 \subsection{Overview}
@@ -30,6 +30,37 @@ device pool at all}. What follows is how that is possible --- why the host tier
 needs its own address space, what a step does, and how the cohort is sized.
 Appendix~\ref{app:figures} collects the notation, a component diagram and the
 request-lifecycle state machine.
+
+The design rests on five mechanisms. None is individually novel; what matters is
+that each is load-bearing, and we can say by how much, because every one was
+measured by removing it. Table~\ref{tab:pillars} is that accounting, and it is
+also the honest answer to ``why does this work'' --- the first two pillars create
+the opportunity, the next two make the overhead small enough to collect it, and
+the last decides where to stand.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llr}
+\toprule
+Pillar & What removing it costs & \S \\
+\midrule
+One forward, two KV sources & the whole gain & \ref{sec:design:exec} \\
+Transfer hidden under compute & $c$: $0.92 \to 7.20$\,ms & \ref{sec:design:step} \\
+$O(r)$ extent allocation & $c$: $1.26 \to 5.17$\,ms & \ref{sec:design:spaces} \\
+Deferred, batched mirror write & $F$: $3.4 \to 13.4$\,ms & \ref{sec:design:mirror} \\
+Overhead-aware admission & $22\%$ of the gain & \ref{sec:design:admission} \\
+\bottomrule
+\end{tabular}
+\caption{The five pillars and the measured cost of removing each, at $L = 64$
+unless noted. Each row is an ablation, not an estimate. The two $c$ rows are not
+additive: they were measured against different baselines, and the point of each is
+that the mechanism is necessary rather than that the deficits sum.}
+% src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
+% paper/data/overhead/08_opt/T1_c2048_bs16.json,
+% paper/data/overhead/19_t8/T8_on_a.json, paper/model/operating_point.py
+\label{tab:pillars}
+\end{table}
 
 \subsection{Where the two tiers run}
 \label{sec:design:exec}
@@ -47,6 +78,12 @@ rows: masking their \texttt{seqused\_k} to 1 makes them attend a single key and 
 overwritten by the second, worth 22\% of wall time. So a host-tier request occupies a
 row in a step that was happening anyway, paying its KV read out of interconnect
 bandwidth idle while the step reads weights --- the sense in which it rides along.
+
+\textbf{What it buys: the entire numerator.} Every other pillar reduces a cost;
+this one is why there is anything to collect. Because the weights are read once for
+both cohorts, $r$ riders multiply throughput by $(1 + r/B_{\mathrm{cap}})$ at no
+weight-read cost --- the term that pays for all the overhead below it. Serving the
+cohorts as separate forward passes would read the weights twice and leave nothing.
 
 \subsection{Why the host tier has its own addresses}
 \label{sec:design:spaces}
@@ -66,6 +103,14 @@ small dense array. A \emph{compaction} once per step bridges them, sorting the
 cohort's blocks onto $[0,R)$ so every layer reuses one block table while the slot
 contents rotate beneath it.
 
+\textbf{What it buys: $c$ stops scaling with blocks.} The compaction must be
+$O(r)$, not $O(\text{blocks})$. Building the block table one entry per rider-block
+per step --- the obvious implementation --- made $c$ grow with context and put it
+at $5.17$\,ms per rider, above the $3.37$\,ms a resident is worth, so \emph{no
+interconnect at any bandwidth} could have paid. Allocating whole extents instead
+leaves $0.0031$\,ms per rider with no context term at all, and is what moves the
+design from arithmetically impossible to profitable.
+
 \subsection{A decode step, end to end}
 \label{sec:design:step}
 
@@ -83,6 +128,36 @@ the scheduler, which is not incidental: the scheduler cannot observe a host-side
 write, so anything conditioned on KV having arrived must wait for an acknowledgement
 (Appendix~\ref{app:figures}).
 
+\textbf{What it buys: the bytes become free.} The $k>1$ lookahead is the pillar the
+whole premise rests on, and it is not a marginal optimisation: with it $c = 0.92$\,ms
+per rider, without it $7.20$\,ms, which fails the $3.37$\,ms budget by more than
+twofold. Run deep enough below the knee and the transfer disappears from the step
+entirely --- removing a rider's bytes while keeping every launch moves $c$ by
+$0.010$\,ms. \textbf{That is the result that reframes the design}: what a faster
+interconnect buys is not a cheaper rider but a higher knee
+(\S\ref{sec:model:knee}), and $c$ is left holding only launch and bookkeeping work.
+
+\subsection{The mirror write, deferred and batched}
+\label{sec:design:mirror}
+
+The host mirror is authoritative, so each step's new $K,V$ must reach it. Doing
+that per layer, synchronously, is the single largest avoidable cost in the design:
+a blocking pageable copy once per layer put $F$ at $13.4$\,ms, $85\%$ of it in that
+one operation, and at $71\,\mu$s per copy it cost $446\times$ the transfer it
+performed. Deferring the writes and flushing them as one batched scatter per step
+--- two vectorised index-copies rather than $2L$ --- takes $F$ to $3.4$\,ms.
+
+\textbf{What it buys: $F$, which is now the binding constraint.} With $c$ clearing
+its budget fivefold, the fixed cost is the only term that decides the margin, so
+$74\%$ of $F$ removed is the difference between the thin result this paper
+originally reported and Table~\ref{tab:gain}. Two cautions belong with it. The
+largest single saving came from finding that a \emph{disabled} feature was flushing
+the batch on every layer, which had silently defeated the batching since the day it
+landed --- the overhead was not where the design said it was. And what remains is
+now dominated not by the write but by the extra attention call of
+\S\ref{sec:design:exec}: $56\%$ of $F$ at $L = 64$, which
+\S\ref{sec:eval:cost} prices as the next thing worth removing.
+
 \subsection{Admission}
 \label{sec:design:admission}
 
@@ -98,6 +173,15 @@ bounded by \emph{peak} device residency, so allocating during prefill and
 reclaiming afterwards still pays the peak. \emph{Queue bypass}: vLLM's waiting
 queue stops at the first request it cannot allocate for, so a block-starved
 request ahead would otherwise block an admission that needs no resources.
+
+\textbf{What it buys: $22\%$, from configuration alone.} Admission must respect
+Eq.~\ref{eq:knee} and, because riders are integers, must round \emph{down}: a
+budget that admits $1.98$ riders admits one. Choosing the operating point with that
+in mind is worth more than any of the code changes above --- $\times 1.37$ against
+$\times 1.12$ for the same model and hardware at a context $1.2\%$ shorter
+(\S\ref{sec:model:knee}). It is also the one pillar whose benefit needs no new
+mechanism, only a policy that knows the knee, which is why we treat the overhead
+law rather than the transport as this paper's contribution.
 
 \subsection{Placement and migration are mechanisms, not contributions}
 \label{sec:design:placement}

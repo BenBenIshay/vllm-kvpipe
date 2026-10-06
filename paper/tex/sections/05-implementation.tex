@@ -52,16 +52,19 @@ host-tier request's per-step cost.
 
 \paragraph{What the host path costs per step.}
 \label{sec:impl:cost}
-Beyond the transfer, using the host path costs a fixed \textbf{12.3\,ms} per
-step, reduced from 37.0 over four optimisations. That residual is the $F$ of
-\S\ref{sec:model:omits}, on which the paper's result turns, so its composition
-matters: an operator trace shows no dominant term, just roughly 640 extra kernel
-launches per step --- about ten per layer across 64 layers at $0.19$\,ms
-\emph{per layer}, so $64 \times 0.19 = 12.2$\,ms. It is the per-layer issue
-structure itself, and removing it needs batching across layers rather than
-issuing per layer, which we have not built. Two properties follow and they pull
-opposite ways: $F$ is launch-bound rather than bandwidth-bound, so a faster
-interconnect does not shrink it, but it is \emph{not} machine-independent ---
-launch cost depends on the host CPU and the count scales with layer depth, so a
-Grace host may pay less. Appendix~\ref{app:impl} gives the three engineering lessons behind
-the reduction, with one quantified example each.
+Beyond the transfer, using the host path costs a fixed \textbf{3.4\,ms} per step at
+64 layers --- the $F$ of \S\ref{sec:model:omits}, on which the paper's result turns.
+We previously attributed it to the per-layer \emph{issue structure}: an operator
+trace showed no dominant term, just some 640 extra kernel launches per step, ten per
+layer at $0.19$\,ms a layer. That attribution was wrong, and testing it is what
+found the real cost. A measurement-only mode that issues whole extents, cutting the
+launch count eightfold, moved neither $F$ nor $c$ by more than their run-to-run
+drift. $F$ is not launch-bound.
+
+Ablating the mechanisms instead splits it: $1.2$--$1.5$\,ms of mirror write and
+$1.9$\,ms of the extra attention call that the two-source design requires
+(\S\ref{sec:design:exec}), the latter now the larger share. $F$ scales with layer
+depth at $0.053$\,ms per layer, and it is \emph{not} machine-independent, so a Grace
+host may pay differently --- which is why measuring it on a coherent-link part is
+the first experiment we ask of one. Appendix~\ref{app:ridercost} gives the full
+ledger of what was tried and what landed.

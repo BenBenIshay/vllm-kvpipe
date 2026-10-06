@@ -146,19 +146,61 @@ $\Xlink^{*}$ is necessary and not sufficient. An earlier
 $+7.7\%$ we reported on the decode phase was an artifact of subtracting prefill
 by hand from a co-located run, and we withdraw it.
 
-Two properties of the cost curve matter for the coherent-link projection. It is
-\textbf{not affine}: extending the sweep, $\Delta T$ per rider \emph{rises}
-($9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$; Fig.~\ref{fig:costcurve}), so
-$\Delta T = F + cr$ fits a negative fixed cost and the fixed-versus-slope split of
-Appendix~\ref{app:ridercost} is not a meaningful decomposition. What the data fits
-is a kink at $r = T_{\mathrm{compute}}\Xlink/(S \btok{})$ --- $2.4$ riders here,
-where the byte budget of \S\ref{sec:design:admission} also lands --- so a faster
-link raises the knee but does not remove the overhead. Three points do not resolve
-that overhead: it measures $18.1$, $8.6$ and $13.5$\,ms at $r = 2, 4, 6$,
-non-monotone, with the knee falling between the first two. Even its smallest value
-is $8.6$\,ms on a $53$\,ms step, most of what two extra requests buy. Whether it
-survives onto a coherent interconnect cannot be extrapolated from this substrate.
-% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
+\paragraph{The law is affine, and our first reading of it was not.}
+We previously reported this cost curve as \textbf{not affine} --- $\Delta T$ per
+rider \emph{rising} through $9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$, so that
+$\Delta T = F + cr$ fitted a \emph{negative} fixed cost and the split was not a
+meaningful decomposition. That was an artifact of our own sweep. Those points
+straddle the knee $r^{*}$ of Eq.~\ref{eq:knee}, which sits at $2.4$ riders in this
+configuration, and above it the step \emph{is} the transfer. Fitting a line through
+points on both sides of it raises the apparent slope and depresses the apparent
+intercept together, from one cause --- which is exactly the signature we read as
+non-affinity, and is also why the residual overhead looked non-monotone
+($18.1$, $8.6$, $13.5$\,ms).
+
+Re-measuring with every point strictly below the knee ($\ell/T_0 \le 1/3$, with
+$\ell$ sized on the \emph{final} sequence length so generation is counted) gives a
+clean affine fit in which both coefficients are well identified: across seven arms
+$c$ repeats to $1.5\%$ and $F$ to $10\%$ between runs of one configuration.
+Eq.~\ref{eq:coeffs} is that fit. Two of its properties were surprises:
+
+\begin{itemize}\itemsep1pt \parskip0pt
+\item \textbf{$c$ is context-independent}, $0.532$\,ms at $128$ tokens against
+  $0.488$ at $256$, where the earlier fit had it growing as
+  $0.205 + 1.84\times10^{-3}S$. The $S$ dependence was the knee entering the fit.
+\item \textbf{$c$ contains none of the transfer.} Removing a rider's bytes while
+  keeping every launch and every bookkeeping step (\texttt{minbytes}) moves $c$ by
+  $0.010$\,ms. Below the knee the prefetch hides the bytes completely, so $c$ is
+  exposed launch and host work --- and a faster link cannot reduce it.
+\end{itemize}
+% src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
+% paper/data/overhead/15_clean_cf/CF_c256.json,
+% paper/data/overhead/15_clean_cf/MB_c128.json
+
+\paragraph{$F$ was three times too large, and what it is made of was wrong too.}
+$F$ measures $3.4$\,ms at $L = 64$, not the $12.3$ this paper reported, and
+\S\ref{sec:impl:cost}'s attribution of it to $\sim$640 kernel launches does not
+survive: a measurement-only mode that cuts the launch count eightfold moves neither
+coefficient resolvably. Ablating the two mechanisms instead splits it as
+$1.2$--$1.5$\,ms of mirror write and $1.9$\,ms of \emph{second attention call},
+the latter now the larger share at $56\%$. Nine changes were attempted and four
+landed; the ledger is in Appendix~\ref{app:ridercost}, including the four whose
+mechanism fired and whose benefit did not, because that ratio is the useful warning
+for anyone extending this work. The largest single win was not an optimisation at
+all but a defect: a feature that is \emph{off by default} was flushing the batched
+mirror write on every layer, $64$ times per step, because its call site tested that
+the method existed rather than that the feature was enabled.
+
+A caution on precision. $F$'s run-to-run drift on identical configuration was
+$0.04$, $0.43$, $0.04$ and $0.51$\,ms across four jobs --- bimodal, and not
+transferable between jobs. We therefore quote $F$ to $\pm 0.5$\,ms and bracket
+every ablation with repeated baseline arms inside the same job rather than
+comparing against a figure measured in another.
+% src: paper/data/overhead/19_t8/T8_on_a.json,
+% paper/data/overhead/19_t8/T8_off.json,
+% paper/data/overhead/20_f_split_post_t8/FS_base.json,
+% paper/data/overhead/20_f_split_post_t8/FS_nod2h.json,
+% paper/data/overhead/20_f_split_post_t8/FS_both.json
 
 \subsection{Does the capacity model predict it?}
 \label{sec:eval:model}
@@ -184,14 +226,29 @@ awaiting its experiment.
 target is tighter than the full-pool step time; the tightest points of the goodput
 sweep test that directly.
 
-\emph{When the weights are small.} Llama-3.1-8B leaves 75.9\,GB of a 96\,GB part
-after weights, so $\HBM/\Ckv = 1.26$ and the capacity multiplier is $\times$1.03 ---
-barely anything once its riders are billed for the HBM bandwidth they consume. The
-second gate then makes it a predicted \emph{negative}: charging its own $F$
-($6.2$\,ms at 32 layers) and the per-request cost gives $\times$0.98, and its
-$F^{*}$ of $4.8$\,ms is below the $6.2$ it pays, so the residual alone exceeds what
-its capacity buys. The prediction is therefore unusually strong --- 8B should lose on
-\emph{any} implementation, however cheap the fixed cost.
+\emph{When the weights are small --- and this is the prediction we got wrong.}
+Llama-3.1-8B leaves 75.9\,GB of a 96\,GB part after weights, so
+$\HBM/\Ckv = 1.26$ and the capacity multiplier is $\times$1.03, barely anything once
+its riders are billed for the HBM bandwidth they consume. On that basis we reported
+it as a predicted \emph{negative} at $\times 0.98$, with an $F^{*}$ of $4.8$\,ms
+below the $6.2$ it then paid, and called the prediction unusually strong: 8B should
+lose on \emph{any} implementation, however cheap the fixed cost.
+
+That last step did not hold, and it is worth being precise about why, because the
+error was ours and not the model's. The claim rested entirely on $F$ exceeding
+$F^{*}$, and $F$ was three times too large (\S\ref{sec:eval:cost}). At
+$0.053$\,ms per layer the 8B pays $1.7$\,ms against an $F^{*}$ of $4.0$, and the
+projection turns $\times 1.04$ --- positive, though by the thinnest margin in
+Table~\ref{tab:gain} and requiring the most riders to get there. \textbf{So the
+strong form of the claim is withdrawn.} What survives is the ordering: the margin
+over $F^{*}$ still grows monotonically with $\HBM/\Ckv$, and the 8B is still last.
+
+\emph{What does not change is the measured result on the hardware we have.} On
+A100/PCIe the 8B admits no riders at all --- its capacity gain is exactly $1.000$,
+because there the configuration is latency-bound rather than capacity-bound, so
+there is no headroom for a rider to fill and the host path can only add cost. That
+negative is structural, independent of $F$, and is the one in this paper that was
+measured rather than projected.
 
 \emph{When the interconnect is slow.} On A100/PCIe, with real KV delivered through
 the prefill handover, throughput is 2.3\% \emph{below} not offloading at all, and
@@ -210,9 +267,12 @@ axis rather than as a disappointment.
 
 \emph{Question.} The one an operator actually asks. \emph{Claim under test.} That at
 a matched latency target the mixture serves more requests per second than either
-endpoint. \emph{Prediction.} On this substrate, \textbf{no} --- and the capacity term
-does not rescue it, since the margin is $F^{*} = 12.8$\,ms against the $12.3$ that
-configuration pays, so half a millisecond of $F$ decides it.
+endpoint. \emph{Prediction.} On this substrate, \textbf{no}, because the link cannot
+admit enough riders --- but the reason has changed. This configuration's $F^{*}$ is
+$13.4$\,ms against the $3.4$ it now pays, so the fixed cost is no longer what
+decides it, and the binding constraint is the knee: PCIe affords two riders where
+break-even needs more. On a coherent link the same arithmetic passes, which is why
+the protocol below is the experiment the positive claim requires.
 
 We state the protocol here because it is the experiment the positive claim requires
 and it is not yet run. Hold model, device, workload and substrate fixed; vary only

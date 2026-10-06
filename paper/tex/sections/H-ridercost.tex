@@ -1,74 +1,130 @@
-% Appendix H -- the superseded four-point rider sweep, moved out of section 6
-% (2026-09-26). Kept rather than deleted because the paper's earlier overlap
-% figure (78%) came from it, and a reader who has seen that number deserves to
-% see what replaced it and why.
+% Appendix H -- REWRITTEN 2026-10-06. Was "The superseded rider sweep": the
+% four-point sweep set aside in 2026-09-26, kept so a reader who had met its 78%
+% overlap figure could see what replaced it.
+%
+% That framing no longer fits, because the thing that replaced it has itself been
+% replaced. The four-point sweep was not merely imprecise, it was fitted ACROSS the
+% knee, and so was its successor. This appendix now carries the characterisation
+% done below the knee, the coefficient table with provenance, and the full ledger
+% of optimisations attempted -- including the ones that failed, which is the part
+% a reader extending this work most needs.
+%
+% The long-form version, with every arm and every retraction, is
+% paper/OVERHEAD_CHARACTERISATION.md in the repository; it is not part of the
+% paper.
 
-\section{The superseded rider sweep}
+\section{The overhead law, measured}
 \label{app:ridercost}
 
-Table~\ref{tab:ridercost} is the four-point sweep \S\ref{sec:eval:cost} sets
-aside, kept here because the 78\% overlap figure it implies appeared in earlier
-drafts and a reader who has met that number should see what replaced it.
+\subsection{Why the earlier fits were wrong, and in which direction}
 
-Sweeping the number of host-tier requests on an otherwise identical engine and
-fitting
-$\mathrm{ITL}(r) = \mathrm{ITL}_0 + \text{fixed} + r\cdot c$
-separates a fixed per-step cost of using the host path at all from a per-request
-cost that fails to overlap compute. The two extrapolate to completely different
-answers on a faster link, which is why a single operating point cannot settle
-the question.
+Three successive readings of the per-rider cost appear in this project's history,
+and all three errors have one cause: \textbf{points above the knee were included in
+the fit}. Above $r^{*}$ (Eq.~\ref{eq:knee}) the step time \emph{is} the transfer, so
+it grows with $r$ at the link rate rather than at the overhead rate. A line fitted
+through points on both sides of the boundary therefore tilts --- it borrows slope
+from the transfer-bound regime and pays for it with a depressed intercept.
 
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{lrr}
+That single mechanism explains every discrepancy we chased:
+
+\begin{itemize}\itemsep1pt \parskip0pt
+\item the per-rider cost came out $2.2$--$2.9$\,ms, against $0.52$ measured below
+  the knee: \textbf{over} by four to five times;
+\item the fixed cost came out $9.6$--$12.3$\,ms, against $3.4$: \textbf{under},
+  once the optimisations below are also accounted for;
+\item an apparent \emph{negative} fixed cost at one configuration, which we
+  reported as evidence that the law was not affine;
+\item an apparent dependence of the per-rider cost on context,
+  $c = 0.205 + 1.84\times10^{-3}S$, which vanishes entirely below the knee;
+\item an apparent $62\%$, later $88\%$, transfer-overlap efficiency --- a quantity
+  that does not exist, since below the knee the overlap is complete.
+\end{itemize}
+
+The lesson is procedural rather than numerical. The knee must be computed
+\emph{per point} from the final sequence length, not the prompt length, and points
+failing $\ell/T_0 \le 1/3$ must be discarded rather than down-weighted. Doing that
+is what makes the two coefficients separately identifiable: across seven arms the
+per-rider cost repeats to $1.5\%$ and the fixed cost to $10\%$ between runs of one
+configuration.
+
+\subsection{The coefficients}
+
+\begin{center}\small
+\begin{tabular}{llr}
 \toprule
-host-tier requests & ITL (ms) & tok/s \\
+Quantity & Value & Provenance \\
 \midrule
-0 & 49.99 & 57.5 \\
-1 & 65.66 & 54.7 \\
-2 & 65.93 & 55.8 \\
-3 & 74.98 & 57.0 \\
+$c$ intercept       & $0.177$\,ms            & $L = 16, 32, 64$ at ctx 128 \\
+$c$ per layer       & $0.0054$\,ms           & same \\
+$F$ per layer       & $0.053$\,ms            & after T1, T2, T7a, T8 \\
+mirror write        & $1.2$--$1.5$\,ms       & ablation at $L = 64$ \\
+second attention    & $1.9$\,ms              & ablation at $L = 64$ \\
+D2H copy floor      & $0.834$\,ms            & off-engine, $2L$ copies \\
 \bottomrule
 \end{tabular}
-\caption{Qwen2.5-32B, 2048 context, 12 offered, 8 resident, A100/PCIe.
-\emph{ITL} is the median inter-token latency; \emph{tok/s} is end-to-end decode
-throughput over the whole 12-request run including the drain, \emph{not}
-$B/\mathrm{ITL}$. \textbf{The arms do not hold the resident cohort fixed}: peak
-concurrency runs 4, 8, 10, 11 down the rows, so $\Delta$ITL conflates a rider's
-cost with additional \emph{resident} requests --- the confound
-\S\ref{sec:eval:ablation} calls disqualifying. ``8 resident'' is the cap, not
-the observed cohort. An affine fit over these four points gives $9.6$\,ms fixed
-$+$ $4.7$\,ms per request, implying $78\%$ overlap; the direct measurement below
-supersedes both that functional form and that number, and the fit is three
-parameters' worth of structure read from four points.}
-\label{tab:ridercost}
-\end{table}
-% src: paper/data/hide_efficiency.json @ f3df05bdb
+\end{center}
+% src: paper/data/overhead/15_clean_cf/CF_L16.json,
+% paper/data/overhead/15_clean_cf/CF_L32.json,
+% paper/data/overhead/15_clean_cf/CF_c128_a.json,
+% paper/data/overhead/20_f_split_post_t8/FS_nod2h.json,
+% paper/data/overhead/20_f_split_post_t8/FS_both.json
 
-\textbf{The throughput column is end-to-end over a finite workload, and that
-matters.} It is total decode tokens divided by total decode wall time across all
-12 requests, including the drain at the end, so it is not $B/\mathrm{ITL}$ and
-does not reconcile with the ITL column: at $r{=}0$, $768/13.4\,\mathrm{s}$ gives
-57.3 tok/s while $B/\mathrm{ITL}$ at the peak concurrency of 4 would give 80.
-The two readings of these same four rows disagree about the sign. End to end,
-throughput is flat within noise (57.5, 54.7, 55.8, 57.0). Read as
-$B/\mathrm{ITL}$ at peak concurrency it \emph{rises} (80, 122, 152, 147),
-because riders add concurrency faster than they lengthen the step.
+Two cautions. The fixed cost's run-to-run drift on identical configuration was
+$0.04$, $0.43$, $0.04$ and $0.51$\,ms across four jobs --- \textbf{bimodal}, so a
+tight bracket in one job licenses nothing about another; we quote $\pm 0.5$\,ms and
+re-measure the baseline inside every job. And the two components of $F$ are each a
+single arm, so they are $\pm 0.5$ individually while their sum is pinned by the
+tighter three-arm baseline.
 
-Neither is decisive, and the reason is the experiment rather than the system: a
-12-request closed workload never reaches steady state, so the end-to-end column
-is dominated by the drain, while peak concurrency is an upper bound that no step
-sustains. A third reading of a single two-request point is worse still --- it
-cannot distinguish a steep slope from a large intercept, and read that way it
-implies 89\% of the transfer fails to overlap, which the sweep contradicts. What
-settles the cost is an experiment that holds the resident batch fixed and adds
-riders on top, which is the measurement \S\ref{sec:eval:cost} keeps.
+\subsection{The ledger: nine attempted, four landed}
 
-The fixed-versus-slope split is also unstable at three points: two runs of the
-same sweep fitted $12.3 + 4.5$ and $9.6 + 4.7$. Because the fixed term is
-precisely the part that a faster interconnect does \emph{not} shrink, that
-split determines break-even on a coherent link, and three points cannot fix it.
-Any interconnect comparison therefore needs the sweep run at ten host-tier
-counts or more; the curve in \S\ref{sec:eval:cost} is the first step of that and still stops at
-six.
+\begin{center}\small
+\begin{tabular}{llp{4.6cm}}
+\toprule
+ & Change & Outcome \\
+\midrule
+T1 & $O(r)$ extent allocation   & \textbf{landed}: $c$ $5.17 \to 1.26$\,ms \\
+T2 & deferred batched mirror    & \textbf{landed}: $F$ $13.4 \to 5.8$\,ms \\
+T7a & vectorised mirror scatter & \textbf{landed}: $-0.32$\,ms \\
+T8 & stop a disabled feature flushing per layer & \textbf{landed}: $-2.0$\,ms \\
+T3 & staged D2D then D2H        & rejected: $6\times$ worse, 4.6 vs 22.3\,GB/s \\
+T4 & batch copies across layers & rejected unbuilt: $18\%$ worse off-engine \\
+T5 & whole-extent runs          & null: launches $\div 8$, no resolvable change \\
+T6 & order the mirror scatter   & rejected: costs the entire overlap \\
+T7b & preallocated rider buffers & null \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/08_opt/T1_c2048_bs16.json,
+% paper/data/overhead/09_t2/T2_async_a.json,
+% paper/data/overhead/10_t3/T3_on_a.json,
+% paper/data/overhead/14_t5/T5_on.json,
+% paper/data/overhead/13_t6/T6_on.json,
+% paper/data/overhead/19_t8/T8_on_a.json
+
+\textbf{Four of the nine had a mechanism that demonstrably fired and a benefit that
+did not follow}, and that ratio is the most transferable result in this appendix. T5
+cut the launch count eightfold and moved nothing, which is what refuted the
+launch-bound account of $F$. T3's staged copy achieved exactly the bandwidth
+improvement predicted for it in isolation and was six times slower in the engine. We
+therefore price every remaining candidate off-engine or by ablation before building
+it, and treat a confirmed mechanism as no evidence at all about a cost.
+
+The largest single win was not an optimisation. A feature that is \textbf{off by
+default} --- a swap-semantics emulation --- was flushing the batched mirror write on
+every layer, $64$ times per step, because its call site tested that the method
+\emph{existed} rather than that the feature was enabled. It had silently defeated
+T2's batching from the day T2 landed. It was found only because T7a, a change that
+should have helped, did not: the diagnostic counter added to explain T7a's silence
+reported a state that contradicted the row counts.
+
+\subsection{What remains, and its measured ceiling}
+
+$56\%$ of the fixed cost is now the second attention call that the two-source design
+requires (\S\ref{sec:design:exec}). Removing it means fusing the two calls into one
+--- a single varlen invocation over a concatenated block table, which needs the rider
+cohort's table rebuilt per layer on the hot path. Given the ledger above we declined
+to project the benefit and measured its ceiling instead, by ablating the call
+entirely: a fused implementation cannot beat not doing the work at all. The remaining
+mirror write is bounded below by $0.834$\,ms, the cost of its $2L$ copies measured
+off-engine, so at most $0.6$\,ms of it is recoverable.
