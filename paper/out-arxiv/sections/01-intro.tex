@@ -82,10 +82,14 @@ the latency gate (\S\ref{sec:model:omits}).
 \item \textbf{An admission controller in vLLM} (\S\ref{sec:design:admission}): the
       host cohort sized at runtime from the rider-free step time and the achieved
       link bandwidth, not from a configured offload fraction.
-\item \textbf{A measured account of what a host-tier request costs}
-      (\S\ref{sec:eval}), on a substrate the model says cannot pay --- which makes
-      the cost decomposition, rather than a speedup, the result we can defend
-      today.
+\item \textbf{A working implementation, and a measured account of what it costs}
+      (\S\ref{sec:eval}). The mechanism itself is demonstrated rather than
+      projected: six times the concurrency from the same KV pool, output
+      token-identical to the unmodified engine. The interconnect we have is too slow
+      for that capacity to convert into throughput --- which the model predicts
+      before we measure it --- so the cost decomposition is what carries the
+      projection --- whose inputs are anchored to published Grace-Hopper
+      measurements\ifarxiv, consolidated in \S\ref{app:validation}\fi.
 \end{enumerate}
 
 \begin{figure}[t]

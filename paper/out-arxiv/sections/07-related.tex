@@ -97,12 +97,14 @@ holds, at fixed memory. The two are complementary: a rotary scheduler decides wh
 turn it is, and nothing stops the requests awaiting their turn from riding along
 rather than idling.
 
-Neither SuperInfer nor BOOST offers a cost model for the host path. SuperInfer
-reports aggregate per-iteration costs but no decomposition; BOOST derives the
-bandwidth crossover but charges no fixed term. \textbf{The overhead law of
-\S\ref{sec:model} --- a fixed cost, a per-request cost, and the knee between them,
-each measured by ablation --- is unmatched in this literature}, and on the evidence
-of \S\ref{sec:eval:cost} it is also the part most easily got wrong.
+One further difference is evidential rather than architectural, and it is why we can
+make the claim above about systems we cannot run. Neither SuperInfer nor BOOST
+publishes a cost model for the host path: SuperInfer reports aggregate
+per-iteration costs without a decomposition, and BOOST derives the bandwidth
+crossover but charges no fixed term. The law of \S\ref{sec:model} --- a fixed cost,
+a per-request cost, and the knee between them, each isolated by ablation --- is what
+lets us say \emph{when} a second tier pays rather than only that it did once, on one
+machine. We offer it as the account of the mechanism, not in place of it.
 
 \paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing our
 hardware assumption on the two questions that matter. What is unsolved is which
