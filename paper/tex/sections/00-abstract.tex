@@ -7,15 +7,19 @@ exhausts HBM long before the arithmetic units are busy, so the GPU runs at
 single-digit utilization while turning requests away. Coherent CPU--GPU
 interconnects make host DRAM fast enough to hold the KV of an \emph{actively
 decoding} request, but existing systems vary how much KV sits on the host and
-never \emph{whose} --- they place none, or a uniform fraction of every request.
+never \emph{whose} --- they place none, or a uniform fraction of every request. The
+one system that does decide per request takes turns: it pauses a request and parks
+its KV in host memory until the request is scheduled back. \textbf{Nobody serves
+both tiers in the same step.}
 
 We present a heterogeneous KV memory that manages HBM and host DRAM as one store
 and assigns each request to a tier. A \emph{host-tier} request holds no device
-blocks at all: its KV lives in host memory and is streamed one layer at a time,
-just before the attention that consumes it, through a small buffer reused across
-layers --- a few percent of the device memory a resident request needs. Both tiers
-are rows of a single forward pass, so the weights are read once however the batch
-is split, and an admission controller sizes the host cohort from the link
+blocks at all \emph{while it is generating}: its KV lives in host memory and is
+streamed one layer at a time, just before the attention that consumes it, through a
+small buffer reused across layers --- a few percent of the device memory a resident
+request needs. Both tiers are rows of a \textbf{single forward pass}, so the weights
+are read once however the batch is split, and an admission controller sizes the host
+cohort from the link
 bandwidth and step time it measures at runtime. A capacity model says which
 configurations this helps: from a device profile it returns the cohort that
 maximises decode throughput, and its content is that the value of a second tier

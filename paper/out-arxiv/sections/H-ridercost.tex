@@ -1,0 +1,171 @@
+% Appendix H -- REWRITTEN 2026-10-06. Was "The superseded rider sweep": the
+% four-point sweep set aside in 2026-09-26, kept so a reader who had met its 78%
+% overlap figure could see what replaced it.
+%
+% That framing no longer fits, because the thing that replaced it has itself been
+% replaced. The four-point sweep was not merely imprecise, it was fitted ACROSS the
+% knee, and so was its successor. This appendix now carries the characterisation
+% done below the knee, the coefficient table with provenance, and the full ledger
+% of optimisations attempted -- including the ones that failed, which is the part
+% a reader extending this work most needs.
+%
+% The long-form version, with every arm and every retraction, is
+% paper/OVERHEAD_CHARACTERISATION.md in the repository; it is not part of the
+% paper.
+
+\section{The overhead law, measured}
+\label{app:ridercost}
+
+\subsection{Why the earlier fits were wrong, and in which direction}
+
+Three successive readings of the per-rider cost appear in this project's history,
+and all three errors have one cause: \textbf{points above the knee were included in
+the fit}. Above $r^{*}$ (Eq.~\ref{eq:knee}) the step time \emph{is} the transfer, so
+it grows with $r$ at the link rate rather than at the overhead rate. A line fitted
+through points on both sides of the boundary therefore tilts --- it borrows slope
+from the transfer-bound regime and pays for it with a depressed intercept.
+
+That single mechanism explains every discrepancy we chased:
+
+\begin{itemize}\itemsep1pt \parskip0pt
+\item the per-rider cost came out $2.2$--$2.9$\,ms, against $0.52$ measured below
+  the knee: \textbf{over} by four to five times;
+\item the fixed cost came out $9.6$--$12.3$\,ms, against $3.4$: \textbf{under},
+  once the optimisations below are also accounted for;
+\item an apparent \emph{negative} fixed cost at one configuration, which we
+  reported as evidence that the law was not affine;
+\item an apparent dependence of the per-rider cost on context,
+  $c = 0.205 + 1.84\times10^{-3}S$, which vanishes entirely below the knee;
+\item an apparent $62\%$, later $88\%$, transfer-overlap efficiency --- a quantity
+  that does not exist, since below the knee the overlap is complete.
+\end{itemize}
+
+The lesson is procedural rather than numerical. The knee must be computed
+\emph{per point} from the final sequence length, not the prompt length, and points
+failing $\ell/T_0 \le 1/3$ must be discarded rather than down-weighted. Doing that
+is what makes the two coefficients separately identifiable: across seven arms the
+per-rider cost repeats to $1.5\%$ and the fixed cost to $10\%$ between runs of one
+configuration.
+
+\subsection{The coefficients}
+
+\begin{center}\small
+\begin{tabular}{llr}
+\toprule
+Quantity & Value & Provenance \\
+\midrule
+$c$ intercept       & $0.177$\,ms            & $L = 16, 32, 64$ at ctx 128 \\
+$c$ per layer       & $0.0054$\,ms           & same \\
+$F$ per layer       & $0.053$\,ms            & after T1, T2, T7a, T8 \\
+$F$ at $L=64$       & $3.36$\,ms             & 3 arms, spread $0.09$ \\
+second attention    & $1.21$\,ms             & ablation, same job \\
+all other fixed work & $2.15$\,ms            & by difference \\
+D2H copy floor      & $0.834$\,ms            & off-engine, $2L$ copies \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/15_clean_cf/CF_L16.json,
+% paper/data/overhead/15_clean_cf/CF_L32.json,
+% paper/data/overhead/15_clean_cf/CF_c128_a.json,
+% paper/data/overhead/21_fusion_bound/FB_base_a.json,
+% paper/data/overhead/21_fusion_bound/FB_noattend.json
+
+One caution, and it governs every figure above. The fixed cost's run-to-run drift on
+identical configuration was $0.04$, $0.43$, $0.04$ and $0.51$\,ms across four jobs
+--- \textbf{bimodal}, so a tight bracket in one job licenses nothing about another.
+We therefore quote $F$ to $\pm 0.5$\,ms \emph{between} jobs while reporting the
+within-job spread for comparisons made inside one, re-measure the baseline in every
+job, and never subtract an arm from an arm measured elsewhere. The $1.21$\,ms above
+comes from a job whose three baseline arms agreed to $0.09$\,ms, so it is resolved at
+roughly thirteen times its own noise; an earlier figure of $1.94$ for the same
+quantity came from subtracting across rounds and was high by $60\%$.
+
+\subsection{The ledger: nine attempted, four landed}
+
+\begin{center}\small
+\begin{tabular}{llp{4.6cm}}
+\toprule
+ & Change & Outcome \\
+\midrule
+T1 & $O(r)$ extent allocation   & \textbf{landed}: $c$ $5.17 \to 1.26$\,ms \\
+T2 & deferred batched mirror    & \textbf{landed}: $F$ $13.4 \to 5.8$\,ms \\
+T7a & vectorised mirror scatter & \textbf{landed}: $-0.32$\,ms \\
+T8 & stop a disabled feature flushing per layer & \textbf{landed}: $-2.0$\,ms \\
+T3 & staged D2D then D2H        & rejected: $6\times$ worse, 4.6 vs 22.3\,GB/s \\
+T4 & batch copies across layers & rejected unbuilt: $18\%$ worse off-engine \\
+T5 & whole-extent runs          & null: launches $\div 8$, no resolvable change \\
+T6 & order the mirror scatter   & rejected: costs the entire overlap \\
+T7b & preallocated rider buffers & null \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/08_opt/T1_c2048_bs16.json,
+% paper/data/overhead/09_t2/T2_async_a.json,
+% paper/data/overhead/10_t3/T3_on_a.json,
+% paper/data/overhead/14_t5/T5_on.json,
+% paper/data/overhead/13_t6/T6_on.json,
+% paper/data/overhead/19_t8/T8_on_a.json
+
+\textbf{Four of the nine had a mechanism that demonstrably fired and a benefit that
+did not follow}, and that ratio is the most transferable result in this appendix. T5
+cut the launch count eightfold and moved nothing, which is what refuted the
+launch-bound account of $F$. T3's staged copy achieved exactly the bandwidth
+improvement predicted for it in isolation and was six times slower in the engine. We
+therefore price every remaining candidate off-engine or by ablation before building
+it, and treat a confirmed mechanism as no evidence at all about a cost.
+
+The largest single win was not an optimisation. A feature that is \textbf{off by
+default} --- a swap-semantics emulation --- was flushing the batched mirror write on
+every layer, $64$ times per step, because its call site tested that the method
+\emph{existed} rather than that the feature was enabled. It had silently defeated
+T2's batching from the day T2 landed. It was found only because T7a, a change that
+should have helped, did not: the diagnostic counter added to explain T7a's silence
+reported a state that contradicted the row counts.
+
+\subsection{What remains, and its measured ceiling}
+
+The largest component we have not removed is the second attention call the
+two-source design requires (\S\ref{sec:design:exec}). Removing it means fusing the two calls into one
+--- a single varlen invocation over a concatenated block table, needing the rider
+cohort's table rebuilt per layer on the hot path. Given the ledger above we declined
+to project that benefit and measured its ceiling instead, by ablating the call: a
+fused implementation cannot beat not performing the work at all. Two arms bound it
+from opposite sides --- one dropping the gather, the kernel and the scatter together,
+one dropping only the kernel --- bracketed by three baseline arms in the same job,
+which agreed to $0.09$\,ms.
+
+\begin{center}\small
+\begin{tabular}{lrr}
+\toprule
+ & in $F$ (ms) & in $c$ (ms/rider) \\
+\midrule
+whole second pass       & $1.21$  & $0.134$ \\
+kernel and its launch   & $1.16$  & $-0.022$ \\
+gather and scatter      & $-0.05$ & $0.134$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/21_fusion_bound/FB_base_a.json,
+% paper/data/overhead/21_fusion_bound/FB_noattend.json,
+% paper/data/overhead/21_fusion_bound/FB_nokernel.json
+
+Two results, and the second is why we have not built the fusion.
+
+\textbf{The pass costs $1.21$\,ms, not the $1.94$ we inferred} by subtracting one
+ablation from another in an earlier round --- high by $60\%$. Inference across arms
+overstated a component here exactly as fitting across the knee overstated $c$.
+
+\textbf{And it is split across both coefficients, which an $F$-only decomposition
+cannot see.} The gather and the scatter size with the rider count, so they live in
+$c$, not in $F$ --- which is why subtracting them inside $F$ returns $-0.05$, a
+zero. What sits in $F$ is the kernel together with its per-layer launch, and
+\emph{a fused call still performs the attention arithmetic}. So fusion certainly
+recovers the $0.134$\,ms per rider, worth $+2.0$ points at the target, and recovers
+some unmeasured share of the $1.16$\,ms launch term, with a ceiling of $+8.5$ points
+that requires the fused call to be free. The honest statement is a range, $+2$ to
+$+8.5$ points, and we decline to spend days of backend work against its lower end.
+
+What closes it is cheap and not yet done: price one varlen call against two at equal
+total attention work, off-engine, which separates the launch from the kernel and
+turns the range into a number. The mirror write's own remainder is already bounded,
+at $0.834$\,ms for its $2L$ copies, so at most $0.6$\,ms of that is recoverable.

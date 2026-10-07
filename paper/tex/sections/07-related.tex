@@ -78,17 +78,31 @@ completely: BOOST chooses which \emph{accesses} within a kernel come from host
 memory, we choose which \emph{requests} do. The two compose --- BOOST's wave split
 could run inside our device tier --- and neither subsumes the other.
 
-\textbf{SuperInfer}~\cite{superinfer} is the closer of the two, and it does
-partition at request granularity on NVLink-C2C. Its \emph{rotary} scheduler
-suspends a request and moves its KV to Grace DRAM while it awaits its turn, driven
-by TTFT and TBT service objectives, and its DuplexKV engine makes C2C transfer
-full-duplex. The distinction is between \emph{time-multiplexing} and
-\emph{co-serving}: a rotated-out request is not being decoded, whereas our
-host-tier requests are decoded in the same step as the resident cohort, holding no
-device blocks at any point. Their objective is SLO attainment under head-of-line
-blocking; ours is capacity at fixed memory. \emph{We have read SuperInfer's
-abstract and not yet its body, and this paragraph should not be taken as final
-until we have.}
+\textbf{SuperInfer}~\cite{superinfer} is the closer of the two: it schedules at
+request granularity on NVLink-C2C, which is the granularity we claim. The
+difference is \emph{when} the two tiers are used, and it is categorical rather than
+one of degree. SuperInfer defines three request states, and in the one whose KV
+lives in host memory --- the \emph{rotary} state --- a request's ``progress is
+temporarily paused on GPU and its KV cache is swapped to the CPU, waiting for next
+rotation''. A rotated-out request is therefore \textbf{not generating tokens}; the
+running batch's KV is in HBM. Ours is the opposite arrangement: a host-tier request
+\emph{is} decoded, in the same forward pass as the resident cohort, while holding
+no device blocks at any point. SuperInfer time-multiplexes the tiers; we co-serve
+them.
+
+The objectives differ accordingly. SuperInfer's claim is SLO attainment --- up to
+$74.7\%$ higher TTFT success under load, by rotating requests instead of preempting
+them --- at a concurrency HBM already supports. Ours is concurrency beyond what HBM
+holds, at fixed memory. The two are complementary: a rotary scheduler decides whose
+turn it is, and nothing stops the requests awaiting their turn from riding along
+rather than idling.
+
+Neither SuperInfer nor BOOST offers a cost model for the host path. SuperInfer
+reports aggregate per-iteration costs but no decomposition; BOOST derives the
+bandwidth crossover but charges no fixed term. \textbf{The overhead law of
+\S\ref{sec:model} --- a fixed cost, a per-request cost, and the knee between them,
+each measured by ablation --- is unmatched in this literature}, and on the evidence
+of \S\ref{sec:eval:cost} it is also the part most easily got wrong.
 
 \paragraph{Summary of the gap.} Table~\ref{tab:axes} places the systems sharing our
 hardware assumption on the two questions that matter. What is unsolved is which
@@ -111,7 +125,7 @@ vLLM, SGLang & --- & --- & all of it \\
 Pie~\cite{pie} & layer, uniform & global factor & $(n{-}m)/n$ each \\
 DirectKV~\cite{directkv} & none (all host) & nothing & none \\
 BOOST~\cite{boost} & access/wave & bandwidth ratio & all of it \\
-SuperInfer~\cite{superinfer} & request, over \emph{time} & SLO & all or none, in turn \\
+SuperInfer~\cite{superinfer} & request, in \emph{turn} & SLO & all, or paused \\
 \textbf{this paper} & \textbf{request, concurrently} & \textbf{3 policies} & cohort only \\
 \bottomrule
 \end{tabular}

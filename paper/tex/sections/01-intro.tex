@@ -68,8 +68,13 @@ the latency gate (\S\ref{sec:model:omits}).
 \paragraph{Contributions.}
 \begin{enumerate}\itemsep2pt
 \item \textbf{A heterogeneous KV memory manager} (\S\ref{sec:design}): HBM and host
-      DRAM as one store, in which a host-tier request holds no device blocks, so
-      tiered requests are additive rather than substitutional.
+      DRAM as one store, in which a host-tier request holds no device blocks
+      \emph{while it is generating}, so tiered requests are additive rather than
+      substitutional. This is the distinction from every system that tiers KV at
+      request granularity: they \emph{take turns}, pausing a request while its KV
+      sits in host memory, so the running batch's KV is always resident. Ours is
+      decoded from host memory in the same forward pass as the resident cohort
+      (\S\ref{sec:related}).
 \item \textbf{A capacity model that picks a configuration from a profile}
       (\S\ref{sec:model}): given measured bandwidths and the host path's two costs
       it returns the host cohort that maximises decode throughput, and says when

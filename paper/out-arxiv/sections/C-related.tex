@@ -1,0 +1,332 @@
+% Appendix C -- the detailed adjudication of related work, moved out of
+% section 7 (2026-09-26) for the page limit. The body keeps every claim this
+% paper's positioning rests on; what is here is the evidence for those claims,
+% which a reviewer checking our reading of another paper will want and a reader
+% following the argument will not.
+
+\section{Related work in detail}
+\label{app:related}
+
+\paragraph{Where Pie's advantage comes from, and where it stops.} Pie's
+headline is $1.9\times$ over vLLM, and the regime that produces it is stated
+plainly in their \S5.3: they hold the physical KV cache fixed and sweep it from
+3 to 12\,GB, and report that Pie ``outperforms vLLM at smaller GPU KV cache
+sizes and achieve similar performance at the largest memory capacity
+(12\,GB)'', because ``when GPU memory capacity is small, vLLM suffers from
+significant recomputation''. As memory grows, ``the improvement ratio gradually
+decreases until Pie and vLLM perform similarly''.
+
+The gain is therefore \emph{avoided recomputation} in a memory-starved engine,
+not additional capacity converted into work. That distinction matters for what
+each system can claim. A device large enough that the baseline stops preempting
+is a device on which Pie's reported advantage has already converged to zero ---
+and their entire sweep, 3 to 12\,GB of KV, sits below the operating point we
+study, where a 32B model on a 96\,GB device leaves $\Ckv \approx 22$--28\,GB.
+
+\paragraph{A consequence of the layer unit: the return leg.} Choosing the layer
+as the unit of management has a second effect, on traffic rather than on
+policy. In Pie a layer's KV \emph{lives} on one side or the other, and the
+GPU-side buffer it occupies is needed by the next layer arriving, so a layer
+that has just been computed --- and has therefore just had this token's $K,V$
+appended to it --- must be written back in full. Their swap controller says so
+directly: it initiates ``a swap-out for the `coldest layer', defined as the last
+layer that finished computation''. Every offloaded byte therefore crosses the
+interconnect \textbf{twice per generated token}, and the return leg is the
+slower direction (371 vs 419\,GB/s by their own measurement).
+
+Our rolling region is not the home of the data but a cache of it: the host
+mirror stays authoritative and each step's new $K,V$ is written to it directly,
+so a slot can be overwritten without persisting anything. DirectKV's kernel has
+the same property, appending only the newly projected $K,V$ to CPU memory. The
+resulting difference in per-token traffic is not marginal:
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+per generated token & to device & to host \\
+\midrule
+Pie~\cite{pie} & offloaded KV & \textbf{the same KV again} \\
+DirectKV~\cite{directkv} & all KV & one token's $K,V$ \\
+\textbf{this paper} & selected requests' KV & one token's $K,V$ \\
+\bottomrule
+\end{tabular}
+\caption{Per byte of offloaded KV, a design whose offloaded unit is \emph{owned}
+by one side must return it; one whose device-side copy is a \emph{cache} need
+not. Pie moves two bytes where the other two move one, and its return leg uses
+the slower direction of the link.}
+\label{tab:traffic}
+\end{table*}
+
+Table~\ref{tab:traffic} states the consequence. This is not a criticism of
+Pie's design so much as a property of its unit:
+a whole layer's cache cannot be left dirty on the device when the buffer is
+reclaimed for the next layer. It does mean that comparisons of interconnect
+pressure between these systems must count both directions.
+
+\paragraph{On comparing directly.} Pie has no public artifact --- its paper
+lists no repository, and we found none --- so a head-to-head against their
+implementation is not available to us. Nor would it isolate what we want:
+running two engines compares implementations, whereas the question here is
+whether \emph{choosing} which requests to offload beats spreading the same
+interconnect budget uniformly. \S\ref{sec:eval:ablation} therefore holds the
+mechanism fixed and varies the policy, and reports Pie's published figures
+alongside rather than reproducing them.
+
+
+% tab:endpoints moved here from section 1 (2026-09-27): the body cannot afford
+% two floats in a 1.25pp introduction, and this is the paragraph that argues
+% the table's point at length.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccr}
+\toprule
+\emph{Projected} & HBM & link & batch \\
+\midrule
+all-HBM (vLLM, SGLang)     & 26.5\,GB      & \textbf{0}    & 12 \\
+all-host (uniform offload) & \textbf{0}    & 14.2\,GB      & 6 \\
+\textbf{both (this paper)} & 26.5\,GB      & 14.2\,GB      & \textbf{18} \\
+\bottomrule
+\end{tabular}
+\caption{KV read per step, and the batch it supports, for Qwen2.5-32B fp16 at 8K
+on a GH200-96; each single-memory design leaves one KV path unused.
+\textbf{Projections} from \texttt{model/killer\_v2.py}: $W = 65.5$\,GB measured
+less a 4\,GB device reserve gives $\Ckv = 26.5$\,GB, $\btok = 256$\,KiB,
+$\mathrm{ITL}_0 = 33.9$\,ms from Eq.~\ref{eq:step}, and $\Xlink = 419$\,GB/s
+measured on this part~\cite{pie} rather than the 450 spec. These count
+\emph{capacity} --- how many requests fit, not how fast they are served, a
+difference \S\ref{sec:model:omits} shows is decisive. All three rows share one
+$\mathrm{ITL}_0$ to stay comparable, which flatters the all-host row: computed
+self-consistently its step would be weights-only and its batch 4. The interior
+point is unaffected.}
+\label{tab:endpoints}
+\end{table}
+
+\paragraph{The endpoint argument.} DirectKV \S6: ``During prefill, the manager
+stores the initial $K,V$ entries from each layer in CPU memory. During decode,
+the GPU reuses these cached entries directly, while only appending new $K,V$
+for the latest token'' --- and its Alg.~3 appends that new $K,V$ to CPU memory
+as well. \textbf{It places 100\% of KV on the host, for every request, always.}
+That is why it needs no scheduler: placement is static and total. Stock vLLM
+and SGLang are the opposite endpoint, at 0\%. Pie is the one system that is
+genuinely interior, and it reaches the interior by splitting \emph{layers}
+uniformly across all requests rather than by choosing requests --- so the
+per-request axis is unoccupied, and the optimum along it is interior
+(Table~\ref{tab:endpoints}). Note that the all-host endpoint leaves the device
+memory not holding weights entirely idle, which is why it loses to an
+HBM-resident baseline whenever that baseline fits --- the ordering DirectKV
+reports on Llama-3.1-8B, and one our gain law is consistent with
+(\S\ref{sec:model:directkv}).
+
+A natural objection to reading DirectKV \S8.1 as leaving the policy dimension
+open is that the vLLM and SGLang mechanisms it names --- continuous batching,
+prefix reuse, eviction, hierarchical KV caching --- already constitute KV
+policy. They do not, for our purposes: each decides \emph{reuse} and
+\emph{preemption}, that is, the residency of blocks belonging to a request that
+is \emph{not currently decoding}. None of them decides the tier of an
+\emph{actively decoding} request. Several systems do \emph{decode} from
+host-resident KV --- FlexGen, Pie, NEO and OmniServe among them --- so the state
+is not new; what is unoccupied is choosing, per request, which side of the
+memory such a request lives on.
+
+\paragraph{Policy, at other granularities.} OmniServe~\cite{omniserve} is the
+closest prior work on policy: it forms mixed GPU/host batches and admits
+host-tier work per layer under an SLO. The regime differs on three axes that
+change the problem. It targets PCIe-attached A100s with CPU-only hosts over
+RoCE; attention for host-tier requests is computed \emph{on the CPU}, so the
+trade is compute-for-capacity rather than bandwidth-for-capacity; and tiering
+is driven by an \emph{externally supplied} latency-sensitive/best-effort
+service class. Ours assumes a coherent interconnect, computes all attention on
+the GPU, and infers tier from observable request properties, so it applies in a
+single-class deployment where no such label exists.
+
+Fang et al.~\cite{calkv} --- whose title also claims the phrase ``heterogeneous
+memory system'', so the distinction is worth drawing sharply --- give a formal
+placement model and a
+simulated-annealing oracle bound on aggregate bandwidth. It is simulation only,
+on synthetically shrunk HBM, at \emph{token} granularity by importance, and it
+requires perfect foresight; its gains are contingent on 60--80\% attention
+sparsity, and it closes by explicitly calling for runtime policies. Its own
+results show migration overhead dominating below roughly 60\% sparsity. We
+make the testable counter-claim that \emph{request}-granularity migration
+avoids that thrash, because whole requests move once at controlled moments
+rather than pages chasing shifting token importance.
+
+\paragraph{Reducing the KV instead of relocating it.} ShadowKV~\cite{shadowkv}
+keeps a low-rank $K$ on the GPU, offloads $V$, and reconstructs sparsely,
+reporting support for a $6\times$ larger batch and $3.04\times$ throughput; KV
+quantization, Quest and H2O likewise shrink what must be stored. These change
+the model's output, and they compose with a memory system rather than competing
+with it: a smaller KV scales both the device-resident cohort and the affordable
+host cohort, leaving the ratio between them --- and hence the value of a second
+tier --- unchanged. That argument is analytical and we have not measured the
+composition; it is a prediction of Eq.~\ref{eq:cancel}, and a cheap one to
+falsify.
+
+
+\paragraph{Is decode serving memory-bound at all?} NanoFlow~\cite{nanoflow}
+argues the opposite of \S\ref{sec:background}: that end-to-end serving becomes
+\emph{compute}-bound for most common workloads once operations of different
+resource classes are overlapped within a device, and it reports $1.91\times$ over
+prior engines by doing so. The claim is not in conflict with ours, but the boundary
+between them is exactly where this paper lives. NanoFlow raises utilisation at a
+\emph{given} batch by filling idle units; our premise is that the batch itself is
+capped by KV capacity before those units saturate. The two compose in principle ---
+a larger batch gives intra-device overlap more to work with --- and they collide in
+practice if the arithmetic recovered by overlapping pushes the step into the
+compute-bound regime, because then admitting a host-tier request no longer buys
+throughput. Our own measurement of the margin is in
+Appendix~\ref{app:params}: at batch 142 for an 8B model at 4K --- far above the
+capacity limit on any device we consider --- decode-attention's arithmetic
+intensity has crossed the hardware balance point, yet the step is still
+memory-bound by more than $6\times$ ($46.6$\,ms of memory time against $7.4$ of
+compute, taking the memory term from Eq.~\ref{eq:step} rather than from the
+single-efficiency roofline \S\ref{sec:model:modeldep} refutes). So the two premises
+are not in conflict at the batch sizes a capacity limit permits. On a device where
+that margin closes, NanoFlow's premise holds and ours does not.
+
+\paragraph{Moving the request instead of its memory.} Llumnix~\cite{llumnix}
+reschedules requests \emph{across} model instances by live-migrating them and their
+KV, to balance load, reduce fragmentation and honour priorities. It is the natural
+alternative to a second memory tier: when a request will not fit here, one can move
+it to another GPU rather than move its KV to the host. The choice between them is
+economic rather than technical --- migration needs a second instance with room,
+which is a provisioning decision, while tiering needs only host DRAM, which is
+already installed and idle. They also compose cleanly, since a tier decision is
+local and a migration decision global, and a scheduler holding both has a strictly
+larger action set than one holding either. We do not evaluate that combination.
+
+\paragraph{Architectures that shrink the cache.} The gate of
+\S\ref{sec:model:gate} opens when weights consume enough of the device that little
+is left for KV, and architectural changes to attention move that boundary directly.
+Multi-head latent attention~\cite{deepseekv2} compresses $K$ and $V$ into a
+low-rank latent, cutting KV bytes per token by roughly an order of magnitude, and
+sliding-window and hybrid-attention designs bound the cache by construction rather
+than by context. By Eq.~\ref{eq:cancel} a uniform reduction in $\btok$ scales both
+cohorts and leaves their ratio unchanged, so shrinking KV does not by itself close
+the gate. What closes it is the \emph{second} gate: a smaller cache raises
+$B_{\mathrm{cap}}$, so the fixed per-step cost is amortised over more requests but
+the capacity gain it must beat is unchanged in ratio and smaller in absolute
+requests.
+
+\paragraph{Adjacent memory management.}
+InfiniGen~\cite{infinigen} attacks the same per-step transfer from the other
+end, speculating which tokens matter for the next layer and prefetching only
+those; it reduces the bytes a host-tier request must move, where we decide how
+many requests move bytes at all, and the two are complementary.
+CachedAttention~\cite{cachedattention} keeps the KV of \emph{inactive}
+conversation sessions in a hierarchical store so a later turn skips prefill ---
+the case \S\ref{sec:background} distinguishes from ours, and the reason our
+novelty claim is scoped to actively decoding requests rather than to
+host-resident KV in general. vAttention~\cite{vattention} changes how KV is
+\emph{allocated}, decoupling virtual from physical memory instead of paging in
+user space; it is orthogonal to placement, and a host tier built on it would
+face the same admission question we pose here.
+
+
+
+\subsection*{Composition with a zero-copy kernel}
+
+\textbf{The staging buffer they remove is the thing that makes hiding
+possible.} Their kernel reads host memory \emph{during} the attention that
+needs it, so the transfer is inside the operation rather than alongside it;
+ours prefetches layer $\ell{+}1$ into a rolling device buffer while layer
+$\ell$ computes. The two designs therefore trade in opposite directions. They
+pay no device memory and get no overlap; we pay one $k$-window of device memory
+and hide about $90\%$ of the transfer behind the previous layer's compute ---
+a real window, though a fixed per-step cost dwarfs what escapes it. Neither dominates on paper, and
+settling it needs both mechanisms on one machine, which requires their
+SM90a-only kernel and is therefore future work rather than a result we report. It also means a host-tier
+request cannot simply be moved onto their kernel and remain what we call a
+rider: without a prefetch window there is nothing left to hide, and such a
+request pays the full transfer inside its own step.\footnote{Their architecture
+would admit a mixture --- their \texttt{forward\_decode} already dispatches two
+attention implementations over disjoint subsets of one batch --- but the
+resulting system is a third design point, selective admission \emph{without}
+hiding, not ours built on theirs.}
+
+What their \S8.1 does establish is that the policy dimension is untouched:
+``DirectKV does not change scheduling, batching, or KV-management policies;
+instead, it provides an efficient execution path for CPU-resident KV
+blocks\ldots while leaving the scheduler, model execution graph, and frontend
+API unchanged.'' Whichever mechanism proves faster, the question of \emph{how
+many} requests to serve from the host is left open by it, and that is where
+this paper sits.
+
+It is also worth recording that DirectKV's own analysis agrees with our
+measured PCIe result: they conclude that ``on PCIe, DirectKV should be viewed
+primarily as a capacity-extension mechanism\ldots its performance advantage
+remains bounded by CPU--GPU interconnect bandwidth,'' and report NVLink-C2C
+reducing attention latency by up to $4.2\times$ relative to PCIe. Our
+\S\ref{sec:eval} finds the same boundary from the scheduling side. Their
+evaluation covers Llama-3.1-8B and OPT-13B/30B on a GH200-96, so it does not
+overlap the models we evaluate, and it does not include a 70B-class
+configuration --- which our capacity model identifies as the most favourable
+point of all. We do not evaluate one either (\S\ref{sec:eval:setup} says why: at
+a capacity-limited batch of about seven, one request is 14\% and no result could
+separate an effect from a rounding artifact), so the most favourable point of
+the model's own curve is measured by nobody yet.
+
+
+\subsection*{The two axes, and moving compute instead}
+
+\paragraph{Moving compute instead of data.} NEO~\cite{neo} offloads attention
+\emph{compute} to the CPU to grow the batch --- the same problem statement as
+ours with the opposite mechanism. Its own scaling is the argument against it:
+gains decay from $7.5\times$ on a T4 to 14\% on an H100, because a faster GPU
+makes the CPU's arithmetic relatively worse. Streaming KV to the GPU depends on
+a different ratio, $\Xlink/\BW$, and it would be convenient but dishonest to
+present that as simply improving with hardware. Across a generation, HBM
+bandwidth and capacity have both grown faster than host-to-device bandwidth, so
+$\Xlink/\BW$ falls and $\HBM/\Ckv$ falls with the extra capacity --- both
+factors of Eq.~\ref{eq:gain-exact} trend \emph{against} us, which is the same
+structural decay we note in NEO. What would reverse it is a link that scales
+with HBM rather than with PCIe generations, which is precisely the bet a
+coherent interconnect represents. \S\ref{sec:discussion} states our own
+anti-scaling in the same terms.
+
+Appendix~\ref{app:related} gives our detailed reading of Pie's own sweep, the
+endpoint argument from DirectKV's text, and the placement of the adjacent
+memory-management work.
+
+\paragraph{Why the request axis?} The two axes are not orthogonal, and it would
+be convenient but wrong to say so: a layer split and a request split spend the
+\emph{same} interconnect budget, and in the fluid model of \S\ref{sec:model} a
+layer split with the right $m/n$ fills both byte budgets and reaches the same
+interior point. They are substitutes, and the case for the request axis has to
+be made on the terms the fluid model omits.
+
+Three of those favour it. A host-tier request holds \emph{zero} device blocks, so
+admitting one requires no allocation at all and the device pool is untouched;
+under a layer split every request retains $(n-m)/n$ of its cache on the device,
+so capacity is freed only in proportion and never for a whole request. Movement
+happens once per request, at a moment the scheduler chooses, rather than once per
+layer per token --- which is what removes Pie's return leg. And only selected
+requests pay link traffic, so a load spike can be absorbed by moving a few
+requests rather than by degrading all of them.
+
+One favours the layer axis, and we concede it: a layer split has no integer
+quantization. It can relocate $1/n$ of a cache where we must relocate a whole
+request, so at long context, where $B_{\mathrm{cap}}$ and $B_{\mathrm{off}}$ are
+small integers (\S\ref{sec:model:omits}), the layer axis reaches operating points
+the request axis cannot express. A system wanting both would use a request split
+for capacity and a layer split for the remainder; we have not built that, and it
+is the more interesting composition than the one usually asserted.
+
+We adopt one of Pie's measurements --- Pie reports GH200 NVLink-C2C at
+419\,GB/s CPU$\to$GPU and 371\,GB/s GPU$\to$CPU, an independent confirmation
+that the widely quoted 900\,GB/s is a bidirectional figure and that a
+host-to-device KV stream should be budgeted well below it.
+
+FlexGen~\cite{flexgen} is the earlier generation of the same family, placing KV
+across GPU, CPU and disk by a linear-programming search with compression; it is
+offline-profiled rather than adaptive. Both pay the staging cost that a
+zero-copy kernel removes, and neither decides a tier per request.
+
+DAK~\cite{dak} pushes host-resident tensors to shared memory via the Tensor
+Memory Accelerator (TMA) and chooses
+per-\emph{operation} offload ratios by greedy search --- but takes a
+\emph{global} offload ratio as an input, which is precisely the quantity a
+policy has to produce.

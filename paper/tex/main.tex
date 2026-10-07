@@ -44,6 +44,14 @@
 
 % Drafting aids. Set \draftfalse before submission; \showtodos triggers an
 % error if any TODO survives, so none can ship by accident.
+% TWO BUILDS FROM ONE SOURCE. \arxivtrue produces the preprint: no page limit, so
+% it carries the external-validation appendix and the access ask that the venue
+% version has no room for. `./build.sh --arxiv` flips this in the staged copy only,
+% so the committed source always reads \arxivfalse and the venue build is the
+% default. Do NOT fork the tree for this -- two copies drift, and the numbers in
+% them drift first.
+\newif\ifarxiv\arxivfalse
+
 \newif\ifdraft\draftfalse
 \ifdraft
   \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
@@ -123,5 +131,6 @@
 \input{sections/F-coherence}
 \input{sections/G-directkv}
 \input{sections/H-ridercost}
+\ifarxiv\input{sections/I-validation}\fi
 
 \end{document}
