@@ -1,0 +1,104 @@
+% ============================================================================
+% Section 2 -- background and system model.
+%
+% This section carries the paper's largest reviewer risk (plan section 6.1).
+% Host-tier requests are admitted with ZERO device blocks and their prompt
+% declared already computed. That is only legitimate on a decode node whose KV
+% arrives from a prefill node. Stated here it is a scoping assumption about the
+% architecture the field already runs; discovered by a reviewer in the
+% evaluation it reads as concealment.
+%
+% COMPRESSED 2026-09-27: the opening restated section 1's first two paragraphs
+% (memory-bound decode, the 450/419 link numbers). What is kept is what section 1
+% does not say -- the weights/KV split, the tier requirements, and the
+% disaggregation assumption.
+% ============================================================================
+
+\section{Background and system model}
+\label{sec:background}
+
+\subsection{Capacity, not compute, caps the batch}
+\label{sec:background:capacity}
+
+A decode step is memory-bound by a wide margin: it reads every weight and every
+resident KV byte once, at an arithmetic intensity equal to the GQA group size (4--8
+on current models) against an \emph{achieved} balance point of order 100 FLOP/byte
+(Appendix~\ref{app:params}). This is the premise the offloading literature is built
+on --- FlexGen~\cite{flexgen}, Pie~\cite{pie} and DirectKV~\cite{directkv} all
+exploit it --- and \S\ref{sec:related} takes up the one paper that disputes it.
+
+\textbf{Which of the two reads dominates is a property of the model, not of the
+operating point}, and the spread is large: at a full pool on an A100-80,
+Llama-3.1-8B spends $11.1$ of $78$\,ms on weights (14\% weights) where
+Qwen2.5-32B spends $45.2$ of $53$ (85\% weights). Both are capacity-bound, on
+identical hardware, at opposite ends of one axis. The weight terms follow from the
+measured $1935$\,GB/s peak; the step times they divide are projected
+(\S\ref{sec:model:modeldep}).
+% src: paper/model/p4_llama8b_a100.json, p4_qwen32b_a100.json @ 2bfc6ca5e
+
+That spread is what makes a second tier worth having, and its direction is the
+opposite of the intuitive one. The weight read is a per-step window in which the link
+carries nothing, and the larger the weights relative to the device, the longer that
+window \emph{and} the less HBM is left for KV --- so Qwen2.5-32B is favourable
+\emph{because} it is 85\% weights where Llama-3.1-8B is unfavourable at 14\%.
+\S\ref{sec:model} makes this quantitative and \S\ref{sec:model:omits} gives the cost
+that can cancel it.
+
+\subsection{Host memory as a tier for actively decoding requests}
+
+Offloading KV to host memory is an old idea that a new interconnect has changed.
+Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV every decode step costs
+more than the step itself, so host memory could only be a \emph{swap} target:
+somewhere to park a request that is not running. At NVLink-C2C's measured
+419\,GB/s it becomes a tier an \emph{actively decoding} request can occupy. What no
+system does is \emph{choose, per request,} which tier such a request lives in ---
+continuous batching, prefix reuse, eviction and hierarchical caching all decide
+residency for requests that are \emph{not} currently running.
+
+\paragraph{Host DRAM is the first such tier, not the only one.} The direction of
+travel is towards accelerators attached to more than one kind of memory:
+CXL-attached DRAM behind a coherent link, and high-bandwidth flash between DRAM and
+storage, are both being built for exactly the capacity problem above. Nothing in
+this design is specific to host DRAM. What it asks of a tier is three things, and
+they are the right questions to ask of any of them: that the tier be
+\textbf{larger} than device memory, that the path to it have bandwidth we can
+\textbf{measure} at runtime, and that a request's per-step traffic over that path
+\textbf{fit inside the compute of one layer} --- the last deciding whether the tier
+can hold \emph{decoding} requests or only parked ones. The capacity model of
+\S\ref{sec:model} is written in those three quantities and nothing else, so it
+transfers to a new tier by re-profiling rather than re-deriving
+(\S\ref{sec:discussion:general}).
+
+It also changes what the movement should be. \emph{Swapping} relocates ownership,
+so every offloaded byte crosses the link twice per generated token;
+\emph{streaming} keeps the host copy authoritative and the device copy a cache, so
+the return leg carries only the token just produced --- a factor of two on the
+resource that bounds the whole technique, following from what the offloaded unit
+\emph{is} rather than from any optimisation.
+
+\subsection{System model: a disaggregated decode node}
+\label{sec:background:pd}
+
+We target a \textbf{decode node in a prefill/decode-disaggregated
+deployment}~\cite{distserve,splitwise,mooncake}: prefill runs on separate hardware,
+and a request arrives with its KV already computed. The deployment is widely used
+and supported by the major serving stacks, because prefill and decode have opposite
+resource profiles. The assumption does real work --- on a decode node a host-tier
+request's KV is delivered \emph{into host memory} and never occupies an HBM block,
+not even transiently, so such requests are \textbf{additive}: served in addition to
+a full resident cohort rather than displacing part of it.
+
+In a combined prefill+decode engine this is false, and not subtly: a request must
+be prefilled somewhere, so its KV lands in HBM first and both cohorts draw on the
+same headroom. We measured the result --- the served total creeps toward the
+all-HBM capacity from below and never passes it, at any setting of the resident
+cap (\S\ref{sec:eval:capacity}). Colocated chunked-prefill serving remains common,
+so that is a real limit rather than a technicality. The cost of the assumption is
+that KV must reach host DRAM; \S\ref{sec:impl:stash} implements that handover and
+measures it, so the reader can price the assumption rather than accept it.
+
+% NOTE: a subsection defining "lossless" and describing how we verify it was
+% removed 2026-09-06. Exact placement is a property of moving bytes rather than
+% approximating them, and no comparable systems paper argues for it -- doing so
+% invites the doubt it was meant to settle. The bf16 near-tie methodology, which
+% is a real gotcha, now lives as one paragraph in the evaluation setup.

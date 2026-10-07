@@ -11,6 +11,14 @@ set -euo pipefail
 PAPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="${PAPER_BUILD:-$PAPER_DIR/out}"
 
+# --arxiv builds the PREPRINT: no page limit, so it carries appendix I (the
+# external validation and the access ask). The flag is flipped in the STAGED COPY
+# only -- tex/main.tex always reads \arxivfalse, so the venue build is what you get
+# by default and the two can never disagree about a number.
+ARXIV=0
+for a in "$@"; do [[ "$a" == "--arxiv" ]] && ARXIV=1; done
+[[ $ARXIV -eq 1 ]] && BUILD="${PAPER_BUILD:-$PAPER_DIR/out-arxiv}"
+
 command -v tectonic >/dev/null || {
   echo "error: tectonic not on PATH" >&2; exit 1; }
 
@@ -19,6 +27,17 @@ rm -rf "$BUILD"; mkdir -p "$BUILD/figs"
 cp "$PAPER_DIR/tex/main.tex" "$PAPER_DIR/tex/refs.bib" "$BUILD/"
 cp -r "$PAPER_DIR/tex/sections" "$BUILD/"
 cp "$PAPER_DIR"/figs/*.pdf "$BUILD/figs/" 2>/dev/null || true
+
+# Flip the preprint flag in the staged copy only. Fail loudly rather than build the
+# wrong variant silently: a preprint that quietly omitted appendix I, or a venue
+# build that quietly included it, is exactly the kind of thing nobody notices.
+if [[ $ARXIV -eq 1 ]]; then
+  sed -i 's/^\\newif\\ifarxiv\\arxivfalse$/\\newif\\ifarxiv\\arxivtrue/' "$BUILD/main.tex"
+  grep -q '\\arxivtrue' "$BUILD/main.tex" || {
+    echo "error: --arxiv given but could not set \\arxivtrue in the staged main.tex" >&2
+    exit 1; }
+  echo "building the PREPRINT variant (appendix I included)"
+fi
 
 cd "$BUILD"
 if ! tectonic -X compile --keep-logs main.tex > compile.out 2>&1; then
