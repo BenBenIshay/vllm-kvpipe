@@ -46,12 +46,13 @@ admitting none where the interconnect cannot hide the transfer.
 
 We implement this in vLLM and decompose what a host-tier request costs: a fixed
 per-step term, a per-request term, and a knee past which the step \emph{is} the
-transfer. Well below the knee the per-request term carries no bandwidth at all, so a
-faster interconnect buys a higher knee rather than a cheaper request --- inverting
-how that choice is usually argued --- and we confirm the knee's predicted location
-at two contexts, on both sides. On the PCIe part we have, the model predicts and we
-measure a $2.3\%$ throughput \textbf{loss} with median inter-token latency up
-$40\%$. On a coherent link it projects $\times1.04$ to $\times1.37$, ordered by how
-much of device memory the weights consumed; we check its inputs against published
-Grace-Hopper measurements and name the two that remain unchecked.
+transfer, whose predicted location we confirm at two contexts on both sides. Below
+the knee the per-request term carries no bandwidth at all --- removing a request's
+bytes while issuing every launch moves it by $0.01$\,ms --- so a faster interconnect
+raises the knee rather than making a request cheaper, which inverts how that choice
+is usually argued. On the PCIe part we have, the model predicts and we measure a
+$2.3\%$ throughput \textbf{loss} with median inter-token latency up $40\%$. On a
+coherent link it projects $\times1.04$ to $\times1.37$, ordered by how much of
+device memory the weights consumed; we check its inputs against published
+Grace-Hopper measurements and state which remain unchecked.
 \end{abstract}
