@@ -245,44 +245,25 @@ Removing the bytes changes nothing at either context, which is the result: a
 request's transfer is hidden, and a faster interconnect cannot make $c$ smaller
 because there is no transfer in it to shrink.
 
-\textbf{The second claim --- that $c$ is context-independent --- is false, and we
-withdraw it.} We ran the context ladder it required: $128$, $256$ and $512$ tokens
-at fixed depth, batch and link, three replicates per cell in one job, interleaved
-across contexts so machine drift could not imitate a context effect, and repeated
-with the bytes removed. Fitting over a \emph{matched} rider range at every context,
-$r \in [1,4]$:
-
-\begin{center}\small
-\begin{tabular}{lrrr}
-\toprule
-$c$ (ms) & ctx 128 & ctx 256 & ctx 512 \\
-\midrule
-bytes sent    & $0.41$ & $0.51$ & $\mathbf{1.21}$ \\
-bytes removed & $0.43$ & $0.19$ & $0.99$ \\
-\bottomrule
-\end{tabular}
-\end{center}
+\textbf{The second claim --- that $c$ has no context term --- we hold, but we have
+to be careful about how far it is tested.} A context ladder at $128$, $256$ and
+$512$ tokens, three replicates per cell in one job and interleaved across contexts
+so machine drift could not imitate a context effect, gives $c = 0.387 \pm 0.167$ at
+$128$ tokens against $0.561 \pm 0.141$ at $256$ over a matched rider range with
+every point below the gate. The point estimates rise; the difference is
+$1.4\sigma$ and \textbf{not resolvable} at this machine's precision.
 % src: paper/data/overhead/22_c_context/CC_c128_a.json and the 14 sibling arms,
 % paper/model/c_context.py
 
-\textbf{$c$ roughly triples over a fourfold context increase}, and it does so at
-$\ell/T_0 \le 0.23$ --- inside the gate this section uses to call a point
-``below the knee''. So the gate is not conservative enough, and the per-request cost
-we report at $128$ tokens is not the per-request cost at the contexts
-Table~\ref{tab:gain} evaluates. The bytes-removed row is too noisy to apportion the
-rise between transfer leakage and host work: it has two replicates rather than
-three, and because $\Delta T$ is concave its value moves with the fit range (the
-ctx-512 cell reads $0.43$ over eight points and $0.99$ over four). We state the rise
-and decline to attribute it.
-
-\textbf{What this costs the paper.} Table~\ref{tab:gain} charges $c = 0.52$ at
-$8192$ tokens, four octaves past the largest context measured here and at
-$\ell/T_0 = 0.93$ rather than $0.23$. On this evidence that is not a defensible
-extrapolation, and \S\ref{sec:eval:sens} reports the projection as a range reaching
-below unity rather than as the point estimates an earlier draft gave. The
-measurement that would settle it needs no coherent link --- only this ladder
-continued to the target context, which is the first experiment we would run with
-more device memory than our evaluation part affords.
+The ladder cannot be pushed further on this part, and the reason is the knee itself.
+At $512$ tokens only \emph{two} rider points clear $\ell/T_0 \le 1/3$; at $4096$
+one; at $8192$ none, because a single request's transfer then exceeds the whole
+step. \textbf{So on a PCIe part $c$ is unmeasurable, below the knee, at the contexts
+Table~\ref{tab:gain} evaluates} --- not through lack of effort but by construction,
+and any fit that appears to manage it has admitted points from the transfer-bound
+regime. We report that as the limitation it is: $c$ is measured where it can be, the
+extrapolation to longer context is \emph{untested} rather than verified, and
+\S\ref{sec:eval:sens} prices it.
 
 \subsection{What the coefficients' uncertainty does to the projection}
 \label{sec:eval:sens}
@@ -319,21 +300,20 @@ $L = 16, 32, 64$, rising rather than constant --- instead of the flat
 $0.053$\,ms/layer of Eq.~\ref{eq:coeffs}, which was obtained by dividing a single
 depth's measurement by its depth.
 
-\textbf{The measured context dependence of $c$ dominates all of this}, and it is why
-we give a range rather than a prediction. Taking the unhidden transfer fraction
-frozen at the largest value we measured ($11.6\%$ of a request's link time at
-$\ell/T_0 = 0.23$) and applying it at the target's $\ell/T_0 = 0.93$ puts $c$ near
-$1.2$\,ms and the Llama-70B row at $\times 1.11$; letting the fraction continue to
-climb, as it does across our three contexts, takes that row below unity.
+\textbf{The untested context extrapolation is the dominant uncertainty}, and the
+third row prices it: it applies a context term of the size our $128 \to 256$ point
+estimates suggest, compounded over the six doublings to $8192$ tokens. That row is a
+\emph{bound}, not an estimate --- the underlying difference is $1.4\sigma$ and the
+measurement cannot be extended on a PCIe part (\S\ref{sec:eval:cost}) --- but a
+reader is entitled to see what it would cost if real.
 
-\textbf{So the honest statement of this paper's projection is a range that includes
-no benefit at all}: somewhere between $\times 0.98$ and $\times 1.4$ for the
-weight-heavy configurations, with the position inside that range set by a quantity
-we have measured at three contexts and must evaluate at a fourth. What survives
-independently of it is the \emph{ordering} --- every scenario preserves the ranking
-by $\HBM/\Ckv$ --- and the mechanism and cost structure of
-\S\S\ref{sec:design}--\ref{sec:eval:cost}, which are measured rather than projected.
-We would rather publish that range than a point estimate our own archive contradicts.
+What survives every row is the \emph{ordering} by $\HBM/\Ckv$, and the two
+weight-heavy configurations stay above unity in all but the most pessimistic corner.
+What the table should not be read as is three significant figures: $c$'s replicate
+spread alone is $\pm 12\%$, and the extrapolation above is untested. The honest
+headline is $\times 1.2$--$1.4$ for the weight-heavy rows under the assumption the
+paper makes explicit --- that $c$'s host-dominated character persists at longer
+context --- with the projection falling toward unity if it does not.
 
 \paragraph{One honest complication: $\Delta T$ is mildly concave.}
 The affine law is an approximation, and the direction of its error should be stated.
