@@ -151,8 +151,8 @@ Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & \phantom{0}3.4\
 Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & \phantom{0}4.2\,ms & $\times$1.67 & $\times$\textbf{1.37} \\
 \bottomrule
 \end{tabular}
-\caption{\emph{Projections}, not measurements, at 2048 context and an 80\,ms target
---- the first round figure above $\mathrm{ITL}_0 + F$ for every row.
+\caption{\emph{Projections}, not measurements, at \textbf{8192} context under an
+$80$\,ms latency target.
 $\Ckv = \HBM - W - 4$\,GB. \emph{capacity} charges each rider the blocks it
 displaces and the two HBM passes its KV makes; \emph{tput} additionally charges $F$
 and the per-request cost. \textbf{Every row now pays, and the margin grows with

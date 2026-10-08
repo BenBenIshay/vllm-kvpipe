@@ -65,6 +65,8 @@ that the mechanism is necessary rather than that the deficits sum.}
 \subsection{Where the two tiers run}
 \label{sec:design:exec}
 
+\input{sections/fig-exec}
+
 \textbf{There is no partition of the GPU.} The two tiers are not separate streams,
 kernels or forward passes but \emph{rows of the same batch}; the only operation that
 distinguishes them is attention, and only in \emph{where it reads keys and values
@@ -113,6 +115,8 @@ design from arithmetically impossible to profitable.
 
 \subsection{A decode step, end to end}
 \label{sec:design:step}
+
+\input{sections/fig-pipeline}
 
 Two granularities matter, and separating them keeps the per-layer work small:
 \textbf{addresses} are fixed for the whole step, while slot \textbf{contents} change
