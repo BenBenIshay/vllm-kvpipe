@@ -49,8 +49,14 @@ that can cancel it.
 Offloading KV to host memory is an old idea that a new interconnect has changed.
 Over PCIe~4 at roughly 25\,GB/s, streaming a request's KV every decode step costs
 more than the step itself, so host memory could only be a \emph{swap} target:
-somewhere to park a request that is not running. At NVLink-C2C's measured
-419\,GB/s it becomes a tier an \emph{actively decoding} request can occupy. What no
+somewhere to park a request that is not running. Over NVLink-C2C it becomes a tier
+an \emph{actively decoding} request can occupy. We take the link rate from others'
+measurements rather than the spec sheet, and the published figures for host-to-device
+transfer span \textbf{350--419\,GB/s} --- Pie reports $419$ with
+\texttt{nvbandwidth}~\cite{pie}, Schieffer et al.\ $375$~\cite{schieffer2024}, BOOST
+$350$\,GiB/s~\cite{boost} --- against a $450$\,GB/s per-direction specification.
+\S\ref{sec:model:knee} uses $419$ and states what the low end of that range would
+cost, because the admissible rider count scales directly with it. What no
 system does is \emph{choose, per request,} which tier such a request lives in ---
 continuous batching, prefix reuse, eviction and hierarchical caching all decide
 residency for requests that are \emph{not} currently running.

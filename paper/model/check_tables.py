@@ -77,8 +77,15 @@ for want, got, label in [(26.5, e["C"] / 1e9, "C_kv GB"),
 # side is checked where it actually lives.
 for v in ("26.5", "14.2", "12", "6", "18", "33.9"):
     present(v, "C-related.tex", f"Table 1 shows {v}")
-at_site("01-intro.tex", "18 against 12", "6 all-host",
-        "1: the endpoint batches quoted in prose")
+# REPINNED 2026-10-08. The intro used to bold "18 against 12 all-HBM and 6
+# all-host". The all-host figure is FLATTERED and tab:endpoints' own caption says so
+# -- all three rows share one ITL_0 to stay comparable, and "computed
+# self-consistently its [all-host] step would be weights-only and its batch 4". The
+# table disclosing that is fine; the introduction repeating the flattered number in
+# bold on page 1, without the disclosure, was not. The intro now quotes only the
+# interior-versus-all-HBM comparison, which the same caption says is unaffected.
+at_site("01-intro.tex", "18 against 12", "all-HBM pool",
+        "1: the endpoint comparison quoted in prose")
 
 print("\nTable 2 (03-model, tab:gain)")
 # REPINNED 2026-10-06 against the FINAL coefficients. `cap` did not move at all

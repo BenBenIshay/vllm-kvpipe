@@ -6,59 +6,13 @@
 \section{Additional design figures}
 \label{app:figures}
 
-Figure~\ref{fig:arch} gives the data path --- which component talks to which,
+The data path is Fig.~\ref{fig:arch} in \S\ref{sec:design} --- which component talks to which,
 and where the host mirror sits relative to the device pool.
 Figure~\ref{fig:lifecycle} gives a request's states and the transitions between
 them. Both illustrate structure \S\ref{sec:design} states in prose.
 
-\begin{figure*}[t]
-\centering
-\begin{tikzpicture}[
-  x=1cm, y=1cm, font=\small,
-  box/.style={draw, rounded corners=2pt, align=center, inner sep=2mm},
-  mem/.style={box, fill=black!4},
-  hot/.style={box, fill=blue!8, draw=blue!45},
-  lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
-  arr/.style={-{Latex[length=2mm]}, thick},
-]
-\node[mem, minimum width=3.2cm] (hk) at (0,0)
-     {\texttt{host\_k}[$\ell$]\ \ \texttt{host\_v}[$\ell$]};
-\node[lbl] (hkl) at (0,-0.85) {one pinned pair per layer,\\block-major, addressed by\\\textbf{host block id}};
-\node[draw, dashed, rounded corners=3pt, fit=(hk)(hkl), inner sep=2.5mm] (hostbox) {};
-\node[font=\bfseries\small] at (0,1.15) {Host DRAM};
+% (fig:arch moved to the body; see sections/fig-arch.tex)
 
-\node[mem, minimum width=3.6cm] (pool) at (8.0,0.95)
-     {paged KV pool\\[-1pt]{\scriptsize device-tier requests}};
-\node[hot, minimum width=3.6cm] (roll) at (8.0,-0.95)
-     {rolling region\\[-1pt]{\scriptsize $k$ slots $\times\ R$ blocks}\\[-1pt]{\scriptsize layer $\ell$ uses $\ell \bmod k$}};
-\node[draw, dashed, rounded corners=3pt, fit=(pool)(roll), inner sep=2.5mm] (devbox) {};
-\node[font=\bfseries\small] at (8.0,2.3) {GPU HBM};
-
-\node[box, minimum width=2.5cm] (attn) at (14.0,0)
-     {attention\\layer $\ell$\\[-1pt]{\scriptsize one forward pass}};
-
-\draw[arr, blue!65] (hostbox.east|-hk) -- (4.4,0) -- (4.4,-0.95) -- (roll.west);
-\node[lbl, text=blue!70] at (3.3,1.15)
-     {\texttt{stream\_layer}($\ell$)\\refresh slot $\ell \bmod k$\\contiguous runs, H2D};
-
-\draw[arr, black!60] (pool.east) -- (11.6,0.95) -- (attn.north west);
-\node[lbl] at (11.55,1.55) {device\\block table};
-
-\draw[arr, black!60] (roll.east) -- (11.6,-0.95) -- (attn.south west);
-\node[lbl] at (11.55,-1.55) {compacted\\block table};
-
-\draw[arr, red!60] (attn.south) -- (14.0,-2.9) -- (0,-2.9) -- (hostbox.south);
-\node[lbl, text=red!70] at (7.0,-3.25)
-     {\texttt{write\_token}($\ell$): this step's new $K,V$ $\rightarrow$ host mirror (authoritative) \emph{and} the current slot};
-\end{tikzpicture}
-\caption{\textbf{Data path.} A host-tier request's KV lives in per-layer pinned
-host mirrors addressed by an independent \emph{host block id} space. Once per
-step the active cohort's blocks are compacted into a rolling region of $k$
-device slots (Fig.~\ref{fig:compact}); once per layer the slot for
-$\ell \bmod k$ is refreshed (Fig.~\ref{fig:pipeline}). Attention runs over both
-tiers in one forward pass, each tier reading its own block table.}
-\label{fig:arch}
-\end{figure*}
 
 \begin{figure}[t]
 \centering
