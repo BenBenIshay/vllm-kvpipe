@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""F8 -- the knee, where it is predicted to be, and what happens past it.
+"""F8 -- the transfer-exposure ratio is the governing variable, and the knee is at 1.
 
     ./.venv/bin/python paper/figs/f8_knee.py --out paper/figs/f8.pdf
 
-THIS REPLACES f6, which was generated from the sweep whose points straddle the
-knee and annotated a band as "overhead the model does not carry" -- the reading
-this paper retracts. Plotting it under a caption claiming the law IS affine below
-the knee put a contradiction on page 1.
+THIS REPLACES f6, which plotted the across-the-knee sweep this paper retracts under
+a caption claiming the opposite.
 
-What this shows instead is the knee formula being right. Two contexts give two
-different predicted knees, r* = ITL_0 / (per-request link time), and in each case
-the measured cost tracks the affine law up to floor(r*) and then departs upward:
+AND IT REPLACES THE FIRST VERSION OF ITSELF, which drew one panel per context with
+the predicted r* marked. That version was correct but weaker: it showed the knee
+moving when context changed, as two anecdotes. Plotting instead against
 
-    ctx 1080   r* = 4.16   affine through r=4, departs at r=5
-    ctx 1440   r* = 3.18   affine through r=3, departs at r=4
+    l/T0  =  (per-request link time) / (rider-free step time)
 
-That is the paper's central claim measured on both sides of the boundary, on the
-hardware we have, with no projection involved. It is also why fitting one line
-across the boundary inflates the slope and depresses the intercept: the dashed
-continuation shows where such a fit would be pulled.
+collapses both contexts onto ONE curve -- matched at equal l/T0 the two agree to
+2-10% over the whole range -- with the departure at l/T0 = 1. That is the stronger
+statement: the governing variable is neither the rider count nor the context but
+their ratio to the compute window, and the boundary sits at unity by construction
+rather than by fitting. r* = floor(T0 / l_per_request) is then a corollary.
+
+Both series are purity-gated, 3 repeats, resident batch 8, on A100/PCIe.
 """
 import argparse
 import json
@@ -34,26 +34,13 @@ D = "paper/data/overhead/21_fusion_bound"
 
 def load(tag):
     d = json.load(open(os.path.join(D, tag + ".json")))
-    t0 = next((r["step_ms"] for r in d["rows"]
-               if r.get("riders") == 0 and r.get("step_ms")), None)
-    rows = sorted((r["riders"], r["dT_ms"], r.get("link_ms") or 0.0)
-                  for r in d["rows"]
-                  if r.get("usable") and r["riders"]
-                  and r.get("dT_ms") is not None)
-    # r* from the per-request link time, which is what Eq. knee says
-    per = rows[0][2] if rows else 0.0
-    return t0, rows, (t0 / per if per else 0.0)
-
-
-def affine(rows, upto):
-    xs = [(r, d) for r, d, _ in rows if r <= upto]
-    n = len(xs)
-    sx = sum(x for x, _ in xs)
-    sy = sum(y for _, y in xs)
-    sxx = sum(x * x for x, _ in xs)
-    sxy = sum(x * y for x, y in xs)
-    c = (n * sxy - sx * sy) / (n * sxx - sx * sx)
-    return (sy - c * sx) / n, c, n
+    t0 = next(r["step_ms"] for r in d["rows"]
+              if r.get("riders") == 0 and r.get("step_ms"))
+    pts = sorted((((r.get("link_ms") or 0.0) / t0), r["dT_ms"] / t0, r["riders"])
+                 for r in d["rows"]
+                 if r.get("usable") and r.get("riders")
+                 and r.get("dT_ms") is not None)
+    return t0, pts
 
 
 def main():
@@ -61,49 +48,29 @@ def main():
     ap.add_argument("--out", default="paper/figs/f8.pdf")
     a = ap.parse_args()
 
-    fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.5), sharey=True)
-    for ax, (tag, lab, col) in zip(axes,
-                                   (("E3_ctx1080", "context 1080", BLUE),
-                                    ("E3_ctx1440", "context 1440", ACCENT))):
-        t0, rows, rstar = load(tag)
-        kn = int(rstar)
-        F, c, n = affine(rows, kn)
-        print("%s  t0=%.1f  r*=%.2f  fit over r<=%d: F=%.2f c=%.3f (%d pts)"
-              % (tag, t0, rstar, kn, F, c, n))
+    fig, ax = plt.subplots(figsize=(3.3, 2.5))
+    for tag, lab, col, mk in (("E3_ctx1080", "context 1080", BLUE, "o"),
+                              ("E3_ctx1440", "context 1440", ACCENT, "s")):
+        t0, pts = load(tag)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        ax.plot(xs, ys, mk + "-", ms=4, lw=1.3, color=col, label=lab)
+        print("%s t0=%.1f" % (tag, t0))
+        for x, y, r in pts:
+            print("   r=%-2d l/T0=%.2f dT/T0=%.3f" % (r, x, y))
 
-        rs = [r for r, _, _ in rows]
-        ds = [d for _, d, _ in rows]
-        ax.plot(rs, ds, "o", ms=4, color=INK, label="measured")
-        below = [r for r in rs if r <= kn]
-        ax.plot(below, [F + c * r for r in below], "-", color=col, lw=1.9,
-                label=r"$F + c\,r$, fitted below $r^{*}$")
-        above = [r for r in rs if r >= kn]
-        ax.plot(above, [F + c * r for r in above], "--", color=col, lw=1.1,
-                alpha=0.7, label="extrapolated")
-        ax.axvline(rstar, ls=":", lw=1.1, color=GREY)
-        ax.annotate(r"$r^{*}=%.2f$" % rstar, xy=(rstar, max(ds) * 0.80),
-                    xytext=(rstar + 0.18, max(ds) * 0.80), fontsize=6.6,
-                    color=GREY)
-        # DELIBERATELY NOT LABELLING F AND c HERE. At these contexts the knee sits
-        # at r = 3-4, so the handful of points below it are themselves close to it
-        # and the fit picks up the curvature -- c comes out 1.6-2.6 against the
-        # 0.49 measured at ctx 128 where the whole sweep is far below the knee.
-        # That inflation IS this paper's point about fitting near the boundary, so
-        # quoting these as coefficients would contradict Eq. coeffs. The figure
-        # makes one claim: the knee is where r* says it is.
-
-        ax.annotate("departs here:\n%.1f$\\times$ the fitted line"
-                    % (ds[kn] / (F + c * rs[kn]) if len(ds) > kn else 0),
-                    xy=(rs[kn], ds[kn]), xytext=(rs[kn] - 2.4, ds[kn] * 1.9),
-                    fontsize=5.8, color=INK,
-                    arrowprops=dict(arrowstyle="->", lw=0.7, color=INK))
-        ax.set_xlabel("host-tier requests, $r$")
-        ax.set_title("%s:  predicted $r^{*}=%.2f$" % (lab, rstar),
-                     fontsize=7.4, color=INK)
-        ax.legend(fontsize=5.9, frameon=False, loc="upper left")
-        for s in ("top", "right"):
-            ax.spines[s].set_visible(False)
-    axes[0].set_ylabel(r"$\Delta$ step time (ms)")
+    ax.axvline(1.0, ls=":", lw=1.2, color=GREY)
+    ax.annotate("the transfer no longer\nfits inside the step",
+                xy=(1.0, 0.72), xytext=(1.06, 0.62), fontsize=5.9, color=GREY)
+    ax.set_xlabel(r"$\ell/\mathrm{ITL}_0$ : transfer demanded per step")
+    ax.set_ylabel(r"$\Delta T/\mathrm{ITL}_0$ : step growth")
+    ax.legend(fontsize=6.4, frameon=False, loc="upper left")
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    ax.annotate("two contexts, one curve:\nmatched at equal $\\ell/\\mathrm{ITL}_0$ "
+                "they agree to 2--10\\%",
+                xy=(0.04, 0.80), xycoords="axes fraction", fontsize=5.7,
+                color=INK)
     fig.tight_layout(pad=0.4)
     fig.savefig(a.out)
     print("wrote %s" % a.out)

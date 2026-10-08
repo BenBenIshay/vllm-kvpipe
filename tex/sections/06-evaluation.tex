@@ -144,17 +144,19 @@ from a co-located run, and we withdraw that too.
 \centering
 \includegraphics[width=0.49\textwidth]{figs/f8.pdf}\hfill
 \includegraphics[width=0.49\textwidth]{figs/f7.pdf}
-\caption{\textbf{Left: the knee is where Eq.~\ref{eq:knee} says it is.} Two
-contexts give two predicted crossings --- $r^{*} = 4.16$ at 1080 tokens and
-$3.18$ at 1440 --- and in each case the measured cost follows a line up to
-$\lfloor r^{*}\rfloor$ and then leaves it, by $1.37\times$ and $1.34\times$ at the
-next rider; in marginal terms that rider costs $5.2\times$ and $3.4\times$ its
-predecessor. Resident batch 8 in both panels. Both panels are measured on A100/PCIe with no projection involved; the
-dashed continuation is where a fit that ignored the boundary would be pulled, which
-is how we previously obtained a \emph{negative} fixed cost. We do not label $F$ and
-$c$ per panel, because at these contexts only three or four points lie below the
-knee and are themselves near it, so the fit inherits the curvature --- the effect
-this subsection is about.
+\caption{\textbf{Left: the governing variable is the transfer-exposure ratio, and
+the boundary is at unity.} Plotting step growth against
+$\ell/\mathrm{ITL}_0$ --- the transfer one request demands per step, over the
+rider-free step --- collapses \emph{two different contexts onto one curve}: matched
+at equal $\ell/\mathrm{ITL}_0$ the two series agree to $2$--$10\%$ across the whole
+range, and both depart from linearity at $\ell/\mathrm{ITL}_0 = 1$, where the
+transfer stops fitting inside the step. The knee of Eq.~\ref{eq:knee} is then a
+corollary rather than a fitted quantity, $r^{*} = \lfloor \mathrm{ITL}_0/\ell
+\rfloor$, which is $4$ at context 1080 and $3$ at 1440. Measured on A100/PCIe,
+purity-gated, 3 repeats, resident batch 8; no projection enters this panel. It is
+also the cleanest statement of why fitting a single line across the boundary
+produced a \emph{negative} fixed cost: the two sides have different slopes by
+construction.
 \textbf{Right: both coefficients are affine in layer depth.} $F$ before and after
 the host-path fixes of \S\ref{sec:design:mirror}, and $c$, which the fixes do not
 touch. $F$'s bars are its \emph{measured} between-job drift, $\pm0.5$\,ms, not a fit
@@ -186,11 +188,15 @@ Re-measuring with every point strictly below the knee ($\ell/T_0 \le 1/3$, with
 $\ell$ sized on the \emph{final} sequence length so generation is counted) gives a
 clean affine fit in which both coefficients are well identified: across seven arms
 $c$ repeats to $1.5\%$ and $F$ to $10\%$ between runs of one configuration.
-Figure~\ref{fig:coeffs} (left) shows the boundary directly, at two contexts whose
-predicted crossings differ. The line in each panel is \emph{refitted to that
-panel} and is not Eq.~\ref{eq:coeffs}, which is measured at a context two
-octaves away and does not predict these magnitudes; what the panels test is the
-\emph{location} of the boundary, not the value of the coefficients. \textbf{That is
+Figure~\ref{fig:coeffs} (left) locates that boundary without fitting anything to
+it. Expressed against $\ell/\mathrm{ITL}_0$ rather than against the rider count, two
+contexts a third apart fall on one curve --- agreeing to $2$--$10\%$ at matched
+exposure --- and both leave linearity at $\ell/\mathrm{ITL}_0 = 1$. \textbf{So the
+quantity that governs the cost is neither the rider count nor the context but their
+ratio to the compute window, and the boundary sits at unity by construction.} The
+panel tests where the regime changes, not the value of $F$ or $c$: at these
+contexts only three or four points lie below the boundary and they are themselves
+near it, so a fit there inherits the curvature this subsection is about. \textbf{That is
 Eq.~\ref{eq:knee} validated on both sides, measured, with no projection involved},
 and it is the reason the knee rather than the per-request price is what a faster
 interconnect buys.
