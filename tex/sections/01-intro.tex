@@ -46,7 +46,13 @@ removes the choice: DirectKV~\cite{directkv} holds all KV on the host and attend
 it in place, which is an excellent execution path and no memory-management policy at
 all. A fourth line splits at a finer grain than a request --- BOOST~\cite{boost}
 proportions each wave of threadblocks across both tiers --- which is orthogonal to
-which requests are placed where.
+which requests are placed where. Two further lines do not compete with any of these
+because they change the quantity rather than its location: moving the attention
+\emph{computation} to the host~\cite{neo}, and shrinking the KV itself by sparsity
+or low-rank reconstruction~\cite{shadowkv,infinigen}, which trade exactness for
+footprint where we keep the arithmetic exact. Within HBM alone, allocator and reuse
+work~\cite{vllm,vattention,cachedattention} raises how much KV fits before any tier
+is needed, and composes with everything here.
 
 What none of them does is decide \emph{whose} KV sits on the host while every
 request keeps running. That choice is worth making for a reason visible before any
