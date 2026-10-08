@@ -113,8 +113,15 @@ def main():
     ax.set_ylabel("ms")
     ax.set_xticks(Ls)
     ax.set_ylim(0, max(Fs) * 1.35)
-    ax.legend(fontsize=6.2, frameon=False, loc="upper left")
-    ax.set_title("both coefficients are affine in depth", fontsize=7.5,
+    # c IS affine in depth and F IS NOT, and the earlier title claimed both were.
+    # Measured on these arms F/L runs 0.058, 0.071, 0.095 at L = 16/32/64 -- rising
+    # 64% -- so the flat 0.053 ms/layer of Eq. coeffs, obtained by dividing one
+    # depth's measurement by its depth, is an assumption with this evidence against
+    # it. Section 6's sensitivity table carries the consequence.
+    ax.plot(Ls, [0.053 * L for L in Ls], ":", color="#555", lw=1.1,
+            label=r"$F$, assumed $0.053L$")
+    ax.legend(fontsize=5.9, frameon=False, loc="upper left")
+    ax.set_title(r"$c$ is affine in depth; $F$ rises faster", fontsize=7.5,
                  color=INK)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
