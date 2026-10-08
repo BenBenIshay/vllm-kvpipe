@@ -157,10 +157,14 @@ purity-gated, 3 repeats, resident batch 8; no projection enters this panel. It i
 also the cleanest statement of why fitting a single line across the boundary
 produced a \emph{negative} fixed cost: the two sides have different slopes by
 construction.
-\textbf{Right: both coefficients are affine in layer depth.} $F$ before and after
-the host-path fixes of \S\ref{sec:design:mirror}, and $c$, which the fixes do not
-touch. $F$'s bars are its \emph{measured} between-job drift, $\pm0.5$\,ms, not a fit
-residual: the drift is bimodal across jobs and that is the honest uncertainty.
+\textbf{Right: $c$ is affine in depth; $F$ is not, and that matters.} $c$ tracks
+Eq.~\ref{eq:coeffs} closely --- $0.263$ and $0.350$ measured against $0.263$ and
+$0.350$ predicted at $L = 16$ and $32$. $F$ does not: on the same arms $F/L$ runs
+$0.058$, $0.071$, $0.095$, \emph{rising} by $64\%$ across the sweep, against the flat
+$0.053$ the dotted line assumes. That assumption was obtained by dividing one
+depth's measurement by its depth, and Table~\ref{tab:gain} charges it at $L = 80$,
+so \S\ref{sec:eval:sens} carries the consequence rather than hiding it. $F$'s bars
+are its \emph{measured} between-job drift, not a fit residual.
 The right panel's dotted line is what one resident request is worth, $\mathrm{ITL}_0/B$
 --- $c$ stays far beneath it at every depth, which is why the per-request term is
 not what decides the margin.}
@@ -185,9 +189,14 @@ non-affinity, and is also why the residual overhead looked non-monotone
 ($18.1$, $8.6$, $13.5$\,ms).
 
 Re-measuring with every point strictly below the knee ($\ell/T_0 \le 1/3$, with
-$\ell$ sized on the \emph{final} sequence length so generation is counted) gives a
-clean affine fit in which both coefficients are well identified: across seven arms
-$c$ repeats to $1.5\%$ and $F$ to $10\%$ between runs of one configuration.
+$\ell$ sized on the \emph{final} sequence length so generation is counted) gives an
+affine fit over the rider range it is taken on. How well the two coefficients are
+determined is a separate question, and we answer it with the full set rather than a
+favourable pair: across \textbf{twelve} arms of one configuration $F$ spans
+$3.23$--$3.74$\,ms and $c$ spans $\mathbf{0.414}$--$\mathbf{0.538}$\,ms, so $c$ is
+identified to about $\pm 12\%$ and no better. An earlier draft of this section
+claimed $1.5\%$ from a subset; that figure was wrong and the consequences of the
+real one are carried through in \S\ref{sec:eval:sens}.
 Figure~\ref{fig:coeffs} (left) locates that boundary without fitting anything to
 it. Expressed against $\ell/\mathrm{ITL}_0$ rather than against the rider count, two
 contexts a third apart fall on one curve --- agreeing to $2$--$10\%$ at matched
@@ -202,46 +211,154 @@ and it is the reason the knee rather than the per-request price is what a faster
 interconnect buys.
 Eq.~\ref{eq:coeffs} is that fit. Two of its properties were surprises:
 
-\begin{itemize}\itemsep1pt \parskip0pt
-\item \textbf{$c$ is context-independent}, $0.532$\,ms at $128$ tokens against
-  $0.488$ at $256$, where the earlier fit had it growing as
-  $0.205 + 1.84\times10^{-3}S$. The $S$ dependence was the knee entering the fit.
-\item \textbf{$c$ contains none of the transfer.} Removing a rider's bytes while
-  keeping every launch and every bookkeeping step (\texttt{minbytes}) moves $c$ by
-  $0.010$\,ms. Below the knee the prefetch hides the bytes completely, so $c$ is
-  exposed launch and host work --- and a faster link cannot reduce it.
-\end{itemize}
+Eq.~\ref{eq:coeffs} is that fit, and its content is that $c$ is \textbf{far smaller
+than the earlier figure of $2.2$--$2.9$\,ms} and \textbf{carries no transfer}. The
+$S$-dependence the earlier fit reported, $0.205 + 1.84\times10^{-3}S$, was mostly
+the knee entering the fit --- at the top of that sweep $\ell/T_0$ exceeded $1$ ---
+but, as the next paragraph shows, not \emph{entirely}, and we no longer claim it was
+all artifact.
 
-\paragraph{The retraction, tested where it can be falsified.}
-Discarding a context term is the kind of claim that should be attacked, so we attack
-it with the one comparison that separates context from transfer-exposure. The two
-move together as the knee is approached --- a longer context raises
-\emph{both} the bytes per request and $\ell/T_0$ --- so a point near the knee cannot
-tell them apart. Differencing two adjacent rider counts cancels $F$ identically and
-leaves the marginal cost of one request, and we take that difference at two contexts
-a factor of two apart whose $\ell/T_0$ stays under $0.12$:
+\paragraph{What the bytes contribute, and what we cannot yet separate from it.}
+Two claims have to be kept apart here, and an earlier version of this paper ran
+them together. The first is that \emph{the transfer} is not in $c$. That we can show
+cleanly, because the \texttt{minbytes} mode removes a rider's bytes while issuing
+every launch and every bookkeeping step, so it holds the host work fixed and sets
+$\ell/T_0 \approx 0$. Differencing two adjacent rider counts cancels $F$ identically
+and leaves one request's marginal cost:
 
 \begin{center}\small
-\begin{tabular}{lrrr}
+\begin{tabular}{lrr}
 \toprule
- & ctx 128 & ctx 256 & change \\
+marginal cost of one request & ctx 128 & ctx 256 \\
 \midrule
-$\ell/T_0$ & 0.07 & 0.12 & --- \\
-$\Delta T(2) - \Delta T(1)$, measured & $1.17$\,ms & $1.13$\,ms & $\mathbf{-3\%}$ \\
-the withdrawn $c = 0.205 + 1.84{\times}10^{-3}S$ & $0.44$ & $0.68$ & $+53\%$ \\
+bytes sent & $1.12$\,ms & $1.14$\,ms \\
+bytes removed, launches kept & $1.07$\,ms & $1.19$\,ms \\
 \bottomrule
 \end{tabular}
 \end{center}
 % src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
 % paper/data/overhead/15_clean_cf/CF_c256.json,
-% paper/data/overhead/21_fusion_bound/FB_base_a.json
+% paper/data/overhead/15_clean_cf/MB_c128.json,
+% paper/data/overhead/15_clean_cf/MB_c256.json
 
-Doubling the context moves the marginal cost by $-3\%$ where a context-dependent
-$c$ requires $+53\%$. \textbf{So the bytes are not in $c$, and the withdrawn law
-survives only where it cannot be distinguished from transfer exposure.} It does fit
-the two highest-context points of Fig.~\ref{fig:coeffs} to within $9\%$ --- but
-those sit at $\ell/T_0$ of $0.48$ and $0.63$, and the law was itself fitted across
-the knee, so there it is a proxy for exposure rather than for context.
+Removing the bytes changes nothing at either context, which is the result: a
+request's transfer is hidden, and a faster interconnect cannot make $c$ smaller
+because there is no transfer in it to shrink.
+
+\textbf{The second claim --- that $c$ has no context term --- we hold, but we have
+to be careful about how far it is tested.} A context ladder at $128$, $256$ and
+$512$ tokens, three replicates per cell in one job and interleaved across contexts
+so machine drift could not imitate a context effect, gives $c = 0.387 \pm 0.167$ at
+$128$ tokens against $0.561 \pm 0.141$ at $256$ over a matched rider range with
+every point below the gate. The point estimates rise; the difference is
+$1.4\sigma$ and \textbf{not resolvable} at this machine's precision.
+% src: paper/data/overhead/22_c_context/CC_c128_a.json and the 14 sibling arms,
+% paper/model/c_context.py
+
+That ladder cannot be pushed further \emph{with the bytes present}, and the reason
+is the knee itself: at $512$ tokens only \emph{two} rider points clear
+$\ell/T_0 \le 1/3$, at $4096$ one, and at $8192$ none, because a single request's
+transfer then exceeds the whole step. On a PCIe part $c$ is therefore unmeasurable
+below the knee at the contexts Table~\ref{tab:gain} evaluates, by construction, and
+any fit that appears to manage it has admitted transfer-bound points.
+
+\paragraph{Removing the bytes removes the knee, which is how we test it anyway.}
+The \texttt{minbytes} mode issues every launch, gather and block-table entry and
+sends almost no bytes, so $\ell/T_0 \approx 0.02$ at \emph{any} context and every
+rider point is below the knee by construction. What it measures is $c$'s host
+component --- which is what $c$ \emph{is} below the knee, and therefore the quantity
+Table~\ref{tab:gain} needs: at $8192$ tokens on a coherent link
+$r^{*} \approx 6$, so the transfer is hidden there and $c = c_{\mathrm{host}}$.
+Fitting an identical rider range at every rung, three replicates each:
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+ & ctx 128 & ctx 512 & ctx 2048 & ctx 4096 \\
+\midrule
+$c_{\mathrm{host}}$ (ms) & $0.513$ & $0.731$ & $0.690$ & $0.788$ \\
+s.d. & $0.038$ & $0.068$ & $0.047$ & $0.428$ \\
+worst $\ell/T_0$ & $0.022$ & $0.022$ & $0.021$ & $0.020$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/23_c_nobus_ladder/NB_c128_a.json and the 15 sibling
+% arms, paper/model/c_host_ladder.py
+
+\textbf{Across a $32\times$ change in context $c_{\mathrm{host}}$ moves by
+$+54\% \pm 25\%$ --- not resolvable, and not monotone.} The withdrawn law
+$c = 0.205 + 1.84{\times}10^{-3}S$ requires $+1657\%$ over the same range, so it is
+refuted by a factor of thirty rather than by a hair. The per-request cost
+Table~\ref{tab:gain} charges is therefore \emph{measured} at four times that
+table's own context rather than extrapolated to it, which is the strongest
+statement we can make without a coherent link.
+
+\subsection{What the coefficients' uncertainty does to the projection}
+\label{sec:eval:sens}
+
+Table~\ref{tab:gain} spends $c$ at $8192$ tokens and $F$ at $80$ layers. Both are
+measured at $128$ tokens and, for $F$, at one depth. That is a $64\times$
+extrapolation in context and a scaling assumption in depth, and it is the paper's
+largest exposure --- larger than the bandwidth and efficiency box the table's
+intervals propagate. We state it in full rather than leave it to be found.
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+ & 8B fp16 & 32B fp8 & 32B fp16 & 70B fp8 \\
+\midrule
+as tabulated & $1.04$ & $1.08$ & $\mathbf{1.25}$ & $\mathbf{1.37}$ \\
+$c$ at its lowest arm & $1.09$ & $1.11$ & $1.28$ & $1.39$ \\
+$c$ grown $13\%$/doubling & $0.98$ & $1.00$ & $1.16$ & $1.26$ \\
+and $F/L$ at its measured slope & $0.96$ & $0.96$ & $1.09$ & $1.17$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/model/overhead_model.py, paper/data/overhead/15_clean_cf/MB_c128.json,
+% paper/data/overhead/15_clean_cf/MB_c256.json,
+% paper/data/overhead/15_clean_cf/CF_L16.json,
+% paper/data/overhead/15_clean_cf/CF_L32.json
+
+Two of those rows need justifying. The third applies the $11\%$-per-doubling rise
+the bytes-removed arms show, compounded over the six doublings from $128$ to $8192$
+tokens; it is an extrapolation of a two-point trend and we offer it as a bound, not
+an estimate. The fourth additionally charges $F$ at the per-layer slope the one
+depth sweep we have actually measures --- $F/L$ of $0.058$, $0.071$ and $0.095$ at
+$L = 16, 32, 64$, rising rather than constant --- instead of the flat
+$0.053$\,ms/layer of Eq.~\ref{eq:coeffs}, which was obtained by dividing a single
+depth's measurement by its depth.
+
+\textbf{$c$'s context dependence turns out not to be the dominant uncertainty},
+which is worth stating because we expected it to be. Charging each row the full
+range of $c_{\mathrm{host}}$ measured in \S\ref{sec:eval:cost} --- $0.513$ at
+$128$ tokens through $0.788$ at $4096$, a $54\%$ swing --- moves every projected
+gain by about four per cent:
+
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+ & $c = 0.513$ & $c = 0.690$ & $c = 0.788$ \\
+\midrule
+Llama-8B fp16  & $\times 1.075$ & $\times 1.044$ & $\times 1.028$ \\
+Qwen-32B fp8   & $\times 1.086$ & $\times 1.056$ & $\times 1.040$ \\
+Qwen-32B fp16  & $\times 1.249$ & $\times 1.214$ & $\times 1.196$ \\
+Llama-70B fp8  & $\times 1.360$ & $\times 1.323$ & $\times 1.304$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The reason is structural rather than lucky: at the operating point $c\,r$ is a few
+milliseconds against a step of thirty-odd, so even a half-again error in $c$ is a
+small perturbation of the denominator. \textbf{The projection is governed instead by
+$F$, by the link bandwidth, and by the integer rider count} --- the three quantities
+the rest of this table varies.
+
+What survives every row is the ordering by $\HBM/\Ckv$. What the table should not be
+read as is three significant figures: $c$'s replicate spread alone is $\pm 12\%$,
+$F(L)$'s per-layer slope is an assumption with contrary evidence
+(Fig.~\ref{fig:coeffs}, right), and the bandwidth range spans $350$--$419$\,GB/s.
+The defensible headline is $\times 1.2$--$1.4$ for the two weight-heavy
+configurations.
 
 \paragraph{One honest complication: $\Delta T$ is mildly concave.}
 The affine law is an approximation, and the direction of its error should be stated.
