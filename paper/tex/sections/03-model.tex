@@ -145,14 +145,20 @@ projections.
 \toprule
 Model (GH200-96) & weights & $\Ckv$ & $\HBM/\Ckv$ & ITL$_0$ & $F$ & capacity & tput \\
 \midrule
-Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & \phantom{0}1.7\,ms & $\times$1.22 & $\times$1.04 \\
-Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & \phantom{0}3.4\,ms & $\times$1.28 & $\times$1.08 \\
-Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & \phantom{0}3.4\,ms & $\times$1.50 & $\times$\textbf{1.25} \\
-Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & \phantom{0}4.2\,ms & $\times$1.67 & $\times$\textbf{1.37} \\
+Llama-8B fp16          & 16.1\,GB & 75.9\,GB & 1.26 & 46.6\,ms & \phantom{0}1.7\,ms & $\times$1.22 & $\times$1.04 \footnotesize[1.03,\,1.06] \\
+Qwen-32B \textbf{fp8}  & 32.0\,GB & 60.0\,GB & 1.60 & 43.3\,ms & \phantom{0}3.4\,ms & $\times$1.28 & $\times$1.08 \footnotesize[1.06,\,1.12] \\
+Qwen-32B \textbf{fp16} & 65.5\,GB & 26.5\,GB & 3.63 & 33.9\,ms & \phantom{0}3.4\,ms & $\times$1.50 & $\times$\textbf{1.25} \footnotesize[1.19,\,1.44] \\
+Llama-70B fp8          & 72.7\,GB & 19.3\,GB & 4.97 & 33.0\,ms & \phantom{0}4.2\,ms & $\times$1.67 & $\times$\textbf{1.37} \footnotesize[1.30,\,1.61] \\
 \bottomrule
 \end{tabular}
-\caption{\emph{Projections}, not measurements, at \textbf{8192} context under an
-$80$\,ms latency target.
+\caption{\textbf{Projections, not measurements}, at \textbf{8192} context under an
+$80$\,ms latency target. \textbf{The bracketed intervals on the throughput column
+are the ones that matter}: they propagate the two inputs we take from other
+people's measurements rather than our own --- the C2C bandwidth over its published
+range, $[350, 419]$\,GB/s, and the HBM efficiency down to the $0.475$ DirectKV
+reports for a zero-copy kernel. Every row stays above $1$ across that box, but the
+two leading rows span $0.2$, so these are predictions with a shape, not point
+estimates.
 $\Ckv = \HBM - W - 4$\,GB. \emph{capacity} charges each rider the blocks it
 displaces and the two HBM passes its KV makes; \emph{tput} additionally charges $F$
 and the per-request cost. \textbf{Every row now pays, and the margin grows with

@@ -9,50 +9,69 @@
 \section{Introduction}
 \label{sec:intro}
 
-A GPU serving LLM decode is mostly idle. Generating one token for a batch reads every
-model weight and every resident KV byte with almost no arithmetic per byte, so the
-arithmetic units run at single-digit utilization while the memory system saturates.
-What stops the server batching more requests is not compute: the KV cache has
-exhausted device memory. A trace-driven study reaches the same conclusion from the
-workload side, finding device memory capacity rather than token budget to be what
-binds~\cite{bottlenecks}.
+Decode is memory-bound, and in one regime it is memory-\emph{capacity}-bound.
+Generating a token reads every model weight and every resident KV byte with almost
+no arithmetic per byte, so a decode step is a streaming read and the arithmetic units
+idle~\cite{vllm,flashattention2}. Whether that read is dominated by weights or by KV
+depends on the deployment: for a small model at short context the weights dominate
+and a larger batch is the remedy, since the KV each request adds is cheap. The regime
+this paper addresses is the opposite one --- a model whose weights fill most of the
+device, leaving too little for KV --- where the batch that would keep the arithmetic
+units busy does not fit, and the server turns requests away while the arithmetic
+units idle. Context length is deliberately absent from that condition: it scales the
+resident and the offloadable cohort by the same factor and cancels
+(\S\ref{sec:model:cancel}), which is the first of two results here that run against
+intuition. A trace-driven study finds that device memory capacity, rather than token
+budget, is what binds in production serving~\cite{bottlenecks}; \S\ref{sec:model}
+gives the condition precisely.
 
-The machine has more memory than the GPU's. A Grace-Hopper
-node~\cite{gracehopper} pairs 96\,GB of HBM with hundreds of gigabytes of host DRAM,
-and NVLink-C2C connects them at 450\,GB/s per direction --- the commonly quoted 900
-is bidirectional, where a KV stream is not. At that rate the KV a decoding request
-needs can cross the link inside the window during which the GPU is reading its own
-weights and wants nothing from the link. Host DRAM stops being a place to park idle
-requests and becomes usable memory for running ones.
+The same node usually holds several times that memory outside the GPU. Recent
+superchip-class parts~\cite{gracehopper} attach host DRAM to the GPU over a coherent
+link an order of magnitude faster than PCIe, and fast enough that a decoding
+request's KV can cross it inside the window in which the GPU is reading its own
+weights and wants nothing from the link (\S\ref{sec:background}). Host DRAM stops
+being a place to park idle requests and becomes usable memory for running ones.
 
-\paragraph{Two memories, managed as one.} This paper builds a heterogeneous memory
-system for LLM decode: HBM and host DRAM managed as a single KV store, with each
-request assigned to a tier. A \textbf{device-tier} request behaves as in stock vLLM;
-a \textbf{host-tier} request holds no device blocks at all, its KV living in host
-memory and each layer's bytes streamed across the link just before that layer's
-attention reads them, into a small buffer reused across all layers --- four buffers
-for a 64-layer model, about 6\% of the device memory a resident request needs. Both
-tiers are rows of the same batch in one forward pass, so the weights are read once
-however the batch is split. The target throughout is a decode node in a
+\paragraph{How the field uses that memory, and what it leaves on the table.}
+Host memory has been used for KV in three ways, and each fixes one degree of freedom
+that we argue should be free. \emph{Swapping} systems move a request's KV out to make
+room and bring it back to run: vLLM~\cite{vllm} and SGLang~\cite{sglang} preempt,
+and SuperInfer~\cite{superinfer} schedules the swaps against latency objectives, but
+in all of them a request whose KV is on the host is \emph{not executing}.
+\emph{Uniform offload} keeps both memories busy at once --- Pie~\cite{pie} places
+$m$ of a model's $n$ layers on the host, FlexGen~\cite{flexgen} searches a placement
+offline --- but applies the same fraction to every request, so the interconnect is
+spent evenly on requests that differ in how much they benefit. \emph{Full offload}
+removes the choice: DirectKV~\cite{directkv} holds all KV on the host and attends to
+it in place, which is an excellent execution path and no memory-management policy at
+all. A fourth line splits at a finer grain than a request --- BOOST~\cite{boost}
+proportions each wave of threadblocks across both tiers --- which is orthogonal to
+which requests are placed where.
+
+What none of them does is decide \emph{whose} KV sits on the host while every
+request keeps running. That choice is worth making for a reason visible before any
+measurement: each endpoint leaves one memory path idle, and a system that places
+some requests in each reads from both, so its batch is bounded by the \emph{sum} of
+what the two paths support rather than by either alone. For one configuration we
+model in \S\ref{sec:model} that sum is \textbf{18 against 12} all-HBM and
+\textbf{6 all-host} (Table~\ref{tab:endpoints}) --- the two endpoints the field
+currently occupies. Choosing per request also frees capacity in whole requests
+rather than in proportion, and spends link bandwidth only on the requests selected
+for it.
+
+\paragraph{Two memories, managed as one.} We therefore manage HBM and host DRAM as a
+single KV store and assign each request a tier. A \textbf{device-tier} request
+behaves as in stock vLLM; a \textbf{host-tier} request holds no device blocks at all
+\emph{while it generates}, its KV living in host memory and each layer's bytes
+crossing the link just before that layer's attention reads them, into a small ring of
+buffers reused across layers --- a few percent of the device memory a resident
+request needs, independent of context length. Both tiers are rows of the same batch
+in one forward pass (Fig.~\ref{fig:exec}), so the weights are read once however the
+batch is split. The target throughout is a decode node in a
 prefill/decode-disaggregated deployment~\cite{distserve,splitwise,mooncake}, where a
 request arrives with its KV already computed --- the assumption that makes a
 host-tier request \emph{additive} rather than merely relocated
 (\S\ref{sec:background:pd}).
-
-\paragraph{Why choose per request.} Existing systems vary \emph{how much} KV sits on
-the host and never \emph{whose}. vLLM~\cite{vllm} and SGLang~\cite{sglang} keep all
-of it in HBM and make requests wait; DirectKV~\cite{directkv} keeps all of it on the
-host, always, which is why it needs no memory management at all. Pie~\cite{pie}, the
-closest prior work, genuinely uses both memories --- $m$ of a model's $n$ layers on
-the host --- but that split applies to every request identically
-(\S\ref{sec:related}). Choosing per request buys three things a uniform fraction
-cannot: capacity freed in \emph{whole} requests rather than in proportion, movement
-once per request at a moment the scheduler picks rather than once per layer per
-token, and link bandwidth spent only on the requests we select. And neither endpoint
-is optimal for a reason visible without measurement --- each leaves one KV path
-entirely idle, where a system placing some requests in each reads from both and its
-batch is bounded by the sum: for Qwen2.5-32B fp16 at 8K on a GH200-96, 18 against 12
-all-HBM and 6 all-host (Table~\ref{tab:endpoints}).
 
 \paragraph{When does a second tier pay?} Before building one we ask when it is
 worth having, and the answer is narrow enough to be useful. Two consequences of the
@@ -82,41 +101,28 @@ the latency gate (\S\ref{sec:model:omits}).
 \item \textbf{An admission controller in vLLM} (\S\ref{sec:design:admission}): the
       host cohort sized at runtime from the rider-free step time and the achieved
       link bandwidth, not from a configured offload fraction.
-\item \textbf{A working implementation, and a measured account of what it costs}
-      (\S\ref{sec:eval}). The mechanism itself is demonstrated rather than
-      projected: six times the concurrency from the same KV pool, output
-      token-identical to the unmodified engine. The interconnect we have is too slow
-      for that capacity to convert into throughput --- which the model predicts
-      before we measure it --- so the cost decomposition is what carries the
-      projection --- whose inputs are anchored to published Grace-Hopper
-      measurements\ifarxiv, consolidated in \S\ref{app:validation}\fi.
+\item \textbf{The cost of a second tier, decomposed by ablation}
+      (\S\ref{sec:eval}): a fixed per-step component, a per-request component, and
+      the knee between them, each isolated by removing the mechanism that produces
+      it rather than inferred by subtraction. On our own interconnect the model
+      predicts a net loss \emph{before} we measure one, and we report the loss; the
+      same decomposition is what carries the projection to a coherent link, and its
+      inputs are checked against published Grace-Hopper
+      measurements\ifarxiv~(\S\ref{app:validation})\fi.
 \end{enumerate}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figs/f6.pdf}
-\caption{The cost of a host-tier request, and the knee that organises it. Below the
-knee the transfer fits inside a step and hides \emph{completely}; above it the step
-\emph{is} the transfer, and fitting one line across the boundary --- which we did,
-and report in \S\ref{sec:eval:cost} --- overstates the per-rider slope while
-understating the fixed cost, from that single cause. Measured strictly below the
-knee the law is affine: a \emph{fixed} $3.4$\,ms per step at 64 layers plus
-$0.52$\,ms per request. A faster link moves the knee right, which is the whole of
-what it buys; it does not shrink either term. Qwen2.5-32B, 2048 context, 16
-residents, A100/PCIe at 25.1\,GB/s, 3 repeats under 1\% spread.}
-% src: paper/data/rider_cost_phase0.json @ fb7e9db2a
-\label{fig:costcurve}
-\end{figure}
-
+% f6 REMOVED 2026-10-08. It plotted rider_cost_phase0.json, the
+% across-the-knee sweep this paper now retracts, under a caption rewritten to
+% claim the opposite. Regenerate from paper/data/overhead/15_clean_cf/*.json
+% and place it in section 6, not here.
 \paragraph{What it costs, and why PCIe cannot pay.}
-Figure~\ref{fig:costcurve} is the measurement the rest of the paper turns on. Two
-host-tier requests grow a $54.1$\,ms step to $70.8$, and the curve bends where the
-aggregate transfer stops fitting inside a step. That bend --- the \emph{knee} --- is
-the structure that matters, and locating it changed our reading of everything else:
-measured below it, a rider's transfer hides completely and the per-request cost is
-$0.61$\,ms of exposed launch work carrying no bandwidth term at all
-(\S\ref{sec:eval:cost}). What a faster interconnect buys is therefore not a cheaper
-rider but a higher knee, and so more riders at the same price.
+A host-tier request's cost has a structure worth stating early, because it decides
+where the mechanism is worth deploying. Its transfer is hidden behind compute only
+up to a \emph{knee} --- the rider count at which the aggregate transfer stops fitting
+inside a step --- and below that knee it hides \emph{completely}, leaving a
+per-request cost that carries no bandwidth term at all. What a faster interconnect
+buys is therefore not a cheaper rider but a higher knee, and so more riders at the
+same price (\S\ref{sec:eval:cost}).
 
 That settles the PCIe case, since a larger batch pays only if the step grows by
 less: the link affords two host-tier requests on sixteen residents, a batch of

@@ -140,6 +140,35 @@ not exist. The conclusion is unchanged and now rests on Eq.~\ref{eq:knee}. An
 earlier $+7.7\%$ on the decode phase was an artifact of subtracting prefill by hand
 from a co-located run, and we withdraw that too.
 
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.49\textwidth]{figs/f8.pdf}\hfill
+\includegraphics[width=0.49\textwidth]{figs/f7.pdf}
+\caption{\textbf{Left: the knee is where Eq.~\ref{eq:knee} says it is.} Two
+contexts give two predicted crossings --- $r^{*} = 4.16$ at 1080 tokens and
+$3.18$ at 1440 --- and in each case the measured cost tracks the affine law up to
+$\lfloor r^{*}\rfloor$ and then leaves it, by $1.6\times$ and $1.7\times$ at the
+next rider. Both panels are measured on A100/PCIe with no projection involved; the
+dashed continuation is where a fit that ignored the boundary would be pulled, which
+is how we previously obtained a \emph{negative} fixed cost. We do not label $F$ and
+$c$ per panel, because at these contexts only three or four points lie below the
+knee and are themselves near it, so the fit inherits the curvature --- the effect
+this subsection is about.
+\textbf{Right: both coefficients are affine in layer depth.} $F$ before and after
+the host-path fixes of \S\ref{sec:design:mirror}, and $c$, which the fixes do not
+touch. $F$'s bars are its \emph{measured} between-job drift, $\pm0.5$\,ms, not a fit
+residual: the drift is bimodal across jobs and that is the honest uncertainty.
+The right panel's dotted line is what one resident request is worth, $\mathrm{ITL}_0/B$
+--- $c$ stays far beneath it at every depth, which is why the per-request term is
+not what decides the margin.}
+% src: paper/data/overhead/21_fusion_bound/E3_ctx1080.json,
+% paper/data/overhead/21_fusion_bound/E3_ctx1440.json,
+% paper/data/overhead/15_clean_cf/CF_L16.json,
+% paper/data/overhead/15_clean_cf/CF_L32.json,
+% paper/figs/f8_knee.py, paper/figs/f7_coefficients.py
+\label{fig:coeffs}
+\end{figure*}
+
 \paragraph{The law is affine, and our first reading of it was not.}
 We previously reported this cost curve as \textbf{not affine} --- $\Delta T$ per
 rider \emph{rising} through $9.1$, $11.0$, $15.6$\,ms at $r = 2, 4, 6$, so that
@@ -156,6 +185,12 @@ Re-measuring with every point strictly below the knee ($\ell/T_0 \le 1/3$, with
 $\ell$ sized on the \emph{final} sequence length so generation is counted) gives a
 clean affine fit in which both coefficients are well identified: across seven arms
 $c$ repeats to $1.5\%$ and $F$ to $10\%$ between runs of one configuration.
+Figure~\ref{fig:coeffs} (left) shows the boundary directly, at two contexts whose
+predicted crossings differ: the law holds up to $\lfloor r^{*}\rfloor$ and the next
+rider costs $1.6$--$1.7\times$ what the line predicts. \textbf{That is
+Eq.~\ref{eq:knee} validated on both sides, measured, with no projection involved},
+and it is the reason the knee rather than the per-request price is what a faster
+interconnect buys.
 Eq.~\ref{eq:coeffs} is that fit. Two of its properties were surprises:
 
 \begin{itemize}\itemsep1pt \parskip0pt

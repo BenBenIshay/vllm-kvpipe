@@ -41,21 +41,26 @@ the last decides where to stand.
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{llr}
+\begin{tabular}{llcr}
 \toprule
-Pillar & What removing it costs & \S \\
+Pillar & Removing it costs & measured at & \S \\
 \midrule
-One forward, two KV sources & the whole gain & \ref{sec:design:exec} \\
-Transfer hidden under compute & $c$: $0.92 \to 7.20$\,ms & \ref{sec:design:step} \\
-$O(r)$ extent allocation & $c$: $1.26 \to 5.17$\,ms & \ref{sec:design:spaces} \\
-Deferred, batched mirror write & $F$: $3.4 \to 13.4$\,ms & \ref{sec:design:mirror} \\
-Overhead-aware admission & $18\%$ of the gain & \ref{sec:design:admission} \\
+One forward, two KV sources & the whole gain & --- & \ref{sec:design:exec} \\
+Transfer hidden under compute & $c$: $0.92 \to 7.20$\,ms & $L{=}64$, ctx 512 & \ref{sec:design:step} \\
+$O(r)$ extent allocation & $c$: $1.26 \to 5.17$\,ms & $L{=}80$, ctx 8192 & \ref{sec:design:spaces} \\
+Deferred, batched mirror write & $F$: $3.4 \to 13.4$\,ms & $L{=}64$, ctx 128 & \ref{sec:design:mirror} \\
+Overhead-aware admission & $18\%$ of the gain & $L{=}80$, ctx 8192 & \ref{sec:design:admission} \\
 \bottomrule
 \end{tabular}
-\caption{The five pillars and the measured cost of removing each, at $L = 64$
-unless noted. Each row is an ablation, not an estimate. The two $c$ rows are not
-additive: they were measured against different baselines, and the point of each is
-that the mechanism is necessary rather than that the deficits sum.}
+\caption{The five pillars and the measured cost of removing each. Every row is an
+ablation, not an estimate. \textbf{The third column is load-bearing: these numbers
+are not comparable to one another and are not meant to be.} Each ablation was run
+against the configuration current when that mechanism was built, so the $c$ rows
+differ in both depth and context, and neither is the $c$ of Eq.~\ref{eq:coeffs},
+which is the \emph{final} coefficient measured below the knee at $L{=}64$
+($0.49$\,ms). What each row licenses is the claim that its mechanism is necessary;
+the deficits do not sum, and only Eq.~\ref{eq:coeffs} and
+Fig.~\ref{fig:coeffs} should be read as the coefficients of the shipped system.}
 % src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
 % paper/data/overhead/08_opt/T1_c2048_bs16.json,
 % paper/data/overhead/19_t8/T8_on_a.json, paper/model/operating_point.py
@@ -64,6 +69,8 @@ that the mechanism is necessary rather than that the deficits sum.}
 
 \subsection{Where the two tiers run}
 \label{sec:design:exec}
+
+\input{sections/fig-exec}
 
 \textbf{There is no partition of the GPU.} The two tiers are not separate streams,
 kernels or forward passes but \emph{rows of the same batch}; the only operation that
@@ -113,6 +120,8 @@ design from arithmetically impossible to profitable.
 
 \subsection{A decode step, end to end}
 \label{sec:design:step}
+
+\input{sections/fig-pipeline}
 
 Two granularities matter, and separating them keeps the per-layer work small:
 \textbf{addresses} are fixed for the whole step, while slot \textbf{contents} change
