@@ -89,12 +89,20 @@
 % points at the title, not at the real cause. Use \par\vspace instead.
 \twocolumn[
 \begin{center}
-% Retitled 2026-09-06 for the heterogeneous-memory-system framing. Alternatives
-% kept for the co-authors to argue over:
+% RETITLED 2026-10-08. The previous title, "Heterogeneous KV Memory for
+% Capacity-Bound LLM Decode", promises a serving system and therefore a speedup;
+% on the hardware we have, the measured end-to-end result is a loss, and a reviewer
+% who arrives expecting the former reads the latter as a failed paper rather than as
+% the finding it is. The title now names BOTH halves of what we can defend: the
+% mechanism (co-serving, which nobody else does) and what it costs (measured, with
+% the boundary that decides where it pays).
+%
+% Alternatives kept for the co-authors to argue over:
 %   "Two Memories, One Pool: Heterogeneous KV Memory for LLM Decode"
-%   "Managing HBM and Host DRAM as One KV Memory for LLM Decode"
-%   (old, subordinate) "Who Rides Along? Request-Level KV Tiering ..."
-{\Large\bf Heterogeneous KV Memory for Capacity-Bound LLM Decode}
+%   "The Cost of a Host-DRAM KV Tier, and the Configurations It Excludes"
+%   (old) "Heterogeneous KV Memory for Capacity-Bound LLM Decode"
+{\Large\bf Co-Serving a Host-DRAM KV Tier:\\[0.2ex]
+\large\bf the Mechanism, its Measured Cost, and Where it Pays}
 \par\vspace{1ex}
 % MLSys reviewing is double-blind: the submission carries no author list.
 % Replace with the real one for the camera-ready.

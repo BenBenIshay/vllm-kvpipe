@@ -1,49 +1,47 @@
-% Compressed 2026-09-27 from 360 to ~250 words: four paragraphs of abstract in a
-% 10pp paper is a paragraph too many, and the second one narrated the mechanism
-% at design-section length.
+% REWRITTEN 2026-10-08 against Ben's review of the first page. It was 492 words --
+% Pie's is 212, DirectKV's 219, BOOST's 278 -- in four paragraphs, and its results
+% paragraph was raw millisecond figures measured on one GPU. Three things came out
+% and should stay out:
+%
+%  * "raises peak concurrency from 8 to 48". A VACUOUS metric: admitting requests
+%    says nothing about serving them, and on the substrate where we measured that
+%    number the throughput was 0.53x. Quoting the admission count without the
+%    throughput reads as though we were hiding the second number.
+%  * "output token-identical to the unmodified engine". Table stakes. Claiming it
+%    as a result signals that we think it is one.
+%  * per-millisecond coefficients and per-model gains. They belong in sections 3
+%    and 6; in an abstract they make a general mechanism look like one tuning
+%    result for one part number.
+%
+% What replaces them is the thing that makes the mechanism general: the host cohort
+% is sized from what the server OBSERVES, so the same system declines to use the
+% second tier where it cannot pay. That is the claim the paper can make everywhere.
 \begin{abstract}
-A decode server's batch is capped by device memory, not arithmetic: KV cache
-exhausts HBM long before the arithmetic units are busy, so the GPU runs at
-single-digit utilization while turning requests away. Coherent CPU--GPU
+On a decode node the batch is limited by KV-cache capacity rather than by
+arithmetic: the KV cache exhausts device memory well before the arithmetic units are
+busy, so the server turns requests away while the GPU idles. Coherent CPU--GPU
 interconnects make host DRAM fast enough to hold the KV of an \emph{actively
-decoding} request, but existing systems vary how much KV sits on the host and
-never \emph{whose} --- they place none, or a uniform fraction of every request. The
-one system that does decide per request takes turns: it pauses a request and parks
-its KV in host memory until the request is scheduled back. \textbf{Nobody serves
-both tiers in the same step.}
+decoding} request, but existing systems choose \emph{how much} KV sits on the host
+and never \emph{whose}: they place none, or a uniform fraction of every request, or
+a bandwidth-proportional share of each memory access, or whole requests in rotation
+--- pausing each one while its KV is parked. \textbf{None decides which requests
+live in which tier while all of them keep running.}
 
-We present a heterogeneous KV memory that manages HBM and host DRAM as one store
-and assigns each request to a tier. A \emph{host-tier} request holds no device
-blocks at all \emph{while it is generating}: its KV lives in host memory and is
-streamed one layer at a time, just before the attention that consumes it, through a
-small buffer reused across layers --- a few percent of the device memory a resident
-request needs. Both tiers are rows of a \textbf{single forward pass}, so the weights
-are read once however the batch is split, and an admission controller sizes the host
-cohort from the link
-bandwidth and step time it measures at runtime. A capacity model says which
-configurations this helps: from a device profile it returns the cohort that
-maximises decode throughput, and its content is that the value of a second tier
-tracks \textbf{how much of memory the weights consumed} --- not model size, and
-not context length, which cancels.
+We present a heterogeneous KV memory that manages HBM and host DRAM as one store and
+assigns each request a tier. A \emph{host-tier} request holds no device blocks while
+it generates: its KV is streamed one layer at a time, just ahead of the attention
+that consumes it, and both tiers are rows of a \textbf{single forward pass}, so the
+weights are read once however the batch is split. An admission controller sizes the
+host cohort from the step time and link bandwidth it \emph{measures at runtime},
+admitting none where the interconnect cannot hide the transfer.
 
-We implement this in vLLM. \textbf{Against a fixed KV pool it raises peak
-concurrency from 8 to 48 requests --- six times the batch from the same device
-memory --- with output token-identical to the unmodified engine.} That the mechanism
-works is therefore measured, not projected; what a faster interconnect decides is
-whether the capacity converts to throughput.
-
-We then measure what it costs, because a second tier is only worth having if the
-step it lengthens is worth the requests it adds. Below the point at which a rider's
-transfer stops fitting inside a step, that transfer hides \emph{completely}: the
-per-request cost is $0.61$\,ms of exposed launch and bookkeeping work, carrying no
-bytes and no bandwidth term, and it clears the budget a resident is worth by
-fivefold. What decides the margin is instead a fixed $4.2$\,ms per step, which we
-reduce by $74\%$ and then account for in full. On a Grace-Hopper node the resulting
-model projects $\times1.50$ and $\times1.67$ more served requests for the two
-weight-heavy configurations and throughput gains of $\times1.25$ and $\times1.37$;
-its step-time input checks against a published GH200 measurement to $1.1\%$, and
-two other systems derive its central crossover independently. One consequence is
-operational rather than architectural: because riders are integral, the achievable
-gain is a \emph{sawtooth} in context, so where the system is run matters as much as
-how well it is built.
+We implement this in vLLM and decompose what a host-tier request costs: a fixed
+per-step component, a per-request component, and a knee beyond which the step is the
+transfer rather than the compute. Below the knee the per-request term carries
+\emph{no} bandwidth term at all, so a faster interconnect buys a higher knee rather
+than a cheaper request --- which inverts how the choice of interconnect is usually
+argued. On the PCIe part we have, the model predicts and we then measure a net
+\textbf{loss}; on a coherent link it projects gains of $\times1.25$ to
+$\times1.37$, and we check its inputs against published Grace-Hopper measurements
+rather than asking the reader to take the extrapolation on trust.
 \end{abstract}
