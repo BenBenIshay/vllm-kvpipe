@@ -245,16 +245,44 @@ Removing the bytes changes nothing at either context, which is the result: a
 request's transfer is hidden, and a faster interconnect cannot make $c$ smaller
 because there is no transfer in it to shrink.
 
-\textbf{The second claim --- that $c$ has no context term at all --- we withdraw as
-unproven.} The bytes-removed row still rises by $11\%$ from 128 to 256 tokens, at
-$\ell/T_0 = 0.007$ in both cells, so whatever grows is neither the transfer nor its
-exposure: it is per-request host work that scales with \emph{blocks} per request,
-which the extent allocation of \S\ref{sec:design:spaces} reduced but evidently did
-not eliminate. We previously asserted context-independence from a two-point
-comparison. That comparison does not survive replication --- two arms of one
-identical configuration differ by $0.285$\,ms, which is larger than the effect being
-excluded --- and \S\ref{sec:eval:sens} now treats the context term as a bounded
-uncertainty rather than as zero.
+\textbf{The second claim --- that $c$ is context-independent --- is false, and we
+withdraw it.} We ran the context ladder it required: $128$, $256$ and $512$ tokens
+at fixed depth, batch and link, three replicates per cell in one job, interleaved
+across contexts so machine drift could not imitate a context effect, and repeated
+with the bytes removed. Fitting over a \emph{matched} rider range at every context,
+$r \in [1,4]$:
+
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+$c$ (ms) & ctx 128 & ctx 256 & ctx 512 \\
+\midrule
+bytes sent    & $0.41$ & $0.51$ & $\mathbf{1.21}$ \\
+bytes removed & $0.43$ & $0.19$ & $0.99$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/22_c_context/CC_c128_a.json and the 14 sibling arms,
+% paper/model/c_context.py
+
+\textbf{$c$ roughly triples over a fourfold context increase}, and it does so at
+$\ell/T_0 \le 0.23$ --- inside the gate this section uses to call a point
+``below the knee''. So the gate is not conservative enough, and the per-request cost
+we report at $128$ tokens is not the per-request cost at the contexts
+Table~\ref{tab:gain} evaluates. The bytes-removed row is too noisy to apportion the
+rise between transfer leakage and host work: it has two replicates rather than
+three, and because $\Delta T$ is concave its value moves with the fit range (the
+ctx-512 cell reads $0.43$ over eight points and $0.99$ over four). We state the rise
+and decline to attribute it.
+
+\textbf{What this costs the paper.} Table~\ref{tab:gain} charges $c = 0.52$ at
+$8192$ tokens, four octaves past the largest context measured here and at
+$\ell/T_0 = 0.93$ rather than $0.23$. On this evidence that is not a defensible
+extrapolation, and \S\ref{sec:eval:sens} reports the projection as a range reaching
+below unity rather than as the point estimates an earlier draft gave. The
+measurement that would settle it needs no coherent link --- only this ladder
+continued to the target context, which is the first experiment we would run with
+more device memory than our evaluation part affords.
 
 \subsection{What the coefficients' uncertainty does to the projection}
 \label{sec:eval:sens}
@@ -291,14 +319,21 @@ $L = 16, 32, 64$, rising rather than constant --- instead of the flat
 $0.053$\,ms/layer of Eq.~\ref{eq:coeffs}, which was obtained by dividing a single
 depth's measurement by its depth.
 
-\textbf{Read the bottom row as the pessimistic corner, and note what survives
-it}: the ordering by $\HBM/\Ckv$ is unchanged in every row of the table, and the two
-weight-heavy configurations stay above unity throughout. What does not survive is
-the precision: \textbf{the honest claim is $\times 1.1$--$1.4$ for those two, not
-$\times 1.25$ and $\times 1.37$}, and the two light configurations straddle $1$
-rather than clearing it. A measurement of $c$ at the target context would collapse
-this column to a point, and it needs no coherent link --- only a longer context on
-the part we already have.
+\textbf{The measured context dependence of $c$ dominates all of this}, and it is why
+we give a range rather than a prediction. Taking the unhidden transfer fraction
+frozen at the largest value we measured ($11.6\%$ of a request's link time at
+$\ell/T_0 = 0.23$) and applying it at the target's $\ell/T_0 = 0.93$ puts $c$ near
+$1.2$\,ms and the Llama-70B row at $\times 1.11$; letting the fraction continue to
+climb, as it does across our three contexts, takes that row below unity.
+
+\textbf{So the honest statement of this paper's projection is a range that includes
+no benefit at all}: somewhere between $\times 0.98$ and $\times 1.4$ for the
+weight-heavy configurations, with the position inside that range set by a quantity
+we have measured at three contexts and must evaluate at a fourth. What survives
+independently of it is the \emph{ordering} --- every scenario preserves the ranking
+by $\HBM/\Ckv$ --- and the mechanism and cost structure of
+\S\S\ref{sec:design}--\ref{sec:eval:cost}, which are measured rather than projected.
+We would rather publish that range than a point estimate our own archive contradicts.
 
 \paragraph{One honest complication: $\Delta T$ is mildly concave.}
 The affine law is an approximation, and the direction of its error should be stated.
