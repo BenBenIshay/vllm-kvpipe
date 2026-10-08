@@ -234,7 +234,16 @@ rider's bytes take longer to move than the step takes to compute, the step
 r^{*} \;=\; \frac{\mathrm{ITL}_0 \cdot \Xlink}{S \btok},
 \end{equation}
 %
-the same ratio as Eq.~\ref{eq:boff} but read as a rate rather than a capacity. We
+the same ratio as Eq.~\ref{eq:boff} but read as a rate rather than a capacity.
+\textbf{We are not the first to this boundary, which is some comfort given that
+everything downstream depends on it.} BOOST~\cite{boost} derives the optimal share
+of accesses to serve from host memory as $\alpha/(1{+}\alpha)$ for a host-to-HBM
+bandwidth ratio $\alpha$, and measures the optimum on a GH200 at $8.3\%$ against
+$9.1\%$ predicted; DAK~\cite{dak} reaches the same expression as
+$B_h/(B_h{+}B_g)$. Those are the per-byte form of Eq.~\ref{eq:knee}: multiply an
+optimal host \emph{fraction} by the step's bytes and divide by the bytes one request
+contributes, and the two coincide. Our contribution on this point is the
+\emph{request-granular} form and its integer floor, below. We
 evaluate $\mathrm{ITL}_0$ here at its weight-read-bound value, which omits the
 resident cohort's own KV read and is therefore a \emph{lower} bound on the compute
 window a transfer can hide inside; the rider counts below are correspondingly

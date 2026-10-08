@@ -146,9 +146,10 @@ from a co-located run, and we withdraw that too.
 \includegraphics[width=0.49\textwidth]{figs/f7.pdf}
 \caption{\textbf{Left: the knee is where Eq.~\ref{eq:knee} says it is.} Two
 contexts give two predicted crossings --- $r^{*} = 4.16$ at 1080 tokens and
-$3.18$ at 1440 --- and in each case the measured cost tracks the affine law up to
-$\lfloor r^{*}\rfloor$ and then leaves it, by $1.6\times$ and $1.7\times$ at the
-next rider. Both panels are measured on A100/PCIe with no projection involved; the
+$3.18$ at 1440 --- and in each case the measured cost follows a line up to
+$\lfloor r^{*}\rfloor$ and then leaves it, by $1.37\times$ and $1.34\times$ at the
+next rider; in marginal terms that rider costs $5.2\times$ and $3.4\times$ its
+predecessor. Resident batch 8 in both panels. Both panels are measured on A100/PCIe with no projection involved; the
 dashed continuation is where a fit that ignored the boundary would be pulled, which
 is how we previously obtained a \emph{negative} fixed cost. We do not label $F$ and
 $c$ per panel, because at these contexts only three or four points lie below the
@@ -186,8 +187,10 @@ $\ell$ sized on the \emph{final} sequence length so generation is counted) gives
 clean affine fit in which both coefficients are well identified: across seven arms
 $c$ repeats to $1.5\%$ and $F$ to $10\%$ between runs of one configuration.
 Figure~\ref{fig:coeffs} (left) shows the boundary directly, at two contexts whose
-predicted crossings differ: the law holds up to $\lfloor r^{*}\rfloor$ and the next
-rider costs $1.6$--$1.7\times$ what the line predicts. \textbf{That is
+predicted crossings differ. The line in each panel is \emph{refitted to that
+panel} and is not Eq.~\ref{eq:coeffs}, which is measured at a context two
+octaves away and does not predict these magnitudes; what the panels test is the
+\emph{location} of the boundary, not the value of the coefficients. \textbf{That is
 Eq.~\ref{eq:knee} validated on both sides, measured, with no projection involved},
 and it is the reason the knee rather than the per-request price is what a faster
 interconnect buys.
@@ -202,6 +205,51 @@ Eq.~\ref{eq:coeffs} is that fit. Two of its properties were surprises:
   $0.010$\,ms. Below the knee the prefetch hides the bytes completely, so $c$ is
   exposed launch and host work --- and a faster link cannot reduce it.
 \end{itemize}
+
+\paragraph{The retraction, tested where it can be falsified.}
+Discarding a context term is the kind of claim that should be attacked, so we attack
+it with the one comparison that separates context from transfer-exposure. The two
+move together as the knee is approached --- a longer context raises
+\emph{both} the bytes per request and $\ell/T_0$ --- so a point near the knee cannot
+tell them apart. Differencing two adjacent rider counts cancels $F$ identically and
+leaves the marginal cost of one request, and we take that difference at two contexts
+a factor of two apart whose $\ell/T_0$ stays under $0.12$:
+
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+ & ctx 128 & ctx 256 & change \\
+\midrule
+$\ell/T_0$ & 0.07 & 0.12 & --- \\
+$\Delta T(2) - \Delta T(1)$, measured & $1.17$\,ms & $1.13$\,ms & $\mathbf{-3\%}$ \\
+the withdrawn $c = 0.205 + 1.84{\times}10^{-3}S$ & $0.44$ & $0.68$ & $+53\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+% src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
+% paper/data/overhead/15_clean_cf/CF_c256.json,
+% paper/data/overhead/21_fusion_bound/FB_base_a.json
+
+Doubling the context moves the marginal cost by $-3\%$ where a context-dependent
+$c$ requires $+53\%$. \textbf{So the bytes are not in $c$, and the withdrawn law
+survives only where it cannot be distinguished from transfer exposure.} It does fit
+the two highest-context points of Fig.~\ref{fig:coeffs} to within $9\%$ --- but
+those sit at $\ell/T_0$ of $0.48$ and $0.63$, and the law was itself fitted across
+the knee, so there it is a proxy for exposure rather than for context.
+
+\paragraph{One honest complication: $\Delta T$ is mildly concave.}
+The affine law is an approximation, and the direction of its error should be stated.
+Successive increments fall --- at context 1080 they run $6.01$, $2.40$, $1.21$,
+$1.26$\,ms --- so the first request carries part of what a line books as $F$, and a
+slope fitted over $r = 1\ldots8$ sits \emph{below} the marginal cost at
+$r = 1 \to 2$ ($0.52$ against $1.17$\,ms at context 128). Both numbers are real and
+they are different quantities. Fitting $\Delta T = F + c\,r^{\alpha}$ instead does
+not help: across fit windows $\alpha$ moves between $0.40$ and $1.09$ on data from
+one configuration, so it is \textbf{unidentified}, and we decline to report an
+exponent we cannot pin. The consequence for \S\ref{sec:model} is that $F$ and $c$
+must be used as the \emph{pair} the same regression produced, over the rider range
+it was fitted on, which is what Table~\ref{tab:gain} does; neither is meaningful
+alone.
 % src: paper/data/overhead/15_clean_cf/CF_c128_a.json,
 % paper/data/overhead/15_clean_cf/CF_c256.json,
 % paper/data/overhead/15_clean_cf/MB_c128.json

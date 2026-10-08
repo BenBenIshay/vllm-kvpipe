@@ -16,32 +16,42 @@
 % What replaces them is the thing that makes the mechanism general: the host cohort
 % is sized from what the server OBSERVES, so the same system declines to use the
 % second tier where it cannot pay. That is the claim the paper can make everywhere.
+%
+% UPDATE 2026-10-08, second review. The projections are BACK, and so is the measured
+% loss, because 325 words with no outcome in them reads as a paper with no outcome --
+% which is a worse failure than quoting a projection. They are labelled as
+% projections, the range is the full one from Table 2 (x1.04 to x1.37, not the top
+% two rows, which was a cherry-pick against our own table), and the loss is given as
+% a number rather than named.
 \begin{abstract}
-On a decode node the batch is limited by KV-cache capacity rather than by
-arithmetic: the KV cache exhausts device memory well before the arithmetic units are
-busy, so the server turns requests away while the GPU idles. Coherent CPU--GPU
-interconnects make host DRAM fast enough to hold the KV of an \emph{actively
-decoding} request, but existing systems choose \emph{how much} KV sits on the host
-and never \emph{whose}: they place none, or a uniform fraction of every request, or
-a bandwidth-proportional share of each memory access, or whole requests in rotation
---- pausing each one while its KV is parked. \textbf{None decides which requests
-live in which tier while all of them keep running.}
+In one regime a decode server's batch is capped by KV-cache capacity rather than
+by arithmetic: a model whose weights fill most of the device leaves too little for
+KV, so the server turns requests away while the arithmetic units
+idle~\cite{bottlenecks}. Coherent CPU--GPU
+interconnects --- $350$--$419$\,GB/s measured for NVLink-C2C --- make host DRAM fast
+enough to hold the KV of an \emph{actively decoding} request. But existing systems
+choose \emph{how much} KV sits on the host and never \emph{whose}: a uniform
+fraction of every request, a bandwidth-proportional share of each access, or whole
+requests in rotation, paused while their KV is parked. \textbf{None decides which
+requests live in which tier while all of them keep running.}
 
 We present a heterogeneous KV memory that manages HBM and host DRAM as one store and
 assigns each request a tier. A \emph{host-tier} request holds no device blocks while
-it generates: its KV is streamed one layer at a time, just ahead of the attention
-that consumes it, and both tiers are rows of a \textbf{single forward pass}, so the
-weights are read once however the batch is split. An admission controller sizes the
+it generates: its KV, delivered to host memory by a disaggregated prefill node, is
+streamed one layer at a time just ahead of the attention that consumes it, and both
+tiers are rows of a \textbf{single forward pass}, so the weights are read once
+however the batch is split. An admission controller sizes the
 host cohort from the step time and link bandwidth it \emph{measures at runtime},
 admitting none where the interconnect cannot hide the transfer.
 
 We implement this in vLLM and decompose what a host-tier request costs: a fixed
-per-step component, a per-request component, and a knee beyond which the step is the
-transfer rather than the compute. Below the knee the per-request term carries
-\emph{no} bandwidth term at all, so a faster interconnect buys a higher knee rather
-than a cheaper request --- which inverts how the choice of interconnect is usually
-argued. On the PCIe part we have, the model predicts and we then measure a net
-\textbf{loss}; on a coherent link it projects gains of $\times1.25$ to
-$\times1.37$, and we check its inputs against published Grace-Hopper measurements
-rather than asking the reader to take the extrapolation on trust.
+per-step term, a per-request term, and a knee past which the step \emph{is} the
+transfer. Well below the knee the per-request term carries no bandwidth at all, so a
+faster interconnect buys a higher knee rather than a cheaper request --- inverting
+how that choice is usually argued --- and we confirm the knee's predicted location
+at two contexts, on both sides. On the PCIe part we have, the model predicts and we
+measure a $2.3\%$ throughput \textbf{loss} with median inter-token latency up
+$40\%$. On a coherent link it projects $\times1.04$ to $\times1.37$, ordered by how
+much of device memory the weights consumed; we check its inputs against published
+Grace-Hopper measurements and name the two that remain unchecked.
 \end{abstract}

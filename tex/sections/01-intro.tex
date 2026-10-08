@@ -59,9 +59,8 @@ request keeps running. That choice is worth making for a reason visible before a
 measurement: each endpoint leaves one memory path idle, and a system that places
 some requests in each reads from both, so its batch is bounded by the \emph{sum} of
 what the two paths support rather than by either alone. For one configuration we
-model in \S\ref{sec:model} that sum is \textbf{18 against 12} all-HBM and
-\textbf{6 all-host} (Table~\ref{tab:endpoints}) --- the two endpoints the field
-currently occupies. Choosing per request also frees capacity in whole requests
+model in \S\ref{sec:model} that sum is \textbf{18 against 12} for an all-HBM pool
+of the same size (Table~\ref{tab:endpoints}, Appendix~\ref{app:related}). Choosing per request also frees capacity in whole requests
 rather than in proportion, and spends link bandwidth only on the requests selected
 for it.
 
@@ -133,8 +132,11 @@ same price (\S\ref{sec:eval:cost}).
 That settles the PCIe case, since a larger batch pays only if the step grows by
 less: the link affords two host-tier requests on sixteen residents, a batch of
 $1.13\times$ against a step growing $1.31\times$, for a product of $0.86\times$.
-The mechanism itself we confirm independently of its economics, raising peak
-concurrency against a fixed KV pool from 8 to 48 (\S\ref{sec:eval:capacity}).
+The mechanism itself we confirm independently of its economics: against a fixed KV
+pool the host tier admits requests the device pool could not hold at all, at a
+throughput this link makes negative (\S\ref{sec:eval:capacity}). Capacity without
+throughput is the honest description of a mechanism check, and it is all that
+experiment claims.
 % src: paper/data/preload_capacity.json @ f3df05bdb
 On a coherent link the model projects gains for all four configurations, from
 $\times 1.04$ to $\times 1.37$, ordered by how much of the device the weights
