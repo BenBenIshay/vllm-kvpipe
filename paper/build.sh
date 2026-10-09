@@ -125,4 +125,21 @@ else
 fi
 echo "$pages, $overfull overfull hbox warning(s) (cosmetic)"
 echo "PDF: $BUILD/main.pdf"
+
+# ALWAYS DEPOSIT A COPY IN ONE FIXED PLACE. paper/out/ is gitignored and this
+# script wipes it on every run, so anything left only there is gone by the next
+# build -- which turned "where is the paper" into a repeated search. One directory,
+# two stable filenames, overwritten in place, so the newest build is always at the
+# same path.
+VERSIONS=/mnt/beegfs/benishay/paper_versions
+if mkdir -p "$VERSIONS" 2>/dev/null; then
+  if [[ $ARXIV -eq 1 ]]; then dest="$VERSIONS/paper-preprint-latest.pdf"
+  else                        dest="$VERSIONS/paper-venue-latest.pdf"; fi
+  cp "$BUILD/main.pdf" "$dest" 2>/dev/null && echo "also: $dest"
+  # and a dated, commit-stamped copy, so history accumulates without being
+  # overwritten and every PDF can be traced to the source that produced it
+  stamp="$(date +%Y%m%d-%H%M)-$(cd "$PAPER_DIR/.." && git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  variant=$([[ $ARXIV -eq 1 ]] && echo preprint || echo venue)
+  cp "$BUILD/main.pdf" "$VERSIONS/paper-$variant-$stamp.pdf" 2>/dev/null
+fi
 exit $status
