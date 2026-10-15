@@ -1,0 +1,69 @@
+%% NEW 2026-10-15. The design space the cost floor implies. This is the figure
+%% that turns the related-work table (Tab.~\ref{tab:related}) from a list of
+%% systems into points on one curve, and it makes a prediction.
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\scriptsize,
+  sys/.style={draw, rounded corners=2pt, align=center, inner sep=1.3mm,
+              fill=black!5, font=\scriptsize},
+  ours/.style={sys, fill=blue!12, draw=blue!50},
+  ann/.style={font=\tiny, text=black!65, align=center},
+  axl/.style={font=\scriptsize\itshape, text=black!70},
+  arr/.style={-{Latex[length=1.6mm]}, semithick},
+]
+
+%% axis: the transfer quantum q
+\draw[arr, black!60] (0,0) -- (9.4,0);
+\node[axl, anchor=west] at (0,-0.42)
+     {transfer quantum $q$ \ $\longrightarrow$};
+
+\foreach \x/\t in {1.3/{one tile}, 4.6/{one layer}, 8.1/{all $L$ layers}} {
+  \draw[black!50] (\x,0.12) -- (\x,-0.12);
+  \node[ann, anchor=north] at (\x,-0.72) {\t};
+}
+
+%% the three systems
+\node[sys, anchor=south] at (1.3,0.45) {DirectKV\\{\tiny$f{=}1$}};
+\node[ours, anchor=south] at (4.6,0.45) {\textbf{ours}, Pie\\{\tiny$f{=}1$ \ / \ $f{=}m/L$}};
+\node[sys, anchor=south, fill=black!3, draw=black!25] at (8.1,0.45)
+     {\textcolor{black!55}{(no offload)}};
+
+%% the two consequences, moving in opposite directions
+\draw[arr, red!60] (0.9,1.75) -- (8.5,2.55);
+\node[ann, text=red!70, anchor=west] at (8.6,2.6) {device\\footprint};
+\node[ann, text=red!70, anchor=west] at (1.0,1.95) {$\approx 0$};
+\node[ann, text=red!70, anchor=west] at (4.2,2.33) {$2/L$};
+\node[ann, text=red!70, anchor=east] at (8.45,2.40) {$1$};
+
+\draw[arr, blue!65] (0.9,3.55) -- (8.5,4.35);
+\node[ann, text=blue!75, anchor=west] at (8.6,4.4) {compute to\\hide behind};
+\node[ann, text=blue!75, anchor=west, align=left] at (0.95,4.45)
+     {one tile's arithmetic.\\At $4$--$8$ FLOP/byte,\\\textbf{almost nothing}};
+\node[ann, text=blue!75, anchor=west] at (4.3,4.45) {one layer: ample};
+
+%% the prediction
+\draw[black!25, densely dashed] (2.9,-1.05) -- (2.9,5.0);
+\node[ann, anchor=north east, align=right, text=black!70] at (2.8,-1.15)
+     {\textbf{needs a coherent link}:\\
+      the transfer must be \emph{fast},\\
+      because it cannot be \emph{hidden}};
+\node[ann, anchor=north west, align=left, text=black!70] at (3.0,-1.15)
+     {\textbf{a slower link suffices}:\\
+      a layer of compute is enough\\
+      to hide the transfer under};
+\end{tikzpicture}}
+\caption{\textbf{One axis, and what it predicts.} Every design that serves
+non-resident KV chooses a transfer quantum $q$, and $q$ fixes two things at once
+and in \emph{opposite} directions: the device memory that must stay resident
+($\ge 2q$), and the amount of arithmetic available to hide the transfer behind.
+Because decode runs at $4$--$8$ FLOP per byte, a tile's own arithmetic hides
+almost nothing --- so a tile-granular design has no device footprint and
+\emph{must} have a fast link, while a layer-granular one pays $2/L$ and can hide a
+slower one. The second parameter, $f$, is the fraction of a request's KV held off
+the device: what the design saves. This is the reason behind the partition axis of
+Tab.~\ref{tab:related}, and it is a statement about the design space rather than
+about our implementation.}
+\label{fig:fq}
+\end{figure}
