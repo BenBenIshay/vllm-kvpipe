@@ -1,7 +1,27 @@
 # Co-serving a host-DRAM KV tier: architecture, flows, and the cost floor of a multi-tier KV system
 
 Working document for agreeing chapters 3 and 4. Every number is measured and
-sourced; diagrams are the primary content and the prose explains them.
+sourced.
+
+> ## Read the figures first
+>
+> **`/mnt/beegfs/benishay/paper_versions/design-figures.pdf`** --- all seven figures,
+> typeset. Figures 1--3 are already in the paper; **4--7 are new** and are the ones
+> proposed for chapters 3 and 4. Sources are `paper/tex/sections/fig-*.tex`, they are
+> TikZ, and `./paper/build.sh` compiles clean with them.
+>
+> | # | label | what it shows | status |
+> |---|---|---|---|
+> | 1 | `fig:arch` | the data path across both tiers | in the paper |
+> | 2 | `fig:exec` | one layer, one forward pass | in the paper |
+> | 3 | `fig:pipeline` | the $k$-slot rotation | in the paper |
+> | **4** | `fig:addr` | three address spaces; the release/reissue hazard | **new** |
+> | **5** | `fig:basevsopt` | **base vs optimised host path on one timeline** | **new** |
+> | **6** | `fig:ladder` | both coefficients on log axes, against the gate | **new** |
+> | **7** | `fig:fq` | the transfer-quantum axis, and its prediction | **new** |
+>
+> If you only look at two: **Fig. 5** carries the whole campaign, and **Fig. 6**
+> shows the obvious implementation sitting *above* the line no bandwidth can rescue.
 
 ---
 
@@ -9,12 +29,12 @@ sourced; diagrams are the primary content and the prose explains them.
 
 | § | content | paper block? |
 |---|---|---|
-| 1 | the mechanism, one diagram | **yes** -- §4 opener, replaces `fig:arch` |
-| 2 | memory and the three address spaces | **yes** -- §4, the forced-design argument |
+| 1 | the mechanism (Fig. 1) | **yes** -- §4 opener |
+| 2 | memory and the three address spaces (Fig. 4) | **yes** -- §4, the forced-design argument |
 | 3 | the six components and their state | reference only |
-| 4 | the five main flows, one diagram each | **yes** -- `fig:exec` and `fig:pipeline` come from 4.2 and 4.3 |
-| 5 | base vs optimised: what the campaign changed | **yes** -- §6, as a before/after |
-| 6 | **the cost floor, component by component, with costs** | **yes** -- new §3 subsection; this is the contribution |
+| 4 | the five main flows (Figs. 2, 5) | **yes** -- Fig. 5 is the highest-value new figure |
+| 5 | base vs optimised: what the campaign changed (Fig. 6) | **yes** -- §6, as a before/after |
+| 6 | **the cost floor, component by component, with costs** (Fig. 7) | **yes** -- new §3 subsection; this is the contribution |
 | 7 | the shortlist of extractable blocks, with reasons | -- |
 | 8 | defects found while writing | -- |
 
@@ -26,45 +46,11 @@ licenses the claim that our costs are near the floor rather than merely measured
 
 ## 1. The mechanism
 
-```
-                              requests
-                                 |
-                                 v
-                    +--------------------------+
-                    |        ADMISSION         |
-                    |  byte roofline against   |
-                    |  a hide budget measured  |
-                    |  on rider-free steps     |
-                    +------------+-------------+
-                      tier=hbm   |   tier=cpu
-            +--------------------+------------------+
-            |                                       |
-  ==========|============ GPU / HBM ================|=================
-            v                                       v
-   +--------------------+        +-----------------------------------+
-   |      WEIGHTS       |        |            KV MEMORY              |
-   |                    |        | +---------------+ +-------------+ |
-   |  read ONCE per     |        | |  paged pool   | |   ROLLING   | |
-   |  step for ALL      |        | |  (residents)  | |   REGION    | |
-   |  B+r rows          |        | |               | |             | |
-   |                    |        | | [R1][R2][R3]  | | k slots,    | |
-   |  <-- this is the   |        | |               | | shared by   | |
-   |      entire        |        | |               | | ALL L       | |
-   |      economic      |        | |               | | layers      | |
-   |      argument      |        | |               | | [s0][s1]... | |
-   +--------------------+        | +---------------+ +------^------+ |
-                                 +------------------------- | -------+
-  ========================================================= | =======
-                           H2D: b_tok*S per rider per step   |
-                           D2H: 1 token per layer            |
-  ======================== host DRAM (pinned) ============== | =======
-   +---------------------------------------------------------v------+
-   |  AUTHORITATIVE KV MIRROR -- its own private block-id space      |
-   |                                                                 |
-   |  [===== rider A =====][===== rider B =====][===== rider C =====] |
-   |   one contiguous extent per request                             |
-   +-----------------------------------------------------------------+
-```
+
+> **Figure 1 --- `fig:arch`** (`paper/tex/sections/fig-arch.tex`, already in the paper).
+> The data path: host mirror, the $k$-slot rolling region, and attention reading both
+> tiers in one forward pass.
+
 
 **Two tiers, one forward pass.** A **resident** keeps its whole KV in the paged pool,
 exactly as unmodified vLLM would. A **rider** keeps its KV in pinned host DRAM and,
@@ -94,31 +80,11 @@ and the mixture could not beat all-resident at any link speed.**
 
 ## 2. Memory and the three address spaces
 
-```
-  (i) PRIVATE HOST BLOCK SPACE  [0, h_max)          indexes the pinned mirror
-  +--------------------------------------------------------------+
-  | A: 0 1 2 3 4 5 | B: 32 33 34 35 | C: 64 65 66 |  ...         |
-  +--------------------------------------------------------------+
-        |  one contiguous EXTENT per request, freed only at finish
-        |
-        |   _plan_extents, ONCE PER STEP   -> runs + compact bases
-        v
- (iii) COMPACTED ROLLING SPACE  [0, W)             indexes the rolling slots
-  +---------------------------------------+
-  | A: 0 1 2 3 | B: 4 5 6 | C: 7 8 |      |   dense, only ACTIVE blocks
-  +---------------------------------------+
-        |
-        |   layer l reads slot (l mod k)  -- a BASE POINTER change, not a remap
-        v
-  slot s0 [ ........ ]   slot s1 [ ........ ]   ...   k slots total
 
+> **Figure 4 --- `fig:addr`** (`paper/tex/sections/fig-addr.tex`, **new**).
+> The three address spaces, the once-per-step compaction between them, and the
+> release/reissue hazard that forces the private host space.
 
-  (ii) DEVICE PAGED BLOCK SPACE  [0, num_gpu_blocks)   vLLM's ordinary pool
-  +--------------------------------------------------------------+
-  | residents only.  A rider's prefill blocks live here BRIEFLY  |
-  | and are RELEASED once the worker acknowledges the seed.       |
-  +--------------------------------------------------------------+
-```
 
 ### Why the mirror cannot be keyed by device block id -- the forced decision
 
@@ -179,41 +145,20 @@ Two admission details worth keeping in the chapter:
 
 ### 4.1 Admission and tier assignment
 
-```
-   request arrives
-        |
-        v
-   +--------------------------------------------------+
-   | is a resident slot free (count < b_hbm_max)?     |
-   +--------------------------------------------------+
-        | yes                              | no
-        v                                  v
-   policy == arrival ?              +------------------------+
-     yes -> tier = hbm              | B1 BYTE ROOFLINE       |
-     no  -> score host_affinity     |                        |
-            = w*idle + (1-w)*rem    | sum_i b_tok*S_i        |
-            >= threshold            |   <= budget_ms*X*(1-m) |
-              ? tier = cpu          +------------------------+
-              : tier = hbm             | pass          | fail
-                                       v               v
-                                   tier = cpu       REJECT
-                                                   (queue)
-```
+
+> **Admission**, as a decision: a free resident slot plus the `arrival` policy gives
+> `hbm`; otherwise `host_affinity = w*idle + (1-w)*remaining` against a threshold;
+> otherwise the B1 byte roofline `sum_i b_tok*S_i <= budget_ms * X * (1-margin)`, and
+> a failure means the request waits rather than becoming a rider.
+
 
 Then, each step, under the scored policy only:
 
-```
-   +-------------------+   ITL > 0.95*SLO   +--------------------+
-   | hysteresis window |------------------->| DEMOTE 1 request   |
-   |                   |   ITL < 0.70*SLO   | open a PROBE:      |
-   |                   |<-------------------|  base = min(EMA)   |
-   +-------------------+       PROMOTE      +---------+----------+
-                                                     |
-                               after PROBE_STEPS=16  v
-                            worse than base*(1+margin) ?
-                                yes -> REVERT, suppress, double the backoff
-                                no  -> keep
-```
+
+> **Migration**, under the scored policy only: demote above `0.95*SLO`, promote below
+> `0.70*SLO`, and **every demotion opens a probe** against `min(EMA window)` that
+> reverts after 16 steps if ITL got worse, then doubles its backoff.
+
 
 The probe exists because **the byte roofline cannot see the host path's fixed
 per-step cost**: a byte-legal demotion was measured driving ITL from ~6 to ~24 ms.
@@ -223,43 +168,10 @@ demotion look like an improvement.
 
 ### 4.2 The decode step
 
-```
-  ONCE PER STEP (host, before layer 0)
-  +---------------------------------------------------------------+
-  | S1 observe last step's time -> hide budget (rider-free only)  |
-  | S2 rider past prefill: allocate_slots -> EMPTY   <-- the win  |
-  | S3 release pool blocks for riders acked last step             |
-  | S4 classify rows by tier; build rider row/query index lists   |
-  | S5 FLUSH last step's deferred mirror writes                   |
-  |      one event wait + 2 vectorised index_copy_                |
-  | S6 _plan_extents -> runs, compact bases, W                    |
-  |      build ONE [r, max_blk] block table + seqused   O(r log r)|
-  | S7 publish index tensors; slot_mapping[rider rows] = -1       |
-  +---------------------------------------------------------------+
-                                |
-            +-------------------+ repeat for l = 0 .. L-1
-            v
-  PER LAYER
-  +---------------------------------------------------------------+
-  | L1 QKV, RoPE, vLLM cache write   (rider rows write NOWHERE)   |
-  |                                                               |
-  | L2 attention over ALL B+r rows                                |
-  |      rider rows masked: seqused_k = 1, so they attend 1 key   |
-  |                                                               |
-  | L3 H2D  mirror --> rolling slot (l mod k)        [OVERLAPPED] |
-  |      one contiguous copy per run per tensor                   |
-  |                                                               |
-  | L4 gather this step's new K,V for rider rows                  |
-  | L5 write them into the rolling slot          (device, must    |
-  |      precede L6 -- a rider attends its own key)               |
-  |    + async copy toward pinned staging           [OVERLAPPED]  |
-  |                                                               |
-  | L6 gather rider queries; SECOND ATTENTION CALL over r rows    |
-  |      against the rolling slot, reusing the step's ONE table   |
-  |                                                               |
-  | L7 scatter the result over the masked rows                    |
-  +---------------------------------------------------------------+
-```
+
+> **Figure 2 --- `fig:exec`** (`paper/tex/sections/fig-exec.tex`, already in the paper)
+> for the per-layer structure; the two tables below give the full order.
+
 
 **Two things this makes visible, both of which the paper currently gets wrong.**
 
@@ -280,38 +192,12 @@ demotion look like an improvement.
 This is the diagram the chapter needs most, because it is where the campaign's whole
 gain lives.
 
-```
-  BASE (as first built)
-  layer:        0                1                2
-  compute   [==A0==]         [==A1==]         [==A2==]
-  H2D          [---H0---]       [---H1---]       [---H2---]
-                  ^ issued INLINE, nothing ahead
-  D2H            [B][B]           [B][B]           [B][B]
-                  ^ BLOCKING .to("cpu") -- 2 serialisation points per layer
-  host      ...wait...  ...wait...  ...wait...   = 2L = 128 sync points/step
-  mirror     scatter     scatter     scatter     per layer, L separate tensors
 
-  gather     [=========== 22 ms CPU staging copy per layer ===========]
-             strided mirror -> a strided H2D cannot be a pinned DMA, so
-             torch materialises on the HOST first.  98% of stream_layer.
+> **Figure 5 --- `fig:basevsopt`** (`paper/tex/sections/fig-basevsopt.tex`, **new**).
+> **The single most valuable figure here.** Base and optimised host paths on one
+> timeline: inline-and-blocking becomes prefetched-and-deferred, and the 22 ms
+> per-layer host gather disappears entirely.
 
-
-  OPTIMISED (post-campaign)
-  layer:        0        1        2        3
-  compute   [==A0==][==A1==][==A2==][==A3==]
-  H2D       [--H1--][--H2--][--H3--][--H4--]
-             ^ prefetched on a side stream, k-1 layers of slack
-  D2H       [a][a]  [a][a]  [a][a]  [a][a]
-             ^ async, non-blocking, into ONE pinned staging tensor
-  host      (no wait at all during the step)
-  mirror                                    --> next step's S5:
-                                                1 event wait
-                                              + 2 vectorised index_copy_
-
-  gather     none.  Block-major split K/V means a run is ONE contiguous byte
-             range on both sides; the DMA engine does the compaction.
-             1.38 ms/layer, 24.38 GB/s (was 6.89 ms, 4.87 GB/s).
-```
 
 **The quantum trade, in one line.** The rolling region holds `k` slots so that one
 slot can be filled while another is read. The quantum you pipeline at -- here, one
@@ -321,21 +207,10 @@ of the design space.
 
 ### 4.4 The token write-back -- BASE vs OPTIMISED
 
-```
-  BASE                                  OPTIMISED
-  per layer:                            per layer:
-    new K,V --> rolling slot              new K,V --> rolling slot
-    new K,V --.to("cpu")--> host          new K,V --async--> pinned staging
-      BLOCKING, pageable                    non-blocking, ONE [L,n,..] tensor
-    index_copy_ into mirror[l]            append (l, host_pos, n) to pending
-                                          event.record()
-  cost: 2L blocking copies              next step S5:
-        + 2L host scatters                 event.synchronize()  (usually free)
-        F = 13.4 ms                        2 x index_copy_ over the WHOLE step
-                                        cost: 2L async copies + 2 scatters
-                                              F = 5.8 ms  (T2)
-                                              -0.32 ms more from T7a
-```
+
+> Folded into **Figure 5**: the write-back is the `D2H` and `host` rows of both
+> panels, and the deferred flush is the box at the next step's boundary.
+
 
 Two subtleties the chapter should carry:
 
@@ -350,25 +225,14 @@ Two subtleties the chapter should carry:
 
 ### 4.5 Seeding, reclaim, promotion
 
-```
-  FIRST SIGHT of a rider                      PROMOTION (rider -> resident)
-  +---------------------------+               +----------------------------+
-  | external delivery?        |               | phase 1: mark only;        |
-  |   yes -> preload_req      |               |   lift the block cap;      |
-  |          (never touches   |               |   refill_tier_blocks to    |
-  |           HBM)            |               |   fill the holes the cap   |
-  |   no  -> seed_req         |               |   left in the block table  |
-  |          (gather from     |               | gate: count NON-NULL       |
-  |           resident blocks)|               |   entries, all-or-nothing  |
-  +------------+--------------+               | phase 2: commit;           |
-               |                              |   restore_req copies       |
-               v                              |   host -> resident before  |
-  ack in ModelRunnerOutput                    |   attention               |
-  .kv_tier_seeded_req_ids                     +----------------------------+
-               |
-               v
-  scheduler releases the pool blocks   <-- only now is memory actually freed
-```
+
+> **Seeding** is `preload_req` (external delivery, never touches HBM) or `seed_req`
+> (gather from the request's own resident blocks). Either way the pool blocks are
+> released **only** after the worker acknowledges, via
+> `ModelRunnerOutput.kv_tier_seeded_req_ids`. **Promotion** is two-phase: mark and
+> refill the block-table holes the cap left, gate on *non-null* entries
+> all-or-nothing, then commit and copy host to resident before attention.
+
 
 Three vLLM behaviours force this shape:
 
@@ -388,27 +252,12 @@ Three vLLM behaviours force this shape:
 
 ### 5.1 The two phases, with their measured coefficients
 
-```
-  FIXED COST  F  (ms/step at L=64)        PER-RIDER COST c (ms/rider)
 
-  37.02  base, as first working            5.17  O(blocks) block-table build
-    |                                        |     (3.917 ms/rider at ctx 8192,
-    | -12.2  int(_crr.max()) per layer       |      and GROWING with context)
-  24.78    flash_attn.py:1056                |
-    | -4.7   scatter indices rebuilt         | -3.9  T1: O(r) slice assignment
-  20.05     per layer, write_token           |       from the extent guarantee
-    | -4.0   int(seqused.max()) + arange   1.26
-  16.10     per layer, kv_tier_backend       |
-    | -3.8   (fourth site)                   | ... clean below-knee re-fit ...
-  12.29  end of the "loop-invariant work   0.52  c(L) = 0.177 + 0.0054*L
-    |     inside the per-layer loop" phase        at L=64; 0.61 at L=80
-    |
-    | T2 -7.6  deferred batched mirror write
-   5.80
-    | T7a -0.32  vectorised scatter (one pinned allocation)
-    | T8  -2.0   stop a DISABLED feature flushing every layer
-   3.36  final, 3 arms, within-job spread 0.09
-```
+> **Figure 6 --- `fig:ladder`** (`paper/tex/sections/fig-ladder.tex`, **new**).
+> Both coefficients on log axes, with the profitability gate `c < T0/B = 3.37` drawn
+> across panel (b) --- so the `O(blocks)` build is visibly *above* the line that no
+> bandwidth can rescue.
+
 
 The four pre-campaign sites were **one species**: loop-invariant work executed inside
 the per-layer loop. The first is the best story in the project -- a device reduction
@@ -416,7 +265,7 @@ plus a `.item()` evaluated once per layer **inside a guard whose purpose is to s
 expensive KV reads.** An optimisation was paying a full pipeline drain per layer to
 decide whether to optimise.
 
-> **Do not chain the two columns.** The `5.17` and `1.26` figures are fits that
+> **Do not chain the three points in panel (b).** The `5.17` and `1.26` figures are fits that
 > included points above the knee; the `0.52` is a clean below-knee fit. They are
 > separate measurements of the same quantity under different protocols, not a
 > sequence. The honest statement is: T1 cut the addressing term by ~1234x at the
@@ -476,21 +325,10 @@ cannot see them, and that is why the earlier +10-point fusion estimate was wrong
 Independent of implementation, a system serving a request whose KV is not in device
 memory, in the same forward pass as requests whose KV is, must:
 
-```
-  +----+--------------------------------------------------+--------------+
-  | #  | obligation                                       | escapable?   |
-  +----+--------------------------------------------------+--------------+
-  | C1 | move the KV across the link, once per step       | NO (identity)|
-  | C2 | land layer l's KV before layer l's attention     | NO           |
-  | C3 | hold >= 2 transfer quanta on the device          | NO           |
-  | C4 | pass each KV byte through HBM twice (staged)     | only by      |
-  |    |   -- write by the copy engine, read by attention |  zero-copy   |
-  | C5 | tell attention which address space each row uses | NO           |
-  | C6 | order the transfer against compute               | only by      |
-  |    |                                                  |  intra-kernel|
-  | C7 | get the new token to the authoritative copy      | NO           |
-  +----+--------------------------------------------------+--------------+
-```
+
+> The seven obligations are the `#` column of the floor table in section 6.2; each is
+> listed there with its floor, our base cost, our optimised cost and a verdict.
+
 
 ### 6.2 The floor, our base, and our optimised cost
 
@@ -527,19 +365,12 @@ open with no known route.**
 
 The twelve rows above collapse onto two design parameters:
 
-```
-      q = transfer quantum you pipeline at
-      |
-      |  tile                     layer                    all L
-      |  (DirectKV)               (ours, Pie)              (= no offload)
-      +----------------------------------------------------------------->
-  device   ~0                     2/L                       1
-  footprint
-  compute  one tile's arithmetic  one layer's arithmetic    --
-  to hide  (at 4-8 FLOP/byte,     (plenty)
-  behind    ~nothing)
-  needs    a COHERENT link        a slower link is enough
-```
+
+> **Figure 7 --- `fig:fq`** (`paper/tex/sections/fig-fq.tex`, **new**).
+> The transfer quantum `q` on one axis, with the device footprint and the hideable
+> compute moving in opposite directions, and the three systems placed --- which is
+> what makes the coherent-link requirement a *prediction* rather than an observation.
+
 
 > **`q` sets both the device footprint and the compute available to hide the transfer
 > behind, and it sets them in opposite directions.** That is the trade no multi-tier
