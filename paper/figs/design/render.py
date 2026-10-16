@@ -32,16 +32,19 @@ SECTIONS = os.path.join(PAPER, "tex", "sections")
 FIGS = [
     ("fig-arch",      "01-arch"),
     ("fig-addr",      "02-addr"),
-    ("fig-exec",      "03-exec"),
-    ("fig-basevsopt", "04-basevsopt"),
-    ("fig-pipeline",  "05-pipeline"),
-    ("fig-ladder",    "06-ladder"),
-    ("fig-fq",        "07-fq"),
+    ("fig-admit",     "03-admit"),
+    ("fig-step",      "04-step"),
+    ("fig-exec",      "05-exec"),
+    ("fig-pipeline",  "06-pipeline"),
+    ("fig-basevsopt", "07-basevsopt"),
+    ("fig-ladder",    "08-ladder"),
+    ("fig-fq",        "09-fq"),
 ]
 
-# Wide figures (figure*) need a wider page or they are typeset into a narrow column
-# and overflow. Everything else gets a normal column width.
-WIDE = {"fig-arch", "fig-basevsopt"}
+# A figure whose natural width exceeds one column gets a wider page, so \resizebox
+# is not forced to shrink it into illegibility. This affects only the rendered PNG;
+# in the paper the figure's own float class decides.
+WIDE = {"fig-arch", "fig-basevsopt", "fig-step", "fig-admit", "fig-pipeline"}
 
 PREAMBLE = r"""\documentclass[letterpaper]{article}
 \usepackage[paperwidth=%s, paperheight=11in, margin=0.4in]{geometry}
