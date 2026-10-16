@@ -90,6 +90,11 @@ def main():
     text = open(SRC, encoding="utf-8").read()
     title = text.lstrip().split("\n", 1)[0].lstrip("# ").strip()
 
+    # How many images the source asks for. Checked against how many were actually
+    # inlined, so a renamed or deleted PNG fails the build instead of silently
+    # producing a document with holes in it.
+    expected = len(re.findall(r"!\[[^\]]*\]\([^)]+\)", text))
+
     body = markdown.markdown(
         text, extensions=["tables", "attr_list", "sane_lists", "toc"],
         output_format="html5")
@@ -104,9 +109,12 @@ def main():
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write(html)
 
-    print("%s\n  %d figures inlined, %.1f MB, nothing external"
-          % (OUT, n, len(html.encode("utf-8")) / 1e6))
-    return 0 if n == 7 else 1
+    print("%s\n  %d of %d figures inlined, %.1f MB, nothing external"
+          % (OUT, n, expected, len(html.encode("utf-8")) / 1e6))
+    if n != expected:
+        sys.stderr.write("FAILED: %d images referenced but %d inlined\n"
+                         % (expected, n))
+    return 0 if n == expected else 1
 
 
 if __name__ == "__main__":
