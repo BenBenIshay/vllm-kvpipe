@@ -26,13 +26,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAPER = os.path.abspath(os.path.join(HERE, "..", ".."))
 SECTIONS = os.path.join(PAPER, "tex", "sections")
 
-# (figure file, output name). Order is the document's order, not the paper's.
+# (figure file, output name). The NUMBER IS THE DOCUMENT'S FIGURE NUMBER, which is
+# document order, not the paper's. If a figure moves in the document, renumber here
+# and re-run; do not leave the two orderings to drift.
 FIGS = [
     ("fig-arch",      "01-arch"),
-    ("fig-exec",      "02-exec"),
-    ("fig-pipeline",  "03-pipeline"),
-    ("fig-addr",      "04-addr"),
-    ("fig-basevsopt", "05-basevsopt"),
+    ("fig-addr",      "02-addr"),
+    ("fig-exec",      "03-exec"),
+    ("fig-basevsopt", "04-basevsopt"),
+    ("fig-pipeline",  "05-pipeline"),
     ("fig-ladder",    "06-ladder"),
     ("fig-fq",        "07-fq"),
 ]
