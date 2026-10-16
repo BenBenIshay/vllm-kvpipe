@@ -70,10 +70,17 @@ PREAMBLE = r"""\documentclass[letterpaper]{article}
 """
 
 
-def build_one(fig, wide, workdir):
-    """Compile a single figure to a one-page PDF. Returns the pdf path."""
+def build_one(fig, wide, workdir, number):
+    """Compile a single figure to a one-page PDF. Returns the pdf path.
+
+    `number` is the figure's number IN THE DOCUMENT. Each figure is compiled in a
+    fresh document, so without this every caption reads "Figure 1" and the document
+    becomes impossible to refer to -- which is exactly what happened.
+    """
     width = "11in" if wide else "7.0in"
-    tex = PREAMBLE % width + "\\input{sections/%s}\n\\clearpage\n\\end{document}\n" % fig
+    tex = (PREAMBLE % width
+           + "\\setcounter{figure}{%d}\n" % (number - 1)
+           + "\\input{sections/%s}\n\\clearpage\n\\end{document}\n" % fig)
     name = "only_%s" % fig.replace("-", "_")
     with open(os.path.join(workdir, name + ".tex"), "w") as fh:
         fh.write(tex)
@@ -114,13 +121,13 @@ def main():
     workdir = tempfile.mkdtemp(prefix="designfigs_")
     shutil.copytree(SECTIONS, os.path.join(workdir, "sections"))
     ok = True
-    for fig, out in FIGS:
+    for num, (fig, out) in enumerate(FIGS, start=1):
         src = os.path.join(SECTIONS, fig + ".tex")
         if not os.path.exists(src):
             sys.stderr.write("missing %s\n" % src)
             ok = False
             continue
-        pdf = build_one(fig, fig in WIDE, workdir)
+        pdf = build_one(fig, fig in WIDE, workdir, num)
         if pdf is None:
             ok = False
             continue
