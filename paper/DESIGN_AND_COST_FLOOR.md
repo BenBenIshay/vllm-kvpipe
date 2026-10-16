@@ -3,25 +3,28 @@
 Working document for agreeing chapters 3 and 4. Every number is measured and
 sourced.
 
-> ## Read the figures first
+> ## The figures
 >
-> **`/mnt/beegfs/benishay/paper_versions/design-figures.pdf`** --- all seven figures,
-> typeset. Figures 1--3 are already in the paper; **4--7 are new** and are the ones
-> proposed for chapters 3 and 4. Sources are `paper/tex/sections/fig-*.tex`, they are
-> TikZ, and `./paper/build.sh` compiles clean with them.
+> All seven are **inline below**, each where it is discussed. They are TikZ, authored
+> once in `paper/tex/sections/fig-*.tex` so the paper and this document cannot drift
+> apart; the PNGs here are rendered from those sources by
+> `paper/figs/design/render.py`. `./paper/build.sh` compiles clean with all of them.
 >
-> | # | label | what it shows | status |
-> |---|---|---|---|
-> | 1 | `fig:arch` | the data path across both tiers | in the paper |
-> | 2 | `fig:exec` | one layer, one forward pass | in the paper |
-> | 3 | `fig:pipeline` | the $k$-slot rotation | in the paper |
-> | **4** | `fig:addr` | three address spaces; the release/reissue hazard | **new** |
-> | **5** | `fig:basevsopt` | **base vs optimised host path on one timeline** | **new** |
-> | **6** | `fig:ladder` | both coefficients on log axes, against the gate | **new** |
-> | **7** | `fig:fq` | the transfer-quantum axis, and its prediction | **new** |
+> | # | label | what it shows | where | status |
+> |---|---|---|---|---|
+> | 1 | `fig:arch` | the data path across both tiers | §1 | in the paper |
+> | 2 | `fig:exec` | one layer, one forward pass | §4.2 | in the paper |
+> | 3 | `fig:pipeline` | the $k$-slot rotation | §4.3 | in the paper |
+> | **4** | `fig:addr` | three address spaces; the release/reissue hazard | §2 | **new** |
+> | **5** | `fig:basevsopt` | **base vs optimised host path on one timeline** | §4.3 | **new** |
+> | **6** | `fig:ladder` | both coefficients on log axes, against the gate | §5.1 | **new** |
+> | **7** | `fig:fq` | the transfer-quantum axis, and its prediction | §6.3 | **new** |
 >
 > If you only look at two: **Fig. 5** carries the whole campaign, and **Fig. 6**
 > shows the obvious implementation sitting *above* the line no bandwidth can rescue.
+>
+> A print copy of all seven is at
+> `/mnt/beegfs/benishay/paper_versions/design-figures.pdf`.
 
 ---
 
@@ -47,9 +50,9 @@ licenses the claim that our costs are near the floor rather than merely measured
 ## 1. The mechanism
 
 
-> **Figure 1 --- `fig:arch`** (`paper/tex/sections/fig-arch.tex`, already in the paper).
-> The data path: host mirror, the $k$-slot rolling region, and attention reading both
-> tiers in one forward pass.
+![Figure 1: the data path across both tiers](figs/design/01-arch.png)
+
+***Figure 1** (`fig:arch`, source `paper/tex/sections/fig-arch.tex`) --- already in the paper.*
 
 
 **Two tiers, one forward pass.** A **resident** keeps its whole KV in the paged pool,
@@ -81,9 +84,9 @@ and the mixture could not beat all-resident at any link speed.**
 ## 2. Memory and the three address spaces
 
 
-> **Figure 4 --- `fig:addr`** (`paper/tex/sections/fig-addr.tex`, **new**).
-> The three address spaces, the once-per-step compaction between them, and the
-> release/reissue hazard that forces the private host space.
+![Figure 4: three address spaces and the release/reissue hazard](figs/design/04-addr.png)
+
+***Figure 4** (`fig:addr`, source `paper/tex/sections/fig-addr.tex`) --- **new**.*
 
 
 ### Why the mirror cannot be keyed by device block id -- the forced decision
@@ -169,8 +172,9 @@ demotion look like an improvement.
 ### 4.2 The decode step
 
 
-> **Figure 2 --- `fig:exec`** (`paper/tex/sections/fig-exec.tex`, already in the paper)
-> for the per-layer structure; the two tables below give the full order.
+![Figure 2: one layer, one forward pass](figs/design/02-exec.png)
+
+***Figure 2** (`fig:exec`) --- already in the paper. The tables below give the full order.*
 
 
 **Two things this makes visible, both of which the paper currently gets wrong.**
@@ -193,10 +197,13 @@ This is the diagram the chapter needs most, because it is where the campaign's w
 gain lives.
 
 
-> **Figure 5 --- `fig:basevsopt`** (`paper/tex/sections/fig-basevsopt.tex`, **new**).
-> **The single most valuable figure here.** Base and optimised host paths on one
-> timeline: inline-and-blocking becomes prefetched-and-deferred, and the 22 ms
-> per-layer host gather disappears entirely.
+![Figure 5: base vs optimised host path on one timeline](figs/design/05-basevsopt.png)
+
+***Figure 5** (`fig:basevsopt`, source `paper/tex/sections/fig-basevsopt.tex`) --- new, and the most valuable of the four.*
+
+![Figure 3: the k-slot rotation](figs/design/03-pipeline.png)
+
+***Figure 3** (`fig:pipeline`) --- already in the paper. Why panel (b) above can prefetch at all: a slot survives $k$ layers, so layer $\ell{+}1$'s refresh is in flight while layer $\ell$ reads.*
 
 
 **The quantum trade, in one line.** The rolling region holds `k` slots so that one
@@ -253,10 +260,9 @@ Three vLLM behaviours force this shape:
 ### 5.1 The two phases, with their measured coefficients
 
 
-> **Figure 6 --- `fig:ladder`** (`paper/tex/sections/fig-ladder.tex`, **new**).
-> Both coefficients on log axes, with the profitability gate `c < T0/B = 3.37` drawn
-> across panel (b) --- so the `O(blocks)` build is visibly *above* the line that no
-> bandwidth can rescue.
+![Figure 6: both coefficients on log axes against the profitability gate](figs/design/06-ladder.png)
+
+***Figure 6** (`fig:ladder`, source `paper/tex/sections/fig-ladder.tex`) --- **new**.*
 
 
 The four pre-campaign sites were **one species**: loop-invariant work executed inside
@@ -366,10 +372,9 @@ open with no known route.**
 The twelve rows above collapse onto two design parameters:
 
 
-> **Figure 7 --- `fig:fq`** (`paper/tex/sections/fig-fq.tex`, **new**).
-> The transfer quantum `q` on one axis, with the device footprint and the hideable
-> compute moving in opposite directions, and the three systems placed --- which is
-> what makes the coherent-link requirement a *prediction* rather than an observation.
+![Figure 7: the transfer-quantum axis and its prediction](figs/design/07-fq.png)
+
+***Figure 7** (`fig:fq`, source `paper/tex/sections/fig-fq.tex`) --- **new**.*
 
 
 > **`q` sets both the device footprint and the compute available to hide the transfer
