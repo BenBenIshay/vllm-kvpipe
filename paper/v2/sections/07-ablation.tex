@@ -84,39 +84,40 @@ projection.}
 
 \begin{table}[t]
 \centering\small
-\caption{\textbf{The blocks carried to the target}: Llama-70B fp8, ctx 8192,
-GH200, projected from the measured coefficients ($T_0 = 24.2$\,ms, $B = 7$,
-$T_0/B = 3.46$\,ms, knee $\lfloor 3.78\rfloor = 3$ riders).}
+\caption{\textbf{The blocks carried to the target}: Qwen-72B fp8 on a GH200 at
+context 14\,724 (\S\ref{sec:admission}), projected from the measured
+coefficients ($T_0 = 25.3$\,ms, $B = 3$, $T_0/B = 8.44$\,ms, knee
+$\lfloor 2.2\rfloor = 2$ riders).}
 \label{tab:ladder}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}l r r r r@{}}
 \toprule
 State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
 \midrule
-first build              & 5.17 & 13.44 & --- & gate fails \\
-+ addressing             & 1.26 & 13.44 & 7 & no riders \\
-+ deferred write-back    & 1.26 &  5.90 & 3 & $1.02\times$ \\
-shipped$^{\dagger}$      & 0.61 &  4.24 & 2 & $1.14\times$ \\
-\textcolor{red}{+ fusion (planned)} & 0.61 & \textcolor{red}{1.88} & 1 & \textcolor{red}{$1.24\times$} \\
+first build$^{*}$        & 8.67 & 13.44 & --- & gate fails \\
++ addressing             & 1.64 & 13.44 & 2 & $1.00\times$ \\
++ deferred write-back    & 1.64 &  5.90 & 1 & $1.22\times$ \\
+shipped$^{\dagger}$      & 0.61 &  4.24 & 1 & $1.37\times$ \\
+\textcolor{red}{+ fusion (planned)} & 0.61 & \textcolor{red}{1.82} & 1 & \textcolor{red}{$1.49\times$} \\
 \bottomrule
 \end{tabular}
 \\[2pt]
-{\footnotesize $^{\dagger}$Two changes, not one: $c$ re-measured below the knee
-(no code change), and $F$ after removing per-layer flushes of the deferred
-write-back.}
+{\footnotesize $^{*}$The first build's per-rider cost grew with context, so it
+is evaluated at this context. $^{\dagger}$Two changes, not one: $c$ re-measured
+below the knee (no code change), and $F$ after removing per-layer flushes of the
+deferred write-back.}
 \end{table}
-% src: paper/model/overhead_model.py closing_state() for T0, B, knee, final c/F;
-%      OVERHEAD_CHARACTERISATION.md s9 delivered projection for the first three
-%      rows' c/F. Gains recomputed here with integer counts (B=7, r=3):
-%      0.651 forced / 0.835 forced / 1.021 / 1.143 / 1.239. "no riders" = rmin
-%      exceeds the knee, so Algorithm 1 admits none (1.00x).
+% src: paper/model/overhead_model.py delivered(14724, Q72) for the first three
+%      rows' c/F; operating_point.evaluate(Q72, GH200, 14724[, "fused"]) for
+%      T0, B, knee and the last two rows. Gains recomputed with integer counts
+%      (B=3, r=2): gate fails / 1.004 / 1.224 / 1.371 / 1.488.
 
 \paragraph{The ladder.} \Cref{tab:ladder} shows why every block is needed. As
 first built, a rider cost more than a token is worth, so the gate failed and no
-rider count could pay at any bandwidth. Addressing passed the gate but left
-break-even at 7 riders against a knee of 3. Only with the deferred write-back did
-break-even fall inside the knee. Admission (\cref{alg:admit}) turns each failing
-state into $1.00\times$ rather than a loss, by admitting no riders.
+rider count could pay at any bandwidth. Addressing passed the gate, but with the
+fixed cost still at 13.4\,ms the two riders the knee admits only broke even. The
+deferred write-back is what made them pay. Admission (\cref{alg:admit}) turns
+any failing state into $1.00\times$ rather than a loss, by admitting no riders.
 
 \torun{\cref{tab:ladder} is a projection to GH200 from coefficients measured on
 A100; the GH200 run replaces it.}
