@@ -1,0 +1,98 @@
+% The paper, rebuilt from scratch (2026-10-17).
+%
+% This is a NEW paper file. paper/tex/ is the previous draft and is not touched.
+% Sections are filled in one at a time, each agreed with Ben before any LaTeX:
+%   4    Design overview            -- written
+%   4.1  The KV memory manager      -- written (blocks B, C, D-planned, A)
+%   4.2  Admission                  -- written
+%   7.1  Ablation                   -- written
+% Everything else is a placeholder heading.
+%
+% RED TEXT IS A STANDING NOTE TO THE AUTHORS, never a claim. \gap{} marks where
+% the paper describes something the code does not yet do; \planned{} marks a
+% design that is not implemented; \torun{} marks a measurement not yet taken.
+% All three must be gone before submission -- \ifdraft makes that an error.
+
+\documentclass[10pt,twocolumn,letterpaper]{article}
+\usepackage[margin=0.75in,columnsep=0.3in]{geometry}
+
+\usepackage{newtxtext,newtxmath}           % Times body, as the venues use
+% Tectonic is XeTeX, so the sans face is set through fontspec, not helvet.sty
+% (helvet is a T1 font and silently falls back to Latin Modern under TU).
+\setsansfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold,
+  ItalicFont=*-italic, BoldItalicFont=*-bolditalic, Scale=0.92]   % sans for figures only
+\usepackage{sansmath}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,backgrounds,
+                decorations.pathreplacing,patterns,shapes.misc}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\input{figs/figstyle}
+
+\newif\ifdraft\drafttrue
+\ifdraft
+  \newcommand{\gap}[1]{\textcolor{red}{[\textbf{Impl.\ gap:} #1]}}
+  \newcommand{\planned}[1]{\textcolor{red}{[\textbf{Not implemented:} #1]}}
+  \newcommand{\torun}[1]{\textcolor{red}{[\textbf{To run:} #1]}}
+\else
+  \newcommand{\gap}[1]{\GenericError{}{UNRESOLVED IMPLEMENTATION GAP}{}{}}
+  \newcommand{\planned}[1]{\GenericError{}{UNRESOLVED PLANNED DESIGN}{}{}}
+  \newcommand{\torun}[1]{\GenericError{}{UNRESOLVED MEASUREMENT}{}{}}
+\fi
+
+% Symbols, defined once so they cannot drift between sections.
+\newcommand{\btok}{b_{\mathrm{tok}}}
+\newcommand{\rstar}{r^{\star}}
+\newcommand{\rmin}{r_{\min}}
+\newcommand{\Xlink}{X}
+
+% algorithm2e: blue typewriter comments, as in the venue examples.
+\SetKwComment{tcp}{\texttt{/* }}{\texttt{ */}}
+\newcommand{\cmt}[1]{\tcp*[r]{\textcolor{blue!70!black}{\texttt{#1}}}}
+\SetCommentSty{relax}
+\SetKwProg{Proc}{Procedure}{:}{}
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
+\SetAlFnt{\small}
+
+\title{\textbf{[Title TBD]}}
+\author{Anonymous}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}\label{sec:intro}
+\textcolor{red}{[To be written.]}
+
+\section{Background and Motivation}\label{sec:background}
+\textcolor{red}{[To be written.]}
+
+\section{The Capacity Model}\label{sec:model}
+\textcolor{red}{[To be written. \S\ref{sec:admission} uses its quantities
+$T_0$, $B$, $F$, $c$, $\rstar$ and defines them in place.]}
+
+\input{sections/04-design}
+
+\section{Implementation}\label{sec:impl}
+\textcolor{red}{[To be written.]}
+
+\section{Evaluation}\label{sec:eval}
+\textcolor{red}{[To be written.]}
+
+\section{Analysis}\label{sec:analysis}
+\input{sections/07-ablation}
+
+\section{Related Work}\label{sec:related}
+\textcolor{red}{[To be written.]}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}
