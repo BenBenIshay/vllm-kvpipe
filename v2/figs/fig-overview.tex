@@ -1,0 +1,140 @@
+% Figure 1 -- the system on one decode node. Drawn at final size (full text
+% width, 7in = 17.8cm); never \resizebox'ed, so its font matches every figure.
+%
+% Layout rule that keeps it legible: the forward pass is drawn as two LANES
+% (resident rows, rider rows) running through shared operator boxes; the HBM
+% regions each lane reads sit on the lane's own side (paged pool above, rolling
+% slots below), so no data arrow crosses another.
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{num/.style={circle, fill=black, text=white, inner sep=0.4pt,
+         minimum size=3.6mm, font=\sffamily\bfseries\scriptsize}}
+
+%% ------------------------------------------------------------- frames
+\node[plain, fill=black!4, minimum width=1.75cm, minimum height=1.25cm, align=center]
+  (pf) at (1.0,-0.30) {\textbf{Prefill}\\\textbf{node}\\[-1pt]{\scriptsize (remote)}};
+
+\draw[black!60, line width=0.7pt, rounded corners=4pt] (2.30,-4.30) rectangle (17.70,3.55);
+\node[hd, anchor=north west] at (2.40,3.50) {Decode node};
+
+\fill[ctlF!60, rounded corners=3pt] (2.50,1.75) rectangle (17.50,3.10);
+\fill[ddrF!50, rounded corners=3pt] (2.50,-4.10) rectangle (6.55,1.50);
+\fill[h2dC!8]                         (6.65,-4.10) rectangle (7.35,1.50);
+\fill[hbmF!35, rounded corners=3pt] (7.45,-4.10) rectangle (17.50,1.50);
+
+\node[hd, text=ddrD, anchor=north west] at (2.60,1.45) {Host DDR};
+\node[hd, text=hbmD, anchor=north west] at (7.55,1.45) {GPU};
+\node[sub, rotate=90] at (7.00,-0.35) {NVLink-C2C};
+
+%% ------------------------------------------------------------- scheduler
+\node[ctl, fill=white, minimum width=4.6cm, minimum height=0.95cm, align=left,
+      anchor=south west] (cap) at (2.70,1.90)
+  {\textbf{Capacity model} {\scriptsize(offline profile)}\\[-1pt]
+   {\scriptsize$T_0, X, F, c, B \;\rightarrow\;$ gate, $r_{\min}$, knee $r^{\star}$}};
+\node[ctl, fill=white, minimum width=6.4cm, minimum height=0.95cm, align=left,
+      anchor=south west] (adm) at (8.15,1.90)
+  {\textbf{Admission controller} {\scriptsize(every step)}\\[-1pt]
+   {\scriptsize assigns each request a tier;\; demote/promote as a probe}};
+\draw[flow] (cap.east) -- (adm.west);
+\node[hd, text=ctlD, anchor=north west] at (14.75,3.02) {Scheduler (CPU)};
+\node[sub, anchor=north west, align=left] at (14.75,2.62)
+  {\S\ref{sec:admission}: \emph{how many}\\riders, and \emph{which}};
+\node[num] at (cap.north west) {1};
+\node[num] at (adm.north west) {2};
+
+% scheduler <-> GPU
+\draw[flow, ctlD] (13.9,1.90) -- (13.9,1.50) node[pos=0.5, right, sub]{tiers};
+\draw[flow, ctlD] (8.55,1.50) -- (8.55,1.90) node[pos=0.5, right, sub]{step time, acks};
+
+%% ------------------------------------------------------------- host DDR
+\node[sub, anchor=north west, align=left] at (2.62,1.05)
+  {one contiguous extent per\\rider: the authoritative copy};
+\foreach \lab/\len/\y in {A/5/-0.05, B/3/-0.55, C/4/-1.05} {
+  \node[font=\sffamily\scriptsize\bfseries, text=ddrD] at (3.15,\y) {\lab};
+  \foreach \j in {1,...,\len}
+    \node[cell, fill=ddrF, draw=ddrD] at (3.20+\j*0.34,\y) {};
+}
+\node[draw=ddrD, rounded corners=2pt, line width=0.5pt, fit={(2.98,0.17) (5.25,-1.27)},
+      inner sep=0pt] (ext) {};
+\node[sub, align=center, anchor=south] at (4.55,-4.05) {riders hold \textbf{no}\\HBM KV blocks};
+
+%% ------------------------------------------------------------- GPU, top row
+\node[plain, fill=black!8, minimum width=2.6cm, minimum height=0.80cm, align=center]
+  (wts) at (9.25,0.70) {model weights};
+\node[hbm, fill=white, minimum width=3.0cm, minimum height=0.80cm] (pool) at (12.35,0.70) {};
+\node[sub, anchor=north west] at (pool.north west) {paged KV pool};
+\foreach \i/\n in {0/R1,1/R2,2/R3,3/R4} {
+  \node[cell, fill=hbmF, draw=hbmD, minimum width=2.6mm, minimum height=2.6mm]
+    at (11.30+\i*0.68,0.52) {};
+  \node[cell, fill=hbmF, draw=hbmD, minimum width=2.6mm, minimum height=2.6mm]
+    at (11.56+\i*0.68,0.52) {};
+}
+\node[anchor=west, align=left, font=\sffamily\scriptsize] at (14.00,0.72)
+  {\textbf{One forward pass}, layer $\ell$ ($\times L$):\\
+   every GEMM reads the weights\\\textbf{once} for all rows};
+
+%% ------------------------------------------------------------- GPU, lanes
+\fill[hbmF]           (7.60,-0.10) rectangle (17.35,-0.95);
+\fill[ddrF!80]        (7.60,-1.15) rectangle (17.35,-2.00);
+\node[anchor=west, font=\sffamily\scriptsize, align=left] at (7.62,-0.52)
+  {\textbf{resident}\\rows R1--R4};
+\node[anchor=west, font=\sffamily\scriptsize, align=left] at (7.62,-1.57)
+  {\textbf{rider}\\rows A--C};
+
+\node[cmp, minimum width=1.25cm, minimum height=2.15cm, align=center] (qkv) at (9.90,-1.05)
+  {QKV\\GEMM};
+\node[cmp, draw=hbmD, minimum width=2.2cm, minimum height=0.66cm] (a1) at (12.05,-0.52)
+  {attention};
+\node[cmp, draw=ddrD, minimum width=2.2cm, minimum height=0.66cm] (a2) at (12.05,-1.57)
+  {attention};
+\node[cmp, minimum width=1.45cm, minimum height=2.15cm, align=center] (mlp) at (14.35,-1.05)
+  {O-proj\\+ MLP};
+\draw[flow] (qkv.east |- a1) -- (a1.west);
+\draw[flow] (qkv.east |- a2) -- (a2.west);
+\draw[flow] (a1.east) -- (mlp.west |- a1);
+\draw[flow] (a2.east) -- (mlp.west |- a2);
+\draw[flow] (mlp.east) -- ++(0.75,0) node[right, sub, align=left]{layer\\$\ell{+}1$};
+\draw[flow] (wts.south -| qkv) -- (qkv.north);
+\draw[->, draw=hbmD, line width=0.9pt] (pool.south -| a1) -- (a1.north);
+\node[num] at (13.35,-1.05) {5};
+
+%% ------------------------------------------------------------- GPU, bottom row
+\node[hbm, fill=white, minimum width=3.0cm, minimum height=0.95cm] (roll) at (12.05,-3.05) {};
+\node[sub, anchor=south west] at (roll.south west) {$k$ rolling slots};
+\foreach \s in {0,1,2,3}
+  \node[cell, minimum width=0.55cm, minimum height=0.38cm, fill=ddrF, draw=ddrD,
+        font=\sffamily\scriptsize] (s\s) at (11.05+\s*0.66,-2.92) {$s_{\s}$};
+\draw[->, draw=ddrD, line width=0.9pt] (s1.north) -- (s1.north |- a2.south)
+  node[pos=0.45, right, sub]{$s_{\ell \bmod k}$};
+\node[sub, anchor=west, align=left] at (13.70,-3.05)
+  {a rider's HBM footprint:\\its share of $k$ of $L$ layers};
+
+%% ------------------------------------------------------------- data movement
+% 3  KV handover into DDR
+\draw[->, black!70, line width=0.8pt, densely dotted] (pf.east) -- (ext.west |- pf.east);
+\node[num] at (2.40,-0.30) {3};
+\node[sub, anchor=south] at (1.0,0.40) {KV handover};
+% 4  per-layer prefetch, host -> device
+\draw[h2d] (4.10,-1.27) -- (4.10,-3.30) -- (10.55,-3.30);
+\node[font=\sffamily\scriptsize, text=h2dC, anchor=north west, align=left] at (7.55,-3.38)
+  {H2D: layer $\ell{+}1$\\$\rightarrow s_{(\ell+1)\bmod k}$};
+\node[num] at (5.50,-3.30) {4};
+% 6  new token's K,V, device -> host
+\draw[d2h] (a2.south -| 11.35,0) -- (11.35,-2.40) -- (6.10,-2.40) -- (6.10,-0.55) -- (5.25,-0.55);
+\node[font=\sffamily\scriptsize, text=d2hC, anchor=east, align=right] at (6.02,-2.05)
+  {D2H: the new\\token's $K,V$};
+\node[num] at (6.10,-1.05) {6};
+
+\end{tikzpicture}
+\caption{\textbf{System overview on one decode node.}
+\stepn{1}~The capacity model turns an offline profile into the limits admission
+must respect, and \stepn{2}~the admission controller assigns each request a tier
+every step. Residents keep their KV in the paged HBM pool; a rider's KV arrives
+from prefill into host DDR \stepn{3}, and the rider holds no HBM blocks. Both are
+rows of \emph{one} forward pass: \stepn{4}~each layer's rider KV is streamed into
+a rotating slot while the previous layer computes, \stepn{5}~attention reads the
+two KV sources while every other operator runs once over the whole batch, and
+\stepn{6}~the new token's $K,V$ is written back to the authoritative host copy.}
+\label{fig:overview}
+\end{figure*}

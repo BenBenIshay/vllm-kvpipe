@@ -1,0 +1,55 @@
+% Shared visual language for every figure in the paper. A figure that needs a
+% colour or a shape not defined here should add it HERE, so that the same thing
+% is drawn the same way in every figure. Conventions, from the venue figures we
+% benchmark against (DirectKV, NEO, DAK):
+%   * sans text throughout, one size (\footnotesize), never italic-grey notes;
+%   * pastel fill + darker outline of the same hue;
+%   * one hue per MEMORY: HBM is teal, host DDR is orange -- in every figure,
+%     including the request colours (a resident is teal, a rider is orange);
+%   * one hue per DATA MOVEMENT: H2D blue, D2H purple, dashed;
+%   * black numbered circles mark the steps the text walks through.
+
+% ---- palette ---------------------------------------------------------------
+\definecolor{hbmD}{HTML}{1F7A8C}   \definecolor{hbmF}{HTML}{D5EEF2}
+\definecolor{ddrD}{HTML}{C0661B}   \definecolor{ddrF}{HTML}{FCE6D2}
+\definecolor{cmpD}{HTML}{4A8A35}   \definecolor{cmpF}{HTML}{E1F0D8}
+\definecolor{ctlD}{HTML}{5B4FA8}   \definecolor{ctlF}{HTML}{E9E6F5}
+\definecolor{h2dC}{HTML}{2457C5}   % host -> device
+\definecolor{d2hC}{HTML}{8E3A9E}   % device -> host
+\definecolor{badD}{HTML}{B03030}   \definecolor{badF}{HTML}{F8DADA}
+\definecolor{bgA}{HTML}{F3F4F6}    % neutral panel background
+\definecolor{inkS}{HTML}{555555}   % secondary text
+
+% ---- global picture defaults ----------------------------------------------
+\tikzset{
+  every picture/.style={font=\sffamily\footnotesize, line cap=round},
+  >={Latex[length=1.6mm,width=1.3mm]},
+  % containers
+  panel/.style={draw=none, fill=bgA, rounded corners=3pt},
+  % generic boxes, by what they hold
+  hbm/.style={draw=hbmD, fill=hbmF, rounded corners=1.5pt, line width=0.6pt},
+  ddr/.style={draw=ddrD, fill=ddrF, rounded corners=1.5pt, line width=0.6pt},
+  cmp/.style={draw=cmpD, fill=cmpF, rounded corners=1.5pt, line width=0.6pt},
+  ctl/.style={draw=ctlD, fill=ctlF, rounded corners=2pt, line width=0.6pt},
+  bad/.style={draw=badD, fill=badF, rounded corners=1.5pt, line width=0.6pt},
+  plain/.style={draw=black!70, fill=white, rounded corners=1.5pt, line width=0.6pt},
+  planned/.style={draw=black!45, dashed, fill=white, rounded corners=1.5pt},
+  % memory cells (one KV block)
+  cell/.style={draw=black!55, line width=0.4pt, minimum width=3.2mm,
+               minimum height=3.2mm, inner sep=0pt},
+  % data movement
+  h2d/.style={->, draw=h2dC, line width=0.9pt},
+  d2h/.style={->, draw=d2hC, line width=0.9pt, densely dashed},
+  flow/.style={->, draw=black!75, line width=0.6pt},
+  % text
+  hd/.style={font=\sffamily\footnotesize\bfseries},
+  sub/.style={font=\sffamily\scriptsize, text=inkS},
+  % timeline lane label (NEO style)
+  lane/.style={draw=black!40, fill=black!6, minimum height=4.6mm,
+               minimum width=9mm, inner sep=1pt, font=\sffamily\scriptsize\bfseries},
+}
+
+% A black numbered step circle, usable in figures and in running text.
+\DeclareRobustCommand{\stepn}[1]{\tikz[baseline=(sn.base)]\node[circle, fill=black,
+  text=white, inner sep=0.5pt, minimum size=3.3mm,
+  font=\sffamily\bfseries\scriptsize](sn){#1};}
