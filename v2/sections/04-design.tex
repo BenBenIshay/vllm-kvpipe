@@ -169,13 +169,13 @@ per-layer rebuild.
 
 \paragraph{Prize.} The second call is the larger part of the remaining fixed
 cost: about 1.9 of 3.4\,ms per step at $L{=}64$. Removing it entirely would take
-the projected gain at our target from $1.14\times$ to $1.24\times$, if
+the projected gain at our target from $1.37\times$ to $1.49\times$, if
 fusion removes the cost rather than moving it inside the kernel ---
 which nothing yet shows.
 % src: OVERHEAD_CHARACTERISATION.md M18 (remainder 1.94 of F 3.49 at L=64);
 %      projection from paper/model/overhead_model.py closing_state(), integer
-%      riders/residents (B=7, r=3): F(80)=4.24 -> 1.88 with the remainder's
-%      1.94/3.49 share removed; gain 1.1425 -> 1.2389.
+%      residents (Qwen-72B fp8, ctx 14724, B=3, r=2): operating_point.py
+%      variant "fused" F(80) 4.24 -> 1.82; gain 1.371 -> 1.488.
 \torun{fusion's prize is projected from one ablation arm ($\pm0.5$\,ms on $F$),
 not measured.}
 

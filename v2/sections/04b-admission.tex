@@ -39,16 +39,28 @@ different kind.
 Below the knee the left side of \cref{eq:pays} grows with $r$ while the right
 side is fixed, so once the gate passes, throughput rises monotonically with every
 rider admitted. Admission therefore \emph{fills to the knee if the knee clears
-break-even}, and admits no riders otherwise. At our target, Llama-70B (fp8) at
-context 8192 on a GH200, $B = 7$ residents fit, $c = 0.61$\,ms clears the
-gate's $T_0/B = 3.46$\,ms by $5.7\times$, break-even is $\rmin = 2$, and the
-knee admits $\lfloor 3.78\rfloor = 3$ riders, for a projected $1.14\times$
-throughput. What
-binds is therefore $F$ and the knee, never the gate.
-% src: paper/model/overhead_model.py closing_state(): t0 24.23, b_res 7.19,
-%      knee 3.783, c 0.609, F 4.24. Integer counts: B = floor(7.19) = 7,
-%      so T0/B = 24.23/7 = 3.46; r = floor(3.783) = 3; gain 1.1425. The 1.20x quoted in OVERHEAD_CHARACTERISATION.md is the
-%      continuous relaxation (r=3.78, B=7.19) and is NOT used here.
+break-even}, and admits no riders otherwise.
+
+\paragraph{Choosing the operating point.} Because riders are integers, gain is a
+sawtooth in context rather than a smooth curve: the knee falls as $1/S$, the
+admitted count $\lfloor\rstar\rfloor$ drops by one at each integer crossing, and
+gain peaks just below each crossing. A context 1\% above a crossing gives away a
+whole rider. The crossing is computed from $T_0$, which on our target is modelled
+rather than measured, and a 2\% overestimate of $T_0$ at the bare crossing
+already costs the rider. We therefore operate below a crossing with 10\% margin
+on the knee. Our target is Qwen-72B (fp8) on a GH200 at context 14\,724, where
+the knee is 2.2: $B = 3$ residents fit, $c = 0.61$\,ms clears the gate's
+$T_0/B = 8.44$\,ms by $14\times$, break-even is $\rmin = 1$, and two riders are
+admitted, for a projected $1.37\times$ throughput. What binds is the knee, never
+the gate. The ratio is largest where the baseline is weakest --- heavy weights,
+long context, few residents --- which is the regime the design exists for; it is
+the right test of the mechanism, not a throughput record.
+% src: paper/model/operating_point.py: margin_point(Q72, GH200, 2) = 14724,
+%      evaluate(): t0 25.33, cap 3.32, knee 2.20, r 2, c 0.609, F 4.24.
+%      Integer residents B = floor(3.32) = 3 -> T0/B 8.44, gain 1.371.
+%      operating_point.py itself credits the fractional 3.32 residents and
+%      reports 1.319x; the bare r=2 crossing (ctx 16196) is 1.37x but drops to
+%      1.11x under a 2% T0 overestimate (its FRAGILITY table).
 
 \paragraph{Which: a temporal score.} Since context cancels out of the tier
 trade (\S\ref{sec:design}), ranking candidates by length is ranking them
