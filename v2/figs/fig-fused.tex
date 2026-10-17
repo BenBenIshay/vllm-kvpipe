@@ -1,0 +1,114 @@
+% Figure -- Block D, fused tier attention. PLANNED, NOT IMPLEMENTED.
+% Column width (8.5cm), drawn at final size, never \resizebox'ed.
+%
+% Panel (a) is what the code does today, verified in
+% vllm/v1/attention/backends/flash_attn.py:
+%   call 1   flash_attn_varlen_func over ALL rows against the paged pool, with
+%            the rider rows' seqused_k masked to 1 (index_fill_, ~l.1174; the
+%            masked tensor is cached on the per-step split, ~l.1167)
+%   gather   torch.index_select of the rider rows' queries   (~l.685)
+%   call 2   backend.attend: rider rows against the rolling slot's block table
+%            and seqused_k                                     (~l.700-723)
+%   scatter  out.index_copy_(0, cpu_idx, out_sub)               (~l.728)
+% Panel (b) is the design, which does not exist yet.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{
+  qrow/.style={minimum width=0.46cm, minimum height=0.24cm, inner sep=0pt,
+               font=\sffamily\tiny, line width=0.5pt, rounded corners=0.8pt},
+  rres/.style={qrow, draw=hbmD, fill=hbmF},
+  rrid/.style={qrow, draw=ddrD, fill=ddrF},
+  rdead/.style={qrow, draw=ddrD, fill=white, pattern=north east lines,
+                pattern color=ddrD!60},
+  kvtag/.style={rounded corners=1.5pt, line width=0.6pt, inner sep=2pt,
+                font=\sffamily\scriptsize},
+  ptag/.style={draw=badD, fill=badF, text=badD, rounded corners=1.5pt,
+               inner sep=2pt, font=\sffamily\scriptsize\bfseries},
+}
+% row y-positions: residents 0..3, riders 4..6
+\def\ry#1{-0.62-#1*0.27}
+
+%% ================= (a) today =========================================
+\node[hd, anchor=west] at (-0.10,0.05) {(a) Today: two attention calls per layer};
+
+% queries
+\foreach \i/\n in {0/R1,1/R2,2/R3,3/R4} \node[rres] (qa\i) at (0.30,{\ry{\i}}) {\n};
+\foreach \i/\n in {4/A,5/B,6/C}          \node[rrid] (qa\i) at (0.30,{\ry{\i}}) {\n};
+\node[sub] at (0.30,-0.36) {$q$};
+
+% call 1: every row, paged pool, riders masked
+\node[cmp, minimum width=2.70cm, minimum height=1.95cm, anchor=west, align=center]
+  (c1) at (1.00,-1.43) {};
+\node[anchor=north, align=center, font=\sffamily\scriptsize] at (c1.north)
+  {\textbf{call 1:} all rows\\[-1pt]KV = paged pool};
+\node[anchor=south, align=center, font=\sffamily\scriptsize, text=ddrD] at (c1.south)
+  {rider rows masked\\[-1pt]to 1 key};
+\draw[flow] (0.56,{\ry{3}+0.13}) -- (c1.west |- 0,{\ry{3}+0.13});
+
+% outputs of call 1
+\foreach \i in {0,...,3} \node[rres] (oa\i) at (4.40,{\ry{\i}}) {};
+\foreach \i in {4,5,6}   \node[rdead] (oa\i) at (4.40,{\ry{\i}}) {};
+\node[sub] at (4.40,-0.36) {out};
+\draw[flow] (c1.east |- 0,{\ry{3}+0.13}) -- (4.14,{\ry{3}+0.13});
+\node[sub, anchor=west, align=left] at (4.72,{\ry{5}})
+  {discarded,\\[-1pt]overwritten};
+
+
+% gather -> call 2 -> scatter
+\node[plain, font=\sffamily\scriptsize, align=center, inner sep=2pt] (ga) at (0.30,-3.35)
+  {gather};
+\draw[flow] (qa6.south) -- (ga.north);
+\node[cmp, draw=ddrD, minimum width=2.70cm, minimum height=0.78cm, anchor=west,
+      align=center, font=\sffamily\scriptsize] (c2) at (1.00,-3.35)
+  {\textbf{call 2:} rider rows\\[-1pt]KV = slot $s_{\ell \bmod k}$};
+\draw[flow] (ga.east) -- (c2.west);
+\node[plain, font=\sffamily\scriptsize, align=center, inner sep=2pt] (sc) at (4.40,-3.35)
+  {scatter};
+\draw[flow] (c2.east) -- (sc.west);
+\draw[flow] (sc.north) -- (oa6.south);
+
+
+\node[sub, anchor=north west, align=left] at (-0.10,-3.95)
+  {per layer: 2 launches + gather + scatter;\;\; $\times L$ per step};
+
+%% ================= (b) planned =======================================
+\begin{scope}[yshift=-4.75cm]
+\node[hd, anchor=west] at (-0.10,0.05) {(b) Fused: one call};
+\node[ptag, anchor=east] at (8.30,0.05) {PLANNED --- not implemented};
+
+\foreach \i/\n in {0/R1,1/R2,2/R3,3/R4} \node[rres] at (0.30,{\ry{\i}}) {\n};
+\foreach \i/\n in {4/A,5/B,6/C}          \node[rrid] at (0.30,{\ry{\i}}) {\n};
+\node[sub] at (0.30,-0.36) {$q$};
+
+\node[planned, minimum width=2.70cm, minimum height=1.95cm, anchor=west, align=center,
+      line width=0.7pt, draw=cmpD] (f1) at (1.00,-1.43) {};
+\node[anchor=north, align=center, font=\sffamily\scriptsize] at (f1.north)
+  {\textbf{one call:} all rows};
+\node[kvtag, draw=hbmD, fill=hbmF, dashed, anchor=west] at (1.25,{\ry{2}})
+  {R1--R4: paged pool};
+\node[kvtag, draw=ddrD, fill=ddrF, dashed, anchor=west] at (1.25,{\ry{5}})
+  {A--C: slot $s_{\ell \bmod k}$};
+\draw[flow] (0.56,{\ry{3}+0.13}) -- (f1.west |- 0,{\ry{3}+0.13});
+
+\foreach \i in {0,...,3} \node[rres] at (4.40,{\ry{\i}}) {};
+\foreach \i in {4,5,6}   \node[rrid] (ob\i) at (4.40,{\ry{\i}}) {};
+\node[sub] at (4.40,-0.36) {out};
+\draw[flow] (f1.east |- 0,{\ry{3}+0.13}) -- (4.14,{\ry{3}+0.13});
+\node[sub, anchor=west, align=left] at (4.72,{\ry{3}+0.13})
+  {KV region chosen\\[-1pt]per row, in-kernel};
+
+\node[sub, anchor=north west, align=left] at (-0.10,-2.55)
+  {per layer: 1 launch, no gather, no scatter};
+\end{scope}
+\end{tikzpicture}
+\caption{\textbf{Fused tier attention (planned).} Today every layer runs attention
+twice: once over all rows against the paged pool, with rider rows masked to a
+single key, and once over the gathered rider rows against the rolling slot, whose
+output is scattered back. A fused kernel would let each row select its own KV
+region, removing one launch, the gather and the scatter per layer. The second call
+is measured at ${\approx}1.9$\,ms of the ${\approx}3.4$\,ms fixed cost at $L{=}64$
+(A100); what fusion recovers is projected, not measured.
+\planned{panel (b) is a design; no fused kernel exists.}}
+\label{fig:fused}
+\end{figure}

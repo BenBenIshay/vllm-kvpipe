@@ -1,0 +1,106 @@
+% Figure -- Block C, step-invariant addressing. Column width (3.35in = 8.5cm),
+% drawn at final size; never \resizebox'ed.
+%
+% Two granularities, top to bottom: what is built ONCE PER STEP (the
+% compaction, its runs, the one block table) and what changes PER LAYER (only
+% the base pointer of the slot handed to attention).
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{
+  num/.style={circle, fill=black, text=white, inner sep=0.4pt,
+              minimum size=3.6mm, font=\sffamily\bfseries\scriptsize},
+  rc/.style={cell, minimum width=4.6mm, minimum height=4.2mm, fill=ddrF,
+             draw=ddrD, font=\sffamily\scriptsize},
+  ec/.style={cell, minimum width=4.6mm, minimum height=4.2mm, fill=white,
+             draw=black!25},
+  rl/.style={font=\sffamily\scriptsize\bfseries, text=ddrD},
+}
+
+%% ================= once per step ====================================
+\fill[panel] (0,0.05) rectangle (8.40,4.55);
+\node[hd, anchor=north west] at (0.08,4.50) {Once per step};
+\node[sub, anchor=north east] at (8.33,4.50) {host, before layer 0};
+
+% host DDR: three rider extents, scattered in the host pool
+\node[font=\sffamily\scriptsize\bfseries, text=ddrD, anchor=west] at (0.10,3.62) {host DDR};
+\node[sub, anchor=west] at (0.10,3.30) {block id};
+\foreach \x/\id/\r in {2.00/7/A, 2.46/8/A, 3.82/23/B, 5.18/40/C, 5.64/41/C, 6.10/42/C}
+  \node[rc] at (\x,3.55) {\id};
+\foreach \x in {1.54,2.92,3.36,4.28,4.72,6.56}
+  \node[ec] at (\x,3.55) {};
+\node[font=\scriptsize, text=inkS] at (7.05,3.55) {$\cdots$};
+\node[rl] at (2.23,3.98) {A};
+\node[rl] at (3.82,3.98) {B};
+\node[rl] at (5.64,3.98) {C};
+
+% the compacted range [0,W)
+\node[font=\sffamily\scriptsize\bfseries, text=hbmD, anchor=west] at (0.10,1.95) {slot layout};
+\node[sub, anchor=west] at (0.10,1.63) {dense $[0,W)$};
+\foreach \i/\id in {0/0,1/1,2/2,3/3,4/4,5/5}
+  \node[rc] (c\i) at (3.08+\i*0.46,1.88) {\id};
+
+% three runs = three DMA copies (H2D), the DMA engine does the compaction
+\draw[h2d] (2.23,3.31) -- (3.31,2.12);
+\draw[h2d] (3.82,3.31) -- (4.00,2.12);
+\draw[h2d] (5.64,3.31) -- (4.92,2.12);
+\node[font=\sffamily\scriptsize, text=h2dC, anchor=west, align=left] at (6.15,2.62)
+  {3 runs\\$\Rightarrow$ 3 copies,\\not 6};
+\draw[decorate, decoration={brace, amplitude=1.4mm, mirror}, black!55]
+  (2.85,1.62) -- (3.77,1.62) node[midway, below=1.6mm, sub]{A};
+\draw[decorate, decoration={brace, amplitude=1.4mm, mirror}, black!55]
+  (3.79,1.62) -- (4.21,1.62) node[midway, below=1.6mm, sub]{B};
+\draw[decorate, decoration={brace, amplitude=1.4mm, mirror}, black!55]
+  (4.23,1.62) -- (5.61,1.62) node[midway, below=1.6mm, sub]{C};
+\node[num] at (0.25,2.62) {1};
+\node[sub, anchor=west] at (0.45,2.62) {sort + compact};
+
+% the one block table
+\node[ctl, fill=white, anchor=west, align=left, inner sep=1.4mm] (bt) at (0.10,0.58)
+  {\textbf{one block table}\quad A\,[0,1]\;\; B\,[2]\;\; C\,[3,4,5]};
+\node[num] at (bt.north west) {2};
+\node[sub, anchor=west, align=left] at (5.98,0.58) {uploaded once,\\one slice per rider};
+
+%% ================= per layer ========================================
+\fill[panel] (0,-2.75) rectangle (8.40,-0.15);
+\node[hd, anchor=north west] at (0.08,-0.20) {Per layer $\ell$ ($\times L$)};
+\node[sub, anchor=north east] at (8.33,-0.20) {GPU};
+
+% the k slots in HBM, each laid out as [0,W)
+\node[font=\sffamily\scriptsize\bfseries, text=hbmD, anchor=west] at (0.10,-1.05) {$k$ slots};
+\node[sub, anchor=west] at (0.10,-1.37) {in HBM};
+\foreach \s in {0,1,2,3} {
+  \node[hbm, fill=white, minimum width=1.30cm, minimum height=0.62cm] (s\s) at (2.05+\s*1.52,-1.20) {};
+  \foreach \j in {0,...,5}
+    \node[cell, minimum width=1.6mm, minimum height=3.2mm, fill=ddrF, draw=ddrD]
+      at (1.65+\s*1.52+\j*0.16,-1.20) {};
+  \node[font=\sffamily\scriptsize] at (2.05+\s*1.52,-0.74) {$s_{\s}$};
+}
+% base pointer moves l -> l+1
+\draw[->, draw=ctlD, line width=0.9pt] (3.57,-2.15) -- (3.57,-1.55);
+\draw[->, draw=ctlD, line width=0.9pt, densely dashed] (5.09,-2.15) -- (5.09,-1.55);
+\node[font=\sffamily\scriptsize, text=ctlD, anchor=north] at (3.57,-2.13) {layer $\ell$};
+\node[font=\sffamily\scriptsize, text=ctlD, anchor=north] at (5.09,-2.13) {layer $\ell{+}1$};
+\node[num] at (0.25,-2.12) {3};
+\node[sub, anchor=west] at (0.45,-2.12) {base $= s_{\ell \bmod k}$};
+\node[sub, anchor=west, align=left] at (5.75,-2.20) {only the base pointer\\moves; same table};
+
+%% ================= contrast ========================================
+\node[bad, anchor=north west, align=left, text width=3.75cm, inner sep=1.3mm]
+  (nv) at (0.0,-2.95)
+  {\textbf{naive}: per rider \emph{block}\\$O(r\cdot S/b_s)$ host work, grows\\with context};
+\node[cmp, anchor=north east, align=left, text width=3.75cm, inner sep=1.3mm]
+  (us) at (8.40,-2.95)
+  {\textbf{ours}: one slice per \emph{rider}\\$O(r)$ host work,\\independent of context};
+\end{tikzpicture}
+\caption{\textbf{Step-invariant addressing: addresses are fixed per step, contents
+change per layer.} \stepn{1}~Once per step the riders' host extents are sorted and
+compacted into a dense range; maximal contiguous runs become one DMA copy each (block-major
+storage with $K$ and $V$ split keeps each run contiguous), so the copy engine
+performs the compaction. \stepn{2}~The resulting block table is
+built and uploaded once and serves all $L$ layers. \stepn{3}~Every slot has the same
+layout, so advancing from layer $\ell$ to $\ell{+}1$ moves only the base pointer
+handed to attention. Building the table one slice per rider cut its host cost from
+0.275 to 0.0031\,ms per rider (ctx 512, A100), identical at ctx 2048.}
+\label{fig:addressing}
+\end{figure}

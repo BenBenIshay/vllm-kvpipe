@@ -33,6 +33,11 @@
 \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
 \usepackage[hidelinks]{hyperref}
 \usepackage{cleveref}
+\crefname{figure}{Figure}{Figures}\Crefname{figure}{Figure}{Figures}
+\crefname{table}{Table}{Tables}\Crefname{table}{Table}{Tables}
+\crefname{algocf}{Algorithm}{Algorithms}\Crefname{algocf}{Algorithm}{Algorithms}
+\crefname{algorithm}{Algorithm}{Algorithms}\Crefname{algorithm}{Algorithm}{Algorithms}
+\crefname{equation}{Eq.}{Eqs.}\Crefname{equation}{Eq.}{Eqs.}
 
 \input{figs/figstyle}
 
@@ -54,7 +59,7 @@
 \newcommand{\Xlink}{X}
 
 % algorithm2e: blue typewriter comments, as in the venue examples.
-\SetKwComment{tcp}{\texttt{/* }}{\texttt{ */}}
+\SetKwComment{tcp}{\textcolor{blue!70!black}{\texttt{/* }}}{\textcolor{blue!70!black}{\texttt{ */}}}
 \newcommand{\cmt}[1]{\tcp*[r]{\textcolor{blue!70!black}{\texttt{#1}}}}
 \SetCommentSty{relax}
 \SetKwProg{Proc}{Procedure}{:}{}

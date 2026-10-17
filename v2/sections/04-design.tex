@@ -1,4 +1,215 @@
+% =============================================================================
+% Chapter 4 -- Design. Agreed with Ben 2026-10-17:
+%   4    overview: the core novelty is serving a multi-tier KV cache in ONE
+%        forward pass; Figure 1 covers capacity model + admission + memory manager
+%   4.1  the heterogeneous KV memory manager, as building blocks, in this order:
+%        rolling layer cache (B, with its write path), step-invariant addressing
+%        (C), fused tier attention (D, PLANNED), decoupling execution from
+%        residency (A, last: single-node emulated P/D, not compared)
+%   4.2  admission, as an algorithm; code gaps in red
+% Every number carries its source. Measurement platform unless stated: one
+% A100-80 PCIe, Qwen-32B, P/D-emulated, decode purity asserted per step.
+% =============================================================================
+
 \section{Design}\label{sec:design}
+
 \input{figs/fig-overview}
-Placeholder.
-\subsection{Admission}\label{sec:admission}
+
+A decode node serves two kinds of request at once (\cref{fig:overview}). A
+\emph{resident} keeps its whole KV cache in the paged HBM pool, exactly as in an
+unmodified engine. A \emph{rider} keeps its KV cache in host DDR, holds no blocks
+of the HBM pool, and is decoded \emph{in the same forward pass} as the residents:
+it is one more row of every GEMM, and only attention reads its KV from a
+different place. Riders are therefore \emph{additive} to the residents rather
+than substitutes for them. That is the distinction from every system that tiers
+KV at request granularity by taking turns, where a request whose KV is in host
+memory is not executing~\cite{vllm,sglang}.
+
+\paragraph{What a rider costs.} With context $S$, $\btok$ bytes of KV per token,
+$L$ layers and a rolling window of $k$ layer-slots, a resident occupies
+$S\btok$ of HBM and no link time. A rider occupies only its share of the window,
+$\tfrac{k}{L}S\btok$ of HBM, and moves $S\btok$ across the CPU--GPU link
+\emph{every step}, since generating each token reads its whole history. The
+saving is $\tfrac{L-k}{L}$ of the resident's footprint, and it is paid for in
+link time. Because $S$ scales both sides of that trade, it cancels: context
+length cannot tell which tier a request belongs in. The scarce resource is
+link time within one step, and that is what admission budgets (\S\ref{sec:admission}).
+
+\paragraph{The three components.} \stepn{1}~An offline \emph{capacity model}
+(\S\ref{sec:model}) turns a profile of the node into the limits any rider
+cohort must respect. \stepn{2}~An \emph{admission controller}
+(\S\ref{sec:admission}) assigns every request a tier, every step, within those
+limits, and revises the assignment by measurement. \stepn{3}--\stepn{6}~The
+\emph{heterogeneous KV memory manager} (\S\ref{sec:mm}) executes the decision:
+it receives a rider's KV into host DDR, streams each layer of it into a rotating
+device slot ahead of use, lets attention read two KV sources while every other
+operator runs once over the whole batch, and writes each new token back to the
+authoritative host copy.
+
+\paragraph{The design principle.} Each building block below removes one cost
+that would otherwise grow with the context or with the bytes moved. Together they
+leave a rider costing only the work that cannot be overlapped: a per-rider cost
+$c$ that is independent of context and of link speed, plus a fixed per-step cost
+$F$ (\S\ref{sec:ablation}). The link then buys one thing only, the number of
+riders whose transfer it can hide in a step, which is the quantity admission is
+built around.
+
+% -----------------------------------------------------------------------------
+\subsection{The Heterogeneous KV Memory Manager}\label{sec:mm}
+
+The memory manager is four building blocks. The first two are what make a rider
+cheap and are the core of the design; the third is the next one, designed and
+priced but not built; the fourth is what makes riders free HBM at all.
+
+% ................................................................. block B
+\subsubsection{A Rolling Layer Cache}\label{sec:rolling}
+
+\input{figs/fig-rolling}
+
+\paragraph{Challenge.} A rider's KV must be on the device when its layer's
+attention runs, but holding it there for the whole step would forfeit the
+capacity the rider exists to free. The transfer must also stay off the critical
+path: decode attention has an arithmetic intensity of only the GQA group size,
+so there is almost no arithmetic \emph{inside} attention to hide a host fetch
+behind.
+
+\paragraph{Design.} The device holds $k$ layer-slots, shared by all $L$ layers
+and by every rider; layer $\ell$ reads slot $s_{\ell \bmod k}$
+(\cref{fig:rolling}a). While layer $\ell$ computes, a copy stream issues the
+riders' KV for layer $\ell{+}1$ into $s_{(\ell+1)\bmod k}$; layer $\ell{+}1$
+waits only on its own slot's event, and a slot is not overwritten until $k$
+layers later. The fetch therefore hides behind a \emph{whole layer} of compute ---
+QKV, attention, output projection and MLP, which in decode are long,
+weight-bound GEMMs --- rather than behind one attention tile.
+
+The window is a \emph{cache}, not a swap area. The host copy is authoritative:
+each new token's $K,V$ is written to the current slot, so this step's attention
+sees it, and to the host copy, so the slot can later be overwritten with nothing
+to save. Link traffic is therefore one-way: a rider's history comes in once per
+step and only one token's $K,V$ goes out. The write-back is itself off the
+critical path. Each layer's $K,V$ is copied without blocking into pinned staging,
+and the host-side scatter into the authoritative copy is deferred to the next
+step behind a single event wait.
+
+\paragraph{Why not swap, or zero-copy.} Pie~\cite{pie}, the closest prior
+mechanism, also stages KV through device buffers with per-layer prefetch, but
+its unit is the \emph{layer}, applied uniformly to every request, and its
+buffers hold the authoritative KV: it swaps out the layer that has just finished
+computing~\cite{pie}, so each offloaded byte crosses the link twice per token,
+the second time in the slower direction (\cref{fig:rolling}b). Our unit is the
+request, so the link is spent only on the riders admission selects, and only
+once. DirectKV~\cite{directkv} removes the device buffer by having the attention
+kernel read host memory in place; that is the right choice when every request is
+fully offloaded and the transfer cannot fit any compute window, but it hides
+each fetch behind a tile rather than a layer. Because our admission sizes the
+rider cohort to fit the window, staging is the better side of that trade, and
+the tier interface keeps a zero-copy kernel substitutable
+(\S\ref{sec:fused}).
+
+\paragraph{Effect.} Below the knee the transfer hides completely: removing the
+bytes while keeping every launch moves the per-rider cost by
+$-0.010$\,ms~(\S\ref{sec:ablation}). The overlap is what makes riders pay at
+all: with the copy stream serialised, the per-rider cost rises from 0.93 to
+7.20\,ms, more than twice the budget a rider must beat.
+% src: OVERHEAD_CHARACTERISATION.md s0 (T6_nofix 0.927; ASYNC_off 7.196) and
+%      s0a SETTLED (minbytes, ctx 128, L=64: -0.010)
+
+% ................................................................. block C
+\subsubsection{Step-Invariant Addressing}\label{sec:addressing}
+
+\input{figs/fig-addressing}
+
+\paragraph{Challenge.} Attention addresses KV through a block table. A rider's
+KV lives at host addresses, its contents move into a different slot every layer,
+and the cohort changes every step. Addressing that naively --- rebuilding a
+table entry per rider block, per step --- costs host work proportional to
+$r\cdot S$, which grows with exactly the long contexts the design targets.
+
+\paragraph{Design.} We separate the two granularities: \emph{addresses are fixed
+for a step, contents change per layer} (\cref{fig:addressing}). Each rider owns
+one contiguous host extent. Once per step, the active riders' extents are
+sorted, compacted into a dense range $[0,W)$ and decomposed into maximal
+contiguous runs; the run list is the step's transfer plan, so the DMA engine
+performs the compaction, and the compacted block table is built once, one slice
+per rider. Every layer reuses that table. Moving from layer $\ell$ to $\ell{+}1$
+changes only the base pointer of the slot handed to attention --- a pointer
+change, not a remap. Host KV is stored block-major with $K$ and $V$ split, so
+each run is one contiguous DMA rather than a host-side gather.
+
+\paragraph{Effect.} The table cost falls from 0.275 to 0.0031\,ms per rider, and
+it no longer depends on context: the same timer reads 0.0243 and 0.0240\,ms at
+ctx 512 and 2048, a 3.7$\times$ change in block count. Removing the context term
+reverses the scaling of the whole design: with per-block addressing the
+per-rider cost grows faster with context than the budget it must beat, so no
+context pays; without it, longer context helps~(\S\ref{sec:ablation}).
+% src: OVERHEAD_CHARACTERISATION.md s9 T1 (Class A host timer); s3.4 slopes
+
+% ................................................................. block D
+\subsubsection{Fused Tier Attention}\label{sec:fused}
+
+\input{figs/fig-fused}
+
+\planned{This block is designed and priced, not implemented. Everything measured
+in this paper uses the two-call path described first below.}
+
+\paragraph{Today.} Attention runs as two calls per layer (\cref{fig:fused}a).
+The first covers every row against the paged pool, with each rider's sequence
+length masked to a single key so that its rows do no wasted work; the second
+gathers the rider rows, attends them against the slot, and scatters the outputs
+back. The masking alone was worth 22\% of wall time on A100. The second call
+exists only because the window is a separate tensor and the kernel takes one
+KV pointer.
+% src: ARCHITECTURE.md s3 (opt #5, seqused_k masking, 22% of wall time)
+
+\paragraph{Planned.} A single call in which each row carries its own KV region
+--- the paged pool or the current slot --- selected inside the kernel, with no
+gather or scatter (\cref{fig:fused}b). Because the rider table is already built
+once per step (\S\ref{sec:addressing}), fusion needs $k$ tables per step, not a
+per-layer rebuild.
+
+\paragraph{Prize.} The second call is the larger part of the remaining fixed
+cost: about 1.9 of 3.4\,ms per step at $L{=}64$. Removing it entirely would take
+the projected gain at our target from $1.14\times$ to $1.24\times$, if
+fusion removes the cost rather than moving it inside the kernel ---
+which nothing yet shows.
+% src: OVERHEAD_CHARACTERISATION.md M18 (remainder 1.94 of F 3.49 at L=64);
+%      projection from paper/model/overhead_model.py closing_state(), integer
+%      riders/residents (B=7, r=3): F(80)=4.24 -> 1.88 with the remainder's
+%      1.94/3.49 share removed; gain 1.1425 -> 1.2389.
+\torun{fusion's prize is projected from one ablation arm ($\pm0.5$\,ms on $F$),
+not measured.}
+
+% ................................................................. block A
+\subsubsection{Decoupling Execution from Residency}\label{sec:residency}
+
+\input{figs/fig-residency}
+
+\paragraph{Challenge.} In a paged engine, being scheduled means holding device
+blocks: the waiting queue admits a request by allocating its blocks, and the
+running batch is bounded by them. A rider must be schedulable while holding none.
+
+\paragraph{Design.} Three scheduler changes and one address space
+(\cref{fig:residency}). A rider is admitted with an empty block list, and only
+once its KV, written by the prefill node into host DDR, is registered in a host
+extent; the worker refuses a rider whose KV was never delivered. The waiting queue no longer stops at the first request it cannot
+allocate, so a block-starved request at its head does not stall a rider behind
+it. A resident is demoted through an explicit acknowledgement, because the
+scheduler cannot observe a host-side write: its KV is copied into an extent, the
+worker acknowledges it, and only then are its device blocks reclaimed. And the host copy is
+addressed by a private, per-request extent space rather than by device block
+id: a network-admitted rider has no device id to be keyed by, and a demoted
+rider's ids are returned to the free list and reissued to other requests.
+
+\paragraph{Effect.} Riders are additive: at a fixed KV pool whose all-HBM
+ceiling is 8 concurrent requests, the node held 48 with riders on top of a full
+resident cohort, and demotion reclaimed 133 of 192 device blocks. The capacity
+run fills rider KV synthetically, so it measures capacity only; token
+correctness of the same path is tested bitwise and separately.
+% src: benchmarks/kv_pipelining_bench/hybrid_preload_capacity.py docstring and
+%      ARCHITECTURE.md s9 (8 -> 48 at b_hbm_max = measured ceiling);
+%      hybrid_reclaim_correctness.py (133 of 192)
+\torun{all runs are single-node with the P/D handover emulated; this block has
+not been compared against other P/D orchestration.}
+
+% -----------------------------------------------------------------------------
+\input{sections/04b-admission}

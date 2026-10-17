@@ -1,2 +1,122 @@
-\subsection{Ablation}\label{sec:ablation}
-Placeholder.
+% =============================================================================
+% 7.1 Ablation: the value of each building block of section 4.1. Agreed with
+% Ben 2026-10-17. Only MEASURED arms are cited as measurements; projections are
+% labelled as such and come from paper/model/overhead_model.py. Every arm is
+% P/D-emulated with the feature on the decode node and decode purity asserted
+% per step (paper/data/overhead/MANIFEST.json).
+% =============================================================================
+
+\subsection{What Each Building Block Is Worth}\label{sec:ablation}
+
+Each block of \S\ref{sec:mm} is isolated by an arm that removes the mechanism
+while leaving everything else in place, rather than by subtracting totals.
+\Cref{tab:ablation} reports the arms; \cref{tab:ladder} carries their effect to
+the target configuration through the capacity model. All per-step overhead is
+expressed through the two coefficients of $\Delta T = F + c\,r$ (\S\ref{sec:model}),
+fitted only on rider counts below the knee: fitting across it raises the slope
+and lowers the intercept together, overstating $c$ and understating $F$.
+
+\begin{table*}[t]
+\centering\small\setlength{\tabcolsep}{4.5pt}
+\caption{\textbf{Ablation of the memory manager's building blocks.} One A100-80
+(PCIe), Qwen-32B, P/D-emulated, unless stated. Each arm removes one mechanism and
+keeps every other launch, hook and stream ordering.}
+\label{tab:ablation}
+\begin{tabular}{@{}l l l r r l@{}}
+\toprule
+Block & Mechanism & Ablation arm & Without & With & Setting \\
+\midrule
+\multirow{3}{*}{Rolling cache (\S\ref{sec:rolling})}
+ & copy-stream overlap & prefetch serialised & $c$ 7.20 & 0.93 ms & ctx 512, 16 residents \\
+ & transfer hidden below knee & bytes removed & \multicolumn{2}{r}{$\Delta c = -0.010$ ms} & ctx 128, $L{=}64$ \\
+ & deferred write-back & blocking per-layer D2H & $F$ 12.63 & 5.80 ms & $L{=}64$ \\
+\midrule
+\multirow{2}{*}{Addressing (\S\ref{sec:addressing})}
+ & one slice per rider & one entry per rider block & 0.275 & 0.0031 ms/rider & ctx 512 and 2048 \\
+ & block-major, split $K$/$V$ & interleaved layout & 10{,}096 & 39 ms & host gather \\
+\midrule
+\multirow{2}{*}{Tier attention (\S\ref{sec:fused})}
+ & resident-pass masking & rider rows attended in full & \multicolumn{2}{r}{22\% of wall time} & A100 \\
+ & \textcolor{red}{fusion (planned)} & second call present & \multicolumn{2}{r}{1.94 of $F$ = 3.49 ms} & $L{=}64$, $\pm0.5$ \\
+\midrule
+Residency (\S\ref{sec:residency})
+ & zero-block riders & all-HBM ceiling & 8 & 48 requests & fixed pool, synthetic KV \\
+\bottomrule
+\end{tabular}
+\end{table*}
+% src (all paper/OVERHEAD_CHARACTERISATION.md unless noted):
+%   overlap        s0, T6_nofix c=0.927 vs ASYNC_off c=7.196 (same binary/node)
+%   minbytes       s0a SETTLED, ctx 128, L=64: real 0.522, minbytes 0.532
+%   write-back     s0a M14 last arm: pre-T2 F 12.63 vs shipped 5.80 at L=64
+%   addressing     s9 T1, Class A host timer; ctx 512 vs 2048 0.0243/0.0240
+%   layout         paper/ARCHITECTURE.md s5.2 (10,096 -> 39 ms; 22 ms/layer)
+%   masking        paper/ARCHITECTURE.md s3 (opt #5)
+%   fusion         s0a M18: remainder 1.94, F 3.49 at L=64
+%   residency      benchmarks/kv_pipelining_bench/hybrid_preload_capacity.py
+
+\paragraph{The rolling cache carries the result.} With the copy stream
+serialised, a rider costs 7.20\,ms of step time, more than twice what a token is
+worth at the baseline rate; overlapped, it costs 0.93\,ms. The difference is the
+transfer itself: the harness reports 6.17\,ms of link time per rider at this
+context, and the two arms differ by 6.27\,ms. Below the knee nothing of it
+remains: removing the bytes while keeping every launch moves $c$ by
+$-0.010$\,ms, so what $c$ measures is exposed work only, and it does not depend
+on context (0.53 and 0.49\,ms at ctx 128 and 256). The deferred write-back halves
+the fixed cost: a blocking device-to-host copy per layer was a synchronisation,
+not a transfer, costing 446$\times$ the time of the few kilobytes it moved.
+% src: s0 "The three numbers decompose exactly" (6.17 ms per rider at ctx 512);
+%      s0a SETTLED (minbytes c 0.532 / 0.488); s6 (71 us per copy, 446x)
+
+\paragraph{Addressing removes the context term.} One slice per rider instead of
+one entry per rider block cuts the table's host cost 87$\times$ at ctx 512, and
+the cost no longer moves with context: a 3.7$\times$ change in block count leaves
+the timer unchanged. Before the change, the per-rider cost grew with context
+faster than the budget it must beat, so no context length paid; after it,
+longer context helps. The layout change matters for the same reason: an
+interleaved $K$/$V$ layout turned every run into a host-side gather, a host
+memory copy that no interconnect can speed up.
+
+\paragraph{What fusion would buy.} With both data-path mechanisms disabled, a
+remainder of 1.94\,ms per step survives at $L{=}64$: the second attention call.
+It is now the larger part of $F$, so fusing the calls is the next block.
+\planned{fusion is not implemented; its row in \cref{tab:ladder} is a
+projection.}
+
+\begin{table}[t]
+\centering\small
+\caption{\textbf{The blocks carried to the target}: Llama-70B fp8, ctx 8192,
+GH200, projected from the measured coefficients ($T_0 = 24.2$\,ms, $B = 7$,
+$T_0/B = 3.46$\,ms, knee $\lfloor 3.78\rfloor = 3$ riders).}
+\label{tab:ladder}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}l r r r r@{}}
+\toprule
+State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
+\midrule
+first build              & 5.17 & 13.44 & --- & gate fails \\
++ addressing             & 1.26 & 13.44 & 7 & no riders \\
++ deferred write-back    & 1.26 &  5.90 & 3 & $1.02\times$ \\
+shipped$^{\dagger}$      & 0.61 &  4.24 & 2 & $1.14\times$ \\
+\textcolor{red}{+ fusion (planned)} & 0.61 & \textcolor{red}{1.88} & 1 & \textcolor{red}{$1.24\times$} \\
+\bottomrule
+\end{tabular}
+\\[2pt]
+{\footnotesize $^{\dagger}$Two changes, not one: $c$ re-measured below the knee
+(no code change), and $F$ after removing per-layer flushes of the deferred
+write-back.}
+\end{table}
+% src: paper/model/overhead_model.py closing_state() for T0, B, knee, final c/F;
+%      OVERHEAD_CHARACTERISATION.md s9 delivered projection for the first three
+%      rows' c/F. Gains recomputed here with integer counts (B=7, r=3):
+%      0.651 forced / 0.835 forced / 1.021 / 1.143 / 1.239. "no riders" = rmin
+%      exceeds the knee, so Algorithm 1 admits none (1.00x).
+
+\paragraph{The ladder.} \Cref{tab:ladder} shows why every block is needed. As
+first built, a rider cost more than a token is worth, so the gate failed and no
+rider count could pay at any bandwidth. Addressing passed the gate but left
+break-even at 7 riders against a knee of 3. Only with the deferred write-back did
+break-even fall inside the knee. Admission (\cref{alg:admit}) turns each failing
+state into $1.00\times$ rather than a loss, by admitting no riders.
+
+\torun{\cref{tab:ladder} is a projection to GH200 from coefficients measured on
+A100; the GH200 run replaces it.}

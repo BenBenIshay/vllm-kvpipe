@@ -16,7 +16,6 @@ for pat in "Reference \`[^']*' on page .* undefined" "Citation \`[^']*' on page 
   if grep -E "$pat" main.log >/dev/null 2>&1; then
     echo "== $pat"; grep -E "$pat" main.log | head -10; status=1; fi
 done
-echo "pages: $(python3 -c "import re;print(len(re.findall(rb'/Type\s*/Page[^s]', open('main.pdf','rb').read())))")"
 if [[ "${1:-}" == "--figs" ]]; then
   "$D/../../.venv/bin/python" -I "$D/figs/rasterise.py" "$OUT/main.pdf" "$OUT"
 fi

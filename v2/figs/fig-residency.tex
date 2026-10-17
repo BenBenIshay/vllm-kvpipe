@@ -1,0 +1,95 @@
+% Figure -- Block A: decoupling execution from residency. Column width
+% (3.35in = 8.5cm), drawn at final size, never \resizebox'ed.
+%
+% What the code does (perblock-d2h-opt):
+%   (1) scheduler.py `_rungd_admit_preloaded` -> admitted with
+%       `empty_kv_cache_blocks`; hybrid_rungd_pool.py `ensure_req` gives it one
+%       contiguous extent of host block ids, freed only by `free_req`.
+%   (2) scheduler.py `_rungd_defer_for_riders`: a block-starved request is
+%       stepped over (it keeps its place) when a preloaded rider waits behind.
+%   (3) scheduler.py `_rungd_reclaim_seeded` -> kv_cache_manager
+%       `reclaim_tier_blocks`, only on the worker's seed acknowledgement.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{num/.style={circle, fill=black, text=white, inner sep=0.4pt,
+         minimum size=3.6mm, font=\sffamily\bfseries\scriptsize},
+         blk/.style={cell, minimum width=4.6mm, minimum height=4.6mm,
+                     font=\sffamily\tiny},
+         req/.style={draw, rounded corners=1.5pt, line width=0.6pt,
+                     minimum height=0.50cm, font=\sffamily\scriptsize, align=center}}
+
+%% ----------------------------------------------------- HBM: paged block space
+\fill[hbmF!45, rounded corners=3pt] (0,2.90) rectangle (8.45,4.55);
+\node[hd, text=hbmD, anchor=north west] at (0.08,4.52) {HBM {\mdseries\scriptsize paged block space}};
+\foreach \i/\o in {0/R1,1/R1,2/R2,3/R2,4/R2}
+  \node[blk, fill=hbmF, draw=hbmD] at (0.40+\i*0.50,3.85) {\o};
+\foreach \i in {5,...,12}
+  \node[blk, fill=white, draw=black!30] at (0.40+\i*0.50,3.85) {};
+\node[sub, anchor=south] at (4.40,4.10) {free list};
+% blocks that were R3's: reclaimed after the ack, reissued to R4
+\foreach \i in {13,14,15}
+  \node[blk, fill=hbmF, draw=hbmD, line width=0.8pt] (h\i) at (0.40+\i*0.50,3.85) {R4};
+\draw[decorate, decoration={brace, amplitude=1.2mm, mirror}, hbmD]
+  (6.80,3.55) -- (8.00,3.55);
+\node[font=\sffamily\scriptsize, anchor=north east, align=right] at (7.05,3.42)
+  {were R3's: \textbf{reclaimed} after the ack, reissued to R4};
+\node[num] at (1.20,3.27) {3};
+
+%% ----------------------------------------------------- scheduler: waiting queue
+\fill[ctlF!60, rounded corners=3pt] (0,1.60) rectangle (8.45,2.75);
+\node[hd, text=ctlD, anchor=north west] at (0.08,2.72) {Waiting queue};
+\node[req, draw=hbmD, fill=hbmF, minimum width=1.65cm] (r4) at (6.90,2.02)
+  {R4 {\tiny(head)}\\[-2pt]{\tiny needs blocks}};
+\node[req, draw=ddrD, fill=ddrF, minimum width=1.65cm] (qa) at (4.55,2.02)
+  {rider A\\[-2pt]{\tiny needs 0 blocks}};
+\node[sub] at (2.70,2.02) {$\cdots$};
+\draw[flow, ctlD, line width=0.8pt] ($(r4.north west)+(0.25,0)$)
+  .. controls +(-0.3,0.30) and +(0.4,0.30) .. ($(qa.north east)+(-0.25,0)$);
+\node[sub, anchor=south] at (5.72,2.50) {step over};
+\node[num] at (3.40,2.02) {2};
+% R4 is then served from the reissued blocks
+\draw[flow, hbmD, line width=0.8pt] (r4.north -| h14) -- (h14.south);
+
+%% ----------------------------------------------------- host DDR: extent space
+\fill[ddrF!50, rounded corners=3pt] (0,-0.40) rectangle (8.45,1.40);
+\node[hd, text=ddrD, anchor=north west] at (0.08,1.37) {Host DDR {\mdseries\scriptsize private extent space}};
+% extent = one contiguous run of host block ids, sized for the request
+\newcommand{\extent}[5]{% x0, used, total, label, name
+  \foreach \j in {1,...,#2}
+    \node[blk, fill=ddrF, draw=ddrD] at (#1+\j*0.46-0.23,0.22) {};
+  \pgfmathtruncatemacro{\nx}{#2+1}
+  \foreach \j in {\nx,...,#3}
+    \node[blk, fill=white, draw=ddrD!50] at (#1+\j*0.46-0.23,0.22) {};
+  \draw[ddrD, line width=0.5pt, rounded corners=1pt]
+    (#1-0.03,-0.03) rectangle (#1+#3*0.46+0.03,0.47);
+  \node[font=\sffamily\scriptsize, anchor=north] at (#1+#3*0.23,-0.05) {#4};
+  \coordinate (#5) at (#1+#3*0.23,0.47);
+}
+\extent{0.20}{3}{5}{request A}{eA}
+\extent{2.70}{2}{5}{request B}{eB}
+\extent{5.20}{4}{6}{request R3 (demoted)}{eR3}
+
+%% ----------------------------------------------------- the movements
+% (1) rider A admitted with zero HBM blocks; its KV is in its own extent
+\draw[flow, ddrD, line width=0.8pt] (qa.south) -- (qa.south |- 0,0.85) -| (eA);
+\node[num] at (2.40,0.85) {1};
+% (3) R3 demoted: KV seeded into extent 2; the ack precedes the reclaim
+\draw[d2h] (h15.east) -- (8.28,3.85) -- (8.28,0.85) -| (eR3);
+\node[font=\sffamily\scriptsize, text=d2hC, anchor=east] at (8.20,1.05) {seed, then ack};
+
+\end{tikzpicture}
+\caption{\textbf{A rider runs without holding HBM.}
+\stepn{1}~A rider is admitted with an \emph{empty} device block list: its KV
+already sits in a private, contiguous host extent, which it keeps until it
+finishes. \stepn{2}~A request starved of blocks no longer blocks the waiting
+queue for riders behind it, which need none. \stepn{3}~Demoting resident R3
+copies its KV into an extent; only on the worker's acknowledgement are its HBM
+blocks reclaimed and reissued (here, to R4). Host extents are keyed by request,
+not by device block id, so reissue cannot reach a rider's copy. Measured at a fixed
+KV pool: 48 concurrent requests against an all-HBM ceiling of 8 (synthetic
+rider KV, capacity only); 133 of 192 blocks reclaimed on demotion.
+\torun{single node with emulated P/D handover; no comparison against other P/D
+orchestration has been run.}}
+\label{fig:residency}
+\end{figure}

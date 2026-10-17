@@ -1,0 +1,147 @@
+% =============================================================================
+% 4.2 Admission. The rule is derived from the capacity model, not drawn from the
+% implementation's gate. Where the code (vllm/v1/core/sched/
+% transfer_aware_admission.py on perblock-d2h-opt) does not yet do what the
+% algorithm says, the text says so in RED via \gap{} -- Ben, 2026-10-17: "put it
+% under red color so I will remember to add it later on".
+% =============================================================================
+
+\subsection{Admission}\label{sec:admission}
+
+Admission answers two questions every step: \emph{how many} riders the node
+should carry, and \emph{which} requests they should be.
+
+\paragraph{How many: three conditions.} Let $B$ be the number of residents HBM
+can hold and $T_0$ the step time with those residents and no riders. Per-step
+overhead is affine in the rider count $r$ below the knee, $\Delta T = F + c\,r$,
+with $F$ the fixed cost of running the host path at all and $c$ the per-rider
+cost that does not overlap (\S\ref{sec:model}). Riders multiply the tokens a
+step delivers by $1+r/B$ and its duration by $1+(F+c\,r)/T_0$, so they raise
+throughput exactly when
+\begin{equation}
+  r\left(\frac{T_0}{B}-c\right) \;>\; F .
+  \label{eq:pays}
+\end{equation}
+$T_0/B$ is the reciprocal of the baseline throughput: what one token is worth at
+the rate the residents already deliver. \Cref{eq:pays} splits into conditions of
+different kind.
+\begin{itemize}\itemsep1pt
+\item \textbf{Gate}, $c < T_0/B$. Necessary, and independent of both $r$ and
+  $F$: if one rider costs more step time than a token is worth, no rider count
+  pays, at any bandwidth.
+\item \textbf{Break-even}, $r \ge \rmin = \lfloor F/(T_0/B - c)\rfloor + 1$. The
+  fixed cost is paid as soon as one rider exists, so too few riders lose.
+\item \textbf{Knee}, $\sum_i S_i\btok \le T_0\Xlink$. A rider's transfer hides
+  only while the cohort's bytes fit inside one step; for equal contexts this
+  admits $\rstar = T_0\Xlink/(S\btok)$ riders. Riders are integers, so the
+  usable count is $\lfloor\rstar\rfloor$.
+\end{itemize}
+Below the knee the left side of \cref{eq:pays} grows with $r$ while the right
+side is fixed, so once the gate passes, throughput rises monotonically with every
+rider admitted. Admission therefore \emph{fills to the knee if the knee clears
+break-even}, and admits no riders otherwise. At our target, Llama-70B (fp8) at
+context 8192 on a GH200, $B = 7$ residents fit, $c = 0.61$\,ms clears the
+gate's $T_0/B = 3.46$\,ms by $5.7\times$, break-even is $\rmin = 2$, and the
+knee admits $\lfloor 3.78\rfloor = 3$ riders, for a projected $1.14\times$
+throughput. What
+binds is therefore $F$ and the knee, never the gate.
+% src: paper/model/overhead_model.py closing_state(): t0 24.23, b_res 7.19,
+%      knee 3.783, c 0.609, F 4.24. Integer counts: B = floor(7.19) = 7,
+%      so T0/B = 24.23/7 = 3.46; r = floor(3.783) = 3; gain 1.1425. The 1.20x quoted in OVERHEAD_CHARACTERISATION.md is the
+%      continuous relaxation (r=3.78, B=7.19) and is NOT used here.
+
+\paragraph{Which: a temporal score.} Since context cancels out of the tier
+trade (\S\ref{sec:design}), ranking candidates by length is ranking them
+arbitrarily. What discriminates is time: an idle request holds HBM while
+consuming no link time, and a request with much generation left will hold HBM
+for many steps, while one about to finish will free it anyway. Candidates are
+ranked by $\mathit{score}(q) = w\cdot\mathit{idle}(q) + (1-w)\cdot\mathit{remaining}(q)$,
+each term normalised to $[0,1]$.
+
+\paragraph{Two traps.} \emph{A budget that validates itself.} The knee depends
+on $T_0$, which must be measured. A step that already carries riders is slower,
+and measuring the budget on it would admit more riders, slowing the step further.
+$T_0$ is therefore measured only on steps carrying no rider.
+\emph{Legal in bytes, wrong in latency.} The byte test cannot see $F$. On A100,
+a demotion that passed it drove inter-token latency from about 6 to 24\,ms.
+Every migration is therefore a hypothesis: the controller records the best
+recent step time, moves the request, waits for the step to settle, and undoes
+the move if latency got worse, doubling a back-off each time so that the same
+mistake is not retried at once.
+% src: transfer_aware_admission.py: hide_budget_ms (rider-free EMA),
+%      plan_migrations (probe, min-of-window baseline, exponential backoff);
+%      the 6 -> 24 ms regression is recorded in its comments.
+
+\gap{the runtime controller does not yet compute the gate or $\rmin$: it enforces
+the knee (line~\ref{alg:knee}) and relies on the probe to undo moves that fail
+break-even. Its marginal criterion (off by default) prices only the unhidden
+bytes, not $F$ or $c$. To add: read $F$ and $c$ from the profile and apply
+lines~\ref{alg:gate}--\ref{alg:rmin} and~\ref{alg:commit}.}
+
+\gap{$\Xlink$ is the configured link bandwidth, not a measured one, and $B$ is a
+configured resident cap rather than derived from free HBM.}
+
+\gap{scored tier selection (lines~\ref{alg:score} and~\ref{alg:migr}) is
+implemented but off by default; the default assigns tiers in arrival order.}
+
+\begin{algorithm}[t]
+\caption{Tier assignment and rider admission, once per scheduling step.}
+\label{alg:admit}
+\Input{profile $(F, c, \Xlink, \btok)$; resident capacity $B$; margin $m$;
+  waiting queue $\mathcal{W}$; running set $\mathcal{R}$}
+\Output{a tier for every request in $\mathcal{R}\cup\mathcal{W}$}
+\BlankLine
+\Proc{\textsc{Limits}$(T_0)$}{
+  \If{$c \ge T_0/B$}{\label{alg:gate}\Return \textsf{none}\cmt{gate fails}}
+  $\rmin \leftarrow \lfloor F/(T_0/B - c)\rfloor + 1$\cmt{break-even}\label{alg:rmin}
+  \Return $\bigl(\rmin,\; T_0\,\Xlink\,(1-m)\bigr)$\cmt{knee, bytes}
+}
+\BlankLine
+\Proc{\textsc{Admit}$(\mathcal{W}, \mathcal{R})$}{
+  $T_0 \leftarrow$ EMA over rider-free steps\cmt{trap 1}
+  $(\rmin, \mathit{budget}) \leftarrow \textsc{Limits}(T_0)$\;
+  $\mathit{bytes} \leftarrow \btok \sum_{i \in \mathrm{riders}(\mathcal{R})} S_i$;\quad
+  $\mathcal{N} \leftarrow \emptyset$\;
+  \ForEach{$q \in \mathcal{W}$ \textnormal{in arrival order}}{
+    \uIf{$|\mathrm{residents}(\mathcal{R})| < B$ \textnormal{and} $\mathit{score}(q) < \theta$}{\label{alg:score}
+      $\mathit{tier}(q) \leftarrow$ \textsf{resident}\;
+    }
+    \uElseIf{\textsf{none} \textnormal{or} $\mathit{bytes} + S_q\btok > \mathit{budget}$}{\label{alg:knee}
+      defer $q$\cmt{past the knee}
+    }
+    \Else{
+      $\mathcal{N} \leftarrow \mathcal{N}\cup\{q\}$;\quad
+      $\mathit{bytes} \leftarrow \mathit{bytes} + S_q\btok$\;
+    }
+  }
+  \eIf{$|\mathrm{riders}(\mathcal{R})| + |\mathcal{N}| < \rmin$}{\label{alg:commit}
+    defer all of $\mathcal{N}$\cmt{cannot repay $F$}
+  }{
+    $\mathit{tier}(q) \leftarrow$ \textsf{rider} for all $q \in \mathcal{N}$\;
+  }
+}
+\BlankLine
+\Proc{\textsc{Migrate}$(\mathcal{R})$}{
+  \If{\textnormal{a probe on $d$ has settled}}{
+    \If{$\mathrm{ITL} > (1+\epsilon)\cdot\mathit{base}$}{
+      promote $d$;\quad $\mathit{backoff} \leftarrow 2\,\mathit{backoff}$\;
+    }
+    \Return\cmt{trap 2}
+  }
+  \uIf{\textnormal{ITL above the high watermark}}{\label{alg:migr}
+    $d \leftarrow$ highest-$\mathit{score}$ resident that fits the budget\;
+    $\mathit{base} \leftarrow \min(\textnormal{recent ITL})$\cmt{not the EMA}
+    demote $d$; open a probe on $d$\;
+  }
+  \ElseIf{\textnormal{ITL below the low watermark}}{
+    promote the lowest-$\mathit{score}$ rider\;
+  }
+}
+\end{algorithm}
+
+\Cref{alg:admit} states the rule. \textsc{Limits} is the capacity model's
+contribution, evaluated against the measured $T_0$; \textsc{Admit} assigns new
+requests, residents first up to $B$, then riders up to the knee, committing
+riders only if enough of them result to repay $F$; \textsc{Migrate} moves
+running requests between tiers when the measured inter-token latency leaves its
+band, and treats every move as provisional.
