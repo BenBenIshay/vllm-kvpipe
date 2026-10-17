@@ -31,6 +31,9 @@
 \usetikzlibrary{positioning,arrows.meta,fit,calc,backgrounds,
                 decorations.pathreplacing,patterns,shapes.misc}
 \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+% Review line numbers, left/right margin per column. Draft builds only.
+\usepackage[switch,mathlines]{lineno}
+\renewcommand\linenumberfont{\normalfont\tiny\sffamily\color{black!45}}
 \usepackage[hidelinks]{hyperref}
 \usepackage{cleveref}
 \crefname{figure}{Figure}{Figures}\Crefname{figure}{Figure}{Figures}
@@ -73,6 +76,7 @@
 
 \begin{document}
 \maketitle
+\ifdraft\linenumbers\fi
 
 \section{Introduction}\label{sec:intro}
 \textcolor{red}{[To be written.]}
