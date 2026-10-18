@@ -1,0 +1,163 @@
+% =============================================================================
+% 3 The capacity model. Ben, 2026-10-18 (review notes 8, 9, 10): the model is
+% where the decision is made; admission (4.2) only executes it. Define every
+% quantity, say how F and c are obtained, and present the operating point as an
+% APPLICATION of the model to a measured T0, not as an estimate. Context cancels
+% in the WORKLOAD view (3.4) only; it does not cancel in admission (4.2).
+% =============================================================================
+
+\section{The Capacity Model}\label{sec:model}
+
+The capacity model decides, for one model on one node, whether riders pay, how
+many of them pay, and how many bytes they may move per step. It is built from a
+profile taken once per model and node, plus one quantity, the baseline step
+time $T_0$, that is measured on the serving node itself. Admission
+(\S\ref{sec:admission}) then executes its decision every step.
+
+\begin{table}[htb]
+\centering\small\setlength{\tabcolsep}{3.5pt}
+\caption{\textbf{The capacity model's inputs.} The first group describes the
+model and the node; the second is the feature's profile (\S\ref{sec:profile}).}
+\label{tab:symbols}
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{3.9cm} >{\raggedright\arraybackslash}p{2.2cm}@{}}
+\toprule
+Symbol & Meaning & Obtained by \\
+\midrule
+$L$, $\btok$ & layers; KV bytes per token, $2L\,h_{\mathrm{kv}}\,d\,s$ & model config \\
+$\Mkv$ & HBM left for KV after weights and activations & engine's memory profile \\
+$B$ & residents that fit: $\sum_{\mathrm{res}} S_i\btok \le \Mkv$ & from $\Mkv$ \\
+$T_0$ & step time with $B$ residents, no riders & measured on the node \\
+$\Xlink$ & host-to-device bandwidth the copy stream achieves & copy benchmark \\
+\midrule
+$F$ & fixed cost per step once any rider exists & profile fit \\
+$c$ & exposed cost of each additional rider & profile fit \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Profiling the Overhead: $F$ and $c$}\label{sec:profile}
+
+Riders slow the step. The profile measures by how much, as a function of the
+rider count $r$. It holds a full resident cohort fixed, adds riders one at a
+time, and records the step time $T(r)$ over decode-only steps; the overhead is
+$\Delta T(r) = T(r) - T_0$. Below the knee defined in \S\ref{sec:pays}, the
+overhead is affine:
+\begin{equation}
+  \Delta T(r) \;=\; F + c\,r .
+  \label{eq:law}
+\end{equation}
+The two coefficients are different kinds of work. $F$ is paid once per step as
+soon as one rider exists, independent of how many: per layer, the second
+attention call over the rider rows and the write of the new token's $K,V$ to the
+host copy (\S\ref{sec:mm}). $c$ is what each rider adds that cannot overlap
+with compute: its per-layer copy launches and its rows in that attention call.
+Neither contains the rider's bytes: below the knee the transfer hides entirely
+behind the previous layer, so $c$ depends neither on context nor on link speed
+(\S\ref{sec:ablation}).
+
+Two rules make the fit trustworthy. First, only points well below the knee are
+kept, those whose transfer time is at most a tenth of $T_0$. A sweep that crosses
+the knee adds exposed transfer at high $r$, which steepens the line and lowers
+its intercept, overstating $c$ and understating $F$ together. Second, the sweep
+is repeated at several depths, and both coefficients are expressed per layer,
+$F = f_L L$ and $c = c_0 + c_L L$, so one profile carries to a model of
+different depth. Because neither coefficient depends on context, the sweep runs
+at short context and serves every context.
+% src: OVERHEAD_CHARACTERISATION.md s0a (M13): retained points load <= 0.1;
+%      "fitting across the knee ... raises the slope and lowers the intercept";
+%      F/c decomposition s0a M14 (mirror write -> F, streaming -> c).
+
+\subsection{When Riders Pay}\label{sec:pays}
+
+With $B$ residents, a step delivers $B$ tokens in $T_0$, so one token is worth
+$T_0/B$ of step time. Adding $r$ riders multiplies the tokens per step by
+$1+r/B$ and the step time by $1+(F+c\,r)/T_0$. The throughput gain is
+\begin{equation}
+  G(r) \;=\; \frac{1 + r/B}{1 + (F + c\,r)/T_0},
+  \label{eq:gain}
+\end{equation}
+which exceeds one exactly when
+\begin{equation}
+  r\left(\frac{T_0}{B}-c\right) \;>\; F .
+  \label{eq:pays}
+\end{equation}
+Three conditions follow, each of a different kind.
+\begin{itemize}\itemsep1pt
+\item \textbf{The gate}, $c < T_0/B$. If one rider costs more step time than
+  one token is worth, no number of riders pays. The gate depends on neither $r$
+  nor $F$, and it is a property of the implementation: the building blocks of
+  \S\ref{sec:mm} exist to pass it.
+\item \textbf{Break-even}, $r \ge \rmin$. Riders must be numerous enough to
+  repay $F$. The smallest such count is
+  $\rmin = \lfloor F/(T_0/B - c)\rfloor + 1$.
+\item \textbf{The knee}, $\sum_i S_i\btok \le T_0\Xlink$. A rider's transfer
+  hides only while the whole cohort's bytes can cross the link within one step.
+  For riders of equal context $S$ the knee is
+  $\rstar = T_0\Xlink/(S\btok)$; riders are whole requests, so at most
+  $\lfloor\rstar\rfloor$ of them hide.
+\end{itemize}
+When the gate holds, $G$ increases with $r$ up to the knee (its derivative has
+the sign of $T_0 + F - cB$, which the gate makes positive), and past the knee
+every rider adds its unhidden transfer to the step. The decision is therefore
+\begin{equation}
+  r \;=\;
+  \begin{cases}
+    \lfloor\rstar\rfloor & \text{if } c < T_0/B \text{ and } \lfloor\rstar\rfloor \ge \rmin,\\
+    0 & \text{otherwise.}
+  \end{cases}
+  \label{eq:decision}
+\end{equation}
+The model hands admission a byte budget, $\beta = (1-m)\,T_0\Xlink$ with a
+margin $m$ (\S\ref{sec:opoint}), together with $\rmin$; with mixed contexts,
+the budget, not a count, is what binds.
+
+\subsection{What Context Does and Does Not Change}\label{sec:context}
+
+For a workload of one context $S$, both tiers fill in proportion to $1/S$: HBM
+holds $B = \Mkv/(S\btok)$ residents and the link hides $\rstar = T_0\Xlink/(S\btok)$
+riders. Their ratio,
+\begin{equation}
+  \frac{\rstar}{B} \;=\; \frac{T_0\,\Xlink}{\Mkv},
+  \label{eq:ratio}
+\end{equation}
+is the throughput riders add, and it does not depend on $S$. $T_0$ is dominated
+by reading the weights and barely moves with $S$. A longer context
+fits fewer residents \emph{and} fewer riders, and leaves the ratio unchanged:
+what riders can add is set by the hardware, by how many bytes the link moves
+in one step relative to how many bytes of KV HBM holds. Context does matter
+in two places. When choosing a workload, $\lfloor\rstar\rfloor$ is an integer
+(\S\ref{sec:opoint}). When admitting from a queue of mixed contexts, it decides
+\emph{which} requests should ride (\S\ref{sec:admission}).
+
+\subsection{Applying the Model: the Operating Point}\label{sec:opoint}
+
+To run a model on a node, the system first serves the largest resident cohort
+that fits, with no riders, and measures its step time; that is $T_0$. With
+$\Xlink$ and the profile, \cref{eq:gain,eq:decision} then give the gain at any
+context, and admission re-applies them every step against a $T_0$ it keeps
+measuring (\S\ref{sec:admission}).
+
+Because $\lfloor\rstar\rfloor$ is an integer, the gain is a sawtooth in context
+rather than a smooth curve. The knee falls as $1/S$, the admitted count drops by
+a whole rider at each integer crossing, and the gain peaks just below each
+crossing; a context 1\% above a crossing gives away one rider. The model is
+therefore used to place the workload. We choose the context at which the knee
+lands at $n(1+m)$ for an integer $n$, with $m = 10\%$. The margin absorbs
+step-to-step variation in $T_0$: at the bare crossing, a 2\% rise in measured
+step time already costs the rider.
+
+For Qwen-72B (fp8, $L{=}80$) on a GH200 the model selects context 14\,724.
+There $B = 3$ residents fit and $T_0 = 25.3$\,ms, so a token is worth
+$T_0/B = 8.44$\,ms. The knee is 2.2, so two riders hide. The per-rider cost
+$c = 0.61$\,ms clears the gate by $14\times$, break-even is $\rmin = 1$, and the
+two riders give $1.37\times$ throughput. What binds is the knee, not the gate.
+The ratio of \cref{eq:ratio} is largest where HBM is scarcest relative to the
+link, with heavy weights and few residents. That is the regime the design
+exists for.
+% src: paper/model/operating_point.py margin_point(Q72, GH200, 2) = 14724;
+%      evaluate(): t0 25.33, cap 3.32 -> B = 3, knee 2.20, r 2, c 0.609
+%      (= 0.177 + 0.0054*80), F 4.24 (= 0.053*80); gain with integer B = 1.371.
+%      FRAGILITY table: bare crossing loses the rider at a 2% T0 overestimate.
+\torun{$T_0$ on the GH200 target has not been measured yet: the numbers above use
+$T_0$ from the weight-read model ($W/(0.75\cdot\mathrm{HBM\;bw})$). Measure the
+3-resident step time at ctx 14\,724 and re-place the context.}

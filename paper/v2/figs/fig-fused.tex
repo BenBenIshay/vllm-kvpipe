@@ -106,9 +106,8 @@
 twice: once over all rows against the paged pool, with rider rows masked to a
 single key, and once over the gathered rider rows against the rolling slot, whose
 output is scattered back. A fused kernel would let each row select its own KV
-region, removing one launch, the gather and the scatter per layer. The second call
-is measured at ${\approx}1.9$\,ms of the ${\approx}3.4$\,ms fixed cost at $L{=}64$
-(A100); what fusion recovers is projected, not measured.
+region, removing one launch, the gather and the scatter per layer. The cost of the
+second call is measured in \S\ref{sec:ablation}.
 \planned{panel (b) is a design; no fused kernel exists.}}
 \label{fig:fused}
 \end{figure}

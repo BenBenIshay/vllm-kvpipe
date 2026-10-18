@@ -86,10 +86,6 @@ finishes. \stepn{2}~A request starved of blocks no longer blocks the waiting
 queue for riders behind it, which need none. \stepn{3}~Demoting resident R3
 copies its KV into an extent; only on the worker's acknowledgement are its HBM
 blocks reclaimed and reissued (here, to R4). Host extents are keyed by request,
-not by device block id, so reissue cannot reach a rider's copy. Measured at a fixed
-KV pool: 48 concurrent requests against an all-HBM ceiling of 8 (synthetic
-rider KV, capacity only); 133 of 192 blocks reclaimed on demotion.
-\torun{single node with emulated P/D handover; no comparison against other P/D
-orchestration has been run.}}
+not by device block id, so reissue cannot reach a rider's copy.}
 \label{fig:residency}
 \end{figure}

@@ -23,11 +23,11 @@
 \node[sub, anchor=north east] at (8.33,4.50) {host, before layer 0};
 
 % host DDR: three rider extents, scattered in the host pool
-\node[font=\sffamily\scriptsize\bfseries, text=ddrD, anchor=west] at (0.10,3.62) {host DDR};
-\node[sub, anchor=west] at (0.10,3.30) {block id};
+\node[font=\sffamily\scriptsize\bfseries, text=ddrD, anchor=west] at (0.10,3.62) {host extents};
+\node[sub, anchor=west] at (0.10,3.30) {one per rider};
 \foreach \x/\id/\r in {2.00/7/A, 2.46/8/A, 3.82/23/B, 5.18/40/C, 5.64/41/C, 6.10/42/C}
   \node[rc] at (\x,3.55) {\id};
-\foreach \x in {1.54,2.92,3.36,4.28,4.72,6.56}
+\foreach \x in {2.92,3.36,4.28,4.72,6.56}
   \node[ec] at (\x,3.55) {};
 \node[font=\scriptsize, text=inkS] at (7.05,3.55) {$\cdots$};
 \node[rl] at (2.23,3.98) {A};
@@ -36,7 +36,7 @@
 
 % the compacted range [0,W)
 \node[font=\sffamily\scriptsize\bfseries, text=hbmD, anchor=west] at (0.10,1.95) {slot layout};
-\node[sub, anchor=west] at (0.10,1.63) {dense $[0,W)$};
+\node[sub, anchor=west] at (0.10,1.63) {$[0,W)$, all $k$ slots};
 \foreach \i/\id in {0/0,1/1,2/2,3/3,4/4,5/5}
   \node[rc] (c\i) at (3.08+\i*0.46,1.88) {\id};
 
@@ -53,13 +53,13 @@
 \draw[decorate, decoration={brace, amplitude=1.4mm, mirror}, black!55]
   (4.23,1.62) -- (5.61,1.62) node[midway, below=1.6mm, sub]{C};
 \node[num] at (0.25,2.62) {1};
-\node[sub, anchor=west] at (0.45,2.62) {sort + compact};
+\node[sub, anchor=west] at (0.45,2.62) {pack};
 
 % the one block table
 \node[ctl, fill=white, anchor=west, align=left, inner sep=1.4mm] (bt) at (0.10,0.58)
-  {\textbf{one block table}\quad A\,[0,1]\;\; B\,[2]\;\; C\,[3,4,5]};
+  {\textbf{block table}\quad A\,[0,1]\;\; B\,[2]\;\; C\,[3,4,5]};
 \node[num] at (bt.north west) {2};
-\node[sub, anchor=west, align=left] at (5.98,0.58) {uploaded once,\\one slice per rider};
+\node[sub, anchor=west, align=left] at (5.98,0.58) {built once per step,\\one slice per rider};
 
 %% ================= per layer ========================================
 \fill[panel] (0,-2.75) rectangle (8.40,-0.15);
@@ -82,8 +82,8 @@
 \node[font=\sffamily\scriptsize, text=ctlD, anchor=north] at (3.57,-2.13) {layer $\ell$};
 \node[font=\sffamily\scriptsize, text=ctlD, anchor=north] at (5.09,-2.13) {layer $\ell{+}1$};
 \node[num] at (0.25,-2.12) {3};
-\node[sub, anchor=west] at (0.45,-2.12) {base $= s_{\ell \bmod k}$};
-\node[sub, anchor=west, align=left] at (5.75,-2.20) {only the base pointer\\moves; same table};
+\node[sub, anchor=west] at (0.45,-2.12) {KV base $= s_{\ell \bmod k}$};
+\node[sub, anchor=west, align=left] at (5.75,-2.20) {only the KV base\\pointer moves};
 
 %% ================= contrast ========================================
 \node[bad, anchor=north west, align=left, text width=3.75cm, inner sep=1.3mm]
@@ -91,16 +91,16 @@
   {\textbf{naive}: per rider \emph{block}\\$O(r\cdot S/b_s)$ host work, grows\\with context};
 \node[cmp, anchor=north east, align=left, text width=3.75cm, inner sep=1.3mm]
   (us) at (8.40,-2.95)
-  {\textbf{ours}: one slice per \emph{rider}\\$O(r)$ host work,\\independent of context};
+  {\textbf{\sysname}: one slice per \emph{rider}\\$O(r)$ host work,\\independent of context};
 \end{tikzpicture}
 \caption{\textbf{Step-invariant addressing: addresses are fixed per step, contents
-change per layer.} \stepn{1}~Once per step the riders' host extents are sorted and
-compacted into a dense range; maximal contiguous runs become one DMA copy each (block-major
-storage with $K$ and $V$ split keeps each run contiguous), so the copy engine
-performs the compaction. \stepn{2}~The resulting block table is
-built and uploaded once and serves all $L$ layers. \stepn{3}~Every slot has the same
-layout, so advancing from layer $\ell$ to $\ell{+}1$ moves only the base pointer
-handed to attention. Building the table one slice per rider cut its host cost from
-0.275 to 0.0031\,ms per rider (ctx 512, A100), identical at ctx 2048.}
+change per layer.} \stepn{1}~Once per step the riders' blocks are packed, in order,
+into one slot layout $[0,W)$ that every one of the $k$ slots shares; each
+contiguous run of host blocks becomes one copy (block-major storage with $K$ and
+$V$ split keeps a run contiguous). \stepn{2}~One block table, one slice per rider,
+indexes that layout; it is built once per step and serves all $L$ layers.
+\stepn{3}~Moving from layer $\ell$ to $\ell{+}1$ changes only the KV base pointer
+handed to attention, to slot $s_{(\ell+1)\bmod k}$. Measured in
+\S\ref{sec:ablation}.}
 \label{fig:addressing}
 \end{figure}
