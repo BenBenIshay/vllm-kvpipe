@@ -1,0 +1,38 @@
+% =============================================================================
+% Appendix A. Moved out of 4.1 by Ben, 2026-10-18 ("let's put in appendix 4.1.4
+% for now, I don't convinced it's valuable"). Single-node runs only, P/D
+% emulated, so this block has not been compared against P/D orchestration.
+% =============================================================================
+
+\section{Decoupling Execution from Residency}\label{sec:residency}
+
+\input{figs/fig-residency}
+
+\paragraph{Challenge.} In a paged engine, being scheduled means holding device
+blocks: the waiting queue admits a request by allocating its blocks, and the
+running batch is bounded by them. A rider must be schedulable while holding none.
+
+\paragraph{Design.} Three scheduler changes and one address space
+(\cref{fig:residency}). A rider is admitted with an empty block list, and only
+once its KV, written by the prefill node into host DDR, is registered in a host
+extent; the worker refuses a rider whose KV was never delivered. The waiting
+queue no longer stops at the first request it cannot allocate, so a
+block-starved request at its head does not stall a rider behind it. A resident
+is demoted through an explicit acknowledgement, because the scheduler cannot
+observe a host-side write: its KV is copied into an extent, the worker
+acknowledges it, and only then are its device blocks reclaimed. And the host
+copy is addressed by a private, per-request extent space rather than by device
+block id: a network-admitted rider has no device id to be keyed by, and a
+demoted rider's ids are returned to the free list and reissued to other
+requests.
+
+\paragraph{Capacity.} At a fixed KV pool whose all-HBM ceiling is 8 concurrent
+requests, the node held 48 with riders on top of a full resident cohort, and
+demotion reclaimed 133 of 192 device blocks. The capacity run fills rider KV
+synthetically, so it measures capacity only; token correctness of the same path
+is tested bitwise and separately.
+% src: benchmarks/kv_pipelining_bench/hybrid_preload_capacity.py docstring and
+%      ARCHITECTURE.md s9 (8 -> 48 at b_hbm_max = measured ceiling);
+%      hybrid_reclaim_correctness.py (133 of 192)
+\torun{all runs are single-node with the P/D handover emulated; this block has
+not been compared against other P/D orchestration.}

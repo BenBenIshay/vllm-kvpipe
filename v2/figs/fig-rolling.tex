@@ -28,8 +28,8 @@
 
 % lane backgrounds and labels
 \fill[black!3] (1.05,-0.40) rectangle (10.80,0.40);
-\foreach \y in {-0.80,-1.40} \fill[black!3] (1.05,\y-0.25) rectangle (10.80,\y+0.25);
-\foreach \y/\n in {0/GPU, -0.80/H2D, -1.40/D2H} {
+\foreach \y in {-0.80,-1.40,-2.00} \fill[black!3] (1.05,\y-0.25) rectangle (10.80,\y+0.25);
+\foreach \y/\n in {0/GPU, -0.80/H2D, -1.40/D2H, -2.00/Host} {
   \node[lane, anchor=east] at (1.05,\y) {\n};
 }
 \node[hd, anchor=west] at (0.05,1.20) {(a) One decode step, $k{=}4$ slots};
@@ -52,9 +52,23 @@
 \foreach \j in {1,...,4}
   \draw[dep] (h\j.north east) -- (c\j.south west);
 
-% D2H lane: the new token's K,V of each layer, non-blocking
+% D2H lane: each layer's new-token K,V, copied non-blocking into pinned staging
 \foreach \j in {0,...,4}
-  \node[xout, minimum width=0.42cm] at (\cx+\j*\cs+1.15,-1.40) {};
+  \node[xout, minimum width=0.42cm] (o\j) at (\cx+\j*\cs+1.15,-1.40) {};
+\node[font=\sffamily\scriptsize, text=d2hC, anchor=west] at (\cx+1.40,-1.40)
+  {$\to$ staging};
+
+% Host lane: the deferred scatter. Step t-1's staged tokens are applied at the
+% START of step t (build_step -> flush_token_writes), behind one event wait,
+% before the step's first fetch reads the host copy. Step t's tokens wait.
+\node[ddr, minimum width=1.12cm, minimum height=0.42cm, inner sep=0.5pt,
+      align=center, font=\sffamily\scriptsize] (sc) at (1.66,-2.00)
+  {scatter $t{-}1$};
+\draw[dep] (sc.north) -- (h0.south);
+\node[font=\sffamily\scriptsize, text=inkS, anchor=west] at (2.70,-2.00)
+  {one event wait; before the first fetch};
+\node[font=\sffamily\scriptsize, text=d2hC, anchor=east] at (10.72,-2.00)
+  {step $t$'s rows: scattered at step $t{+}1$};
 
 % annotations
 \node[sub, align=center] at (1.65,0.0) {pipeline\\[-2pt]fill};
@@ -63,23 +77,19 @@
   (2.30,0.47) -- (\cx+3*\cs+0.10,0.47);
 \node[font=\sffamily\scriptsize, text=ddrD, anchor=south] at (\cx+1.5*\cs+0.05,0.62)
   {$s_0$ is not rewritten until $k{-}1$ layers after layer 0 read it};
-\draw[decorate, decoration={brace, amplitude=1.4mm, mirror}, draw=d2hC]
-  (2.30,-1.72) -- (10.70,-1.72);
-\node[font=\sffamily\scriptsize, text=d2hC, anchor=north, align=center] at (6.50,-1.86)
-  {copied non-blocking into pinned staging;\\[-1pt]scattered into the host copy
-   at the \textbf{next} step, behind one event};
 \node[num] at (3.80,-0.97) {1};
-\node[num] at (1.65,-1.40) {2};
+\node[num] at (3.00,-1.40) {2};
+\node[num] at (2.47,-2.00) {3};
 
 %% ================= (b) what crosses the link, per token ===================
 \begin{scope}[shift={(11.15,0)}]
 \node[hd, anchor=west] at (-0.10,1.20) {(b) Per token, across the link};
-\node[sub, anchor=south, align=center] at (2.65,0.05) {fetch hides\\[-2pt]behind};
+\node[sub, anchor=south, align=center] at (2.65,0.05) {fetched per\\[-2pt]layer of compute};
 \node[sub, anchor=south, align=center] at (4.80,0.05) {to GPU /\\[-2pt]to host};
 
 \foreach \y/\nm/\sb in {-0.35/Pie/{swap, per layer},
                         -1.05/DirectKV/{zero-copy},
-                        -1.75/Ours/{cache, per request}} {
+                        -1.75/\sysname/{cache, per request}} {
   \node[anchor=west, align=left, font=\sffamily\scriptsize] at (-0.10,\y)
     {\textbf{\nm}\\[-2pt]{\color{inkS}\sb}};
 }
@@ -92,7 +102,7 @@
 \foreach \t in {1,...,10} \draw[cmpD!60, line width=0.3pt] (1.95+\t*0.127,-1.20) -- ++(0,0.30);
 \node[font=\sffamily\scriptsize] at (2.65,-0.35) {a layer};
 \node[font=\sffamily\scriptsize, fill=cmpF, inner sep=0.6pt] at (2.80,-1.05) {one tile};
-\node[font=\sffamily\scriptsize] at (2.65,-1.75) {a layer};
+\node[font=\sffamily\scriptsize] at (2.65,-1.75) {riders' layer};
 
 % traffic: in (blue, solid) and out (purple, dashed); thickness ~ volume
 \draw[->, draw=h2dC, line width=1.6pt] (3.55,-0.27) -- (4.15,-0.27);
@@ -114,12 +124,17 @@
 \caption{\textbf{The rolling layer cache.}
 (a)~\stepn{1}~While layer $\ell$ computes, the rider KV of layer $\ell{+}1$ streams
 into slot $s_{(\ell+1)\bmod k}$; each layer waits only on its own slot's event, and
-a slot is not rewritten until $k{-}1$ layers after it was read. \stepn{2}~Because the host
+a slot is not rewritten until $k{-}1$ layers after it was read. Because the host
 copy stays authoritative, a slot is a cache line, not a swap buffer: the only
-traffic back is each layer's new $K,V$, copied without blocking and folded into
-the host copy at the next step. (b)~Unlike a swap design (Pie), nothing is
-written back but the new token; unlike zero-copy attention (DirectKV), the fetch
-hides behind a whole layer of compute rather than one tile. The overlap is what
-the per-rider cost rests on: $0.93$\,ms with it, $7.20$\,ms without.}
+traffic back is the new token. \stepn{2}~Each layer's new $K,V$ is copied without
+blocking into pinned staging; nothing waits for it. \stepn{3}~The write into the
+host copy is \emph{deferred}: at the start of the next step the host waits on one
+event, already satisfied, and scatters every staged layer at once, before that
+step's first fetch reads the host copy.
+(b)~Pie streams a layer of every request and writes the same layer back;
+zero-copy attention (DirectKV) streams all KV a tile at a time inside the kernel;
+\sysname{} streams only the riders' layer, behind a whole layer of compute, and
+writes back one token. The effect of each mechanism is measured in
+\S\ref{sec:ablation}.}
 \label{fig:rolling}
 \end{figure*}
