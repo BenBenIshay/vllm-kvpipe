@@ -22,13 +22,14 @@
 #     interleaved across contexts so machine drift cannot read as context.
 #   * The k sweep uses REAL bytes at ctx 128, 16 residents, where M13 kept every
 #     point below the knee; k = 2, 4, 8 interleaved, two repeats.
+#   * NOT exclusive: all four A100s were held by long jobs on 2026-10-19, so
+#     this takes the first A100 that frees; co-tenants are logged at start.
 #   * Phase-timer arms (Class A host timer on build_step_bt_python) are separate
 #     because the timers perturb step time.
 #
 #SBATCH --job-name=opt-m22
 #SBATCH --partition=supernova
-#SBATCH --nodelist=nova07
-#SBATCH --exclusive
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=250G
 #SBATCH --time=14:00:00
@@ -47,6 +48,7 @@ Q32=Qwen/Qwen2.5-32B-Instruct
 echo "========= M22 : $(hostname) $(date -Is) ========="
 echo "head: $(git rev-parse --short HEAD)   uncommitted: $(git status --porcelain -- vllm benchmarks | wc -l)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+echo "co-tenants on $(hostname):"; squeue -w "$(hostname)" -o "%i %u %C %b" 2>/dev/null
 
 VLLM_PATH=$("$PY" -c "import vllm; print(vllm.__file__)" 2>&1)
 case "$VLLM_PATH" in

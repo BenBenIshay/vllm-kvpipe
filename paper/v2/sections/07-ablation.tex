@@ -11,7 +11,7 @@
 \subsection{What Each Building Block Is Worth}\label{sec:ablation}
 
 \paragraph{Setup.} All ablations run on one A100-80 (PCIe) serving
-Qwen2.5-32B-Instruct in fp16 ($L{=}64$ layers, block size 16, a rolling window
+Qwen2.5-32B-Instruct in fp16 ($L{=}64$ layers, KV blocks of 16 tokens, a rolling window
 of $k{=}4$ layer-slots). Block size 16 is the engine default. The prefetch
 runs one layer ahead, so $k{=}2$ is the minimum; $k{=}4$ is the default, and
 sweeps at $k{=}2$ and $k{=}8$ change the step time by under 1\,ms at every
@@ -47,8 +47,9 @@ difference in $F$ below 0.5\,ms as noise.
 \input{figs/fig-abl-law}
 
 \paragraph{Rolling layer cache: the transfer is hidden, not merely
-shortened.} \Cref{fig:abl-law}a removes the copy stream's overlap by serialising
-it with compute. A rider then costs 7.20\,ms of step time against 6.17\,ms of
+shortened.} \Cref{fig:abl-law}a is a sanity check of the harness rather than a
+claim: it removes the copy stream's overlap by serialising it with compute, the
+baseline any prefetching design improves on. A rider then costs 7.20\,ms of step time against 6.17\,ms of
 link time: the transfer is fully exposed, plus its bookkeeping. With the
 overlap, the same sweep costs 0.93\,ms per rider, and that slope is an upper
 bound, since it includes counts approaching the knee. \Cref{fig:abl-law}b says

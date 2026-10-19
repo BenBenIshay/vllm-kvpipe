@@ -138,9 +138,11 @@ rider path (\S\ref{sec:fused}).
 
 \input{figs/fig-addressing}
 
-\paragraph{Challenge.} Attention finds a request's KV through a \emph{block
-table}: for each request, the list of block indices at which its KV sits in one
-device tensor. A rider's KV is not in that tensor. It lives in a host extent and
+\paragraph{Challenge.} A paged engine stores KV in fixed-size \emph{blocks}
+(pages) of $\mathit{bs}$ tokens each; vLLM's default is 16 tokens, so a request
+of context $S$ occupies $\lceil S/\mathit{bs}\rceil$ blocks. Attention finds a
+request's KV through a \emph{block table}: for each request, the list of block
+indices at which its KV sits in one device tensor. A rider's KV is not in that tensor. It lives in a host extent and
 is copied, layer by layer, into whichever slot is current. The obvious way to
 address it is to translate every rider block into a slot block for every layer.
 That costs host work proportional to the number of rider blocks,
