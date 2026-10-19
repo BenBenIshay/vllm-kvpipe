@@ -14,10 +14,11 @@ The admission controller carries out the capacity model's decision
 budget $\beta$ and $\rmin$ from it, and assigns each request a tier so that the
 riders fill $\beta$ (\cref{alg:admit}).
 
-\paragraph{Which requests ride: the largest.} Once HBM is full, every further
-request costs bytes from one of two budgets: HBM capacity if it is a resident,
-or link time if it is a rider. Whichever tier it is in, a request delivers one
-token per step. The tiers differ in what else they charge. A resident costs
+\paragraph{Which requests ride: the largest.} When more requests are waiting
+than HBM can hold, the controller must decide which of them take HBM and which
+take the link. Each request spends its bytes from exactly one budget: HBM
+capacity as a resident, or link bytes per step as a rider. Whichever budget it
+spends, it delivers one token per step. The tiers differ in what else they charge. A resident costs
 nothing beyond its bytes, while every rider also costs $c$ of step time,
 however long its context. A large rider spends that $c$ on many hidden bytes,
 and a small one on few. Filling $\beta$ with the largest candidates therefore

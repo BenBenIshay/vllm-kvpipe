@@ -90,8 +90,10 @@ Three conditions follow, each of a different kind.
 \item \textbf{Break-even}, $r \ge \rmin$. Riders must be numerous enough to
   repay $F$. The smallest such count is
   $\rmin = \lfloor F/(T_0/B - c)\rfloor + 1$.
-\item \textbf{The knee}, $\sum_i S_i\btok \le T_0\Xlink$. A rider's transfer
-  hides only while the whole cohort's bytes can cross the link within one step.
+\item \textbf{The knee}, $\sum_i S_i\btok \le T_0\Xlink$, where $\Xlink$ is the
+  host-to-device bandwidth the copy stream achieves, so $T_0\Xlink$ is the bytes
+  the link can move in one step. A rider's transfer hides only while the whole
+  cohort's bytes fit in that amount.
   For riders of equal context $S$ the knee is
   $\rstar = T_0\Xlink/(S\btok)$; riders are whole requests, so at most
   $\lfloor\rstar\rfloor$ of them hide.
