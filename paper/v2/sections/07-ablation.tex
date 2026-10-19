@@ -33,8 +33,10 @@ squares over the rider counts whose transfer time is at most a third of the
 step, so that the fit stays below the knee: a fit across the knee raises the
 slope and lowers the intercept together. An \emph{ablation arm} removes one
 mechanism and keeps every other launch, hook, event and stream ordering, so the
-difference between arms is that mechanism and nothing else; the two arms of a
-pair run in the same job wherever the figure says so.
+difference between arms is that mechanism and nothing else. Each arm is a
+runtime switch of the same binary, not a separate build; the switches are
+listed in \cref{sec:switches}. The two arms of a pair run in the same job
+wherever the figure says so.
 \emph{Run-to-run noise.} Repeating a configuration within one job moves $c$ by
 0.03\,ms and $F$ by 0.04\,ms. Repeating it in a different job can move $F$ by up
 to 0.5\,ms, because the job's starting state differs. We therefore plot repeats
