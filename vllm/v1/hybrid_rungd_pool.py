@@ -385,6 +385,15 @@ class RungdHostPool:
         self._wt_dirty = False
         self.wt_flushes = 0
         self.wt_deferred_rows = 0
+        # Ablation arm for step-invariant addressing (paper s7.1, M22): build
+        # the rider block table the pre-T1 way, one tensor element assignment
+        # per rider BLOCK, so its cost can be measured against the per-rider
+        # slice on the same binary. Same table contents; timing only.
+        self._perblock_bt = (
+            _os.environ.get("VLLM_KVPIPE_RUNGD_PERBLOCK_BT", "0") == "1")
+        if self._perblock_bt:
+            print("*** RungdHostPool: PERBLOCK_BT=1 -- block table built one "
+                  "element per rider block (ablation arm).", flush=True)
         # Negative control. Suppresses the deferred flush so the mirror goes
         # stale, which is exactly the T2 bug that would be silent in
         # production. Double-gated, and it announces itself.
@@ -1033,7 +1042,12 @@ class RungdHostPool:
         # constant: O(r) instead of O(r*S/bs).
         _tbt = PT.now()
         bt = torch.zeros(n_req, max_blk, dtype=torch.int32)
-        if fast:
+        if fast and self._perblock_bt:
+            for row, rid in enumerate(active_req_ids):
+                cb = row_cbase[row]
+                for j in range(len(self.req_blocks[rid])):
+                    bt[row, j] = cb + j
+        elif fast:
             # `self._ar` is a preallocated arange, so the row is a VIEW and the
             # assignment allocates nothing.
             for row, rid in enumerate(active_req_ids):
@@ -1055,7 +1069,8 @@ class RungdHostPool:
         PT.context(n_active=n_req, w_blocks=self._w_cur,
                    n_runs=len(self._runs), max_blk=int(max_blk),
                    layers=len(self.layers), block_size=self.block_size,
-                   xfer_mode=self._xfer_mode, build_fast_path=int(fast))
+                   xfer_mode=self._xfer_mode, build_fast_path=int(fast),
+                   perblock_bt=int(self._perblock_bt))
         PT.add("build_step", _t)
         return bt, seq
 
