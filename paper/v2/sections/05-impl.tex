@@ -39,9 +39,6 @@ allocation, viewed per layer. In this layout a run of consecutive blocks is
 one contiguous byte range on the host and in the slot, and one
 \texttt{cudaMemcpyAsync} moves it. The device side is $k$ slots for $K$ and
 $k$ for $V$, each sized to the packed region of \cref{sec:addressing}.
-\gap{extents are sized for the model's maximum length, not for each request's
-prompt plus its token limit; a per-request size needs the request's sampling
-parameters at admission, which the pool does not see.}
 % src: hybrid_rungd_pool.py: RungdHostPool.__init__ (block-major split K/V,
 %      _unified_mirror -> _host_k_all/_host_v_all with per-layer views,
 %      rolling_k/rolling_v), ensure_req, free_req;
@@ -111,10 +108,7 @@ would be another, with no change to admission or to the scheduler.
 
 \paragraph{Admission.} The controller assigns each request a tier and decides
 promotions and demotions. It runs inside the scheduler, which calls it once
-per step. \gap{it does not yet execute the capacity model's decision
-(\cref{sec:admission}): it orders by arrival and admits up to a configured
-resident cap, $\Xlink$ is a configured value, and $T_0$ is not yet measured
-while serving.}
+per step, and executes \cref{alg:admit}.
 % src: transfer_aware_admission.py: TransferAwareAdmissionController
 %      (_tier_policy from VLLM_KVPIPE_TIER_POLICY, default "arrival");
 %      config/scheduler.py: hybrid_b_hbm_max, transfer_aware_max_effective_

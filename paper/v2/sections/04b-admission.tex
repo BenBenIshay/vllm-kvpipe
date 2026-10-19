@@ -4,7 +4,8 @@
 % Which requests: LARGEST FIRST (review note 10) -- context cancels in the
 % workload view, not in admission. Where the code (vllm/v1/core/sched/
 % transfer_aware_admission.py on perblock-d2h-opt) does not yet do what the
-% algorithm says, the text says so in RED via \gap{}.
+% algorithm says, the gap is listed in Appendix C (sections/C-wip.tex),
+% never in the body (Ben, 2026-10-19).
 % =============================================================================
 
 \subsection{Admission}\label{sec:admission}
@@ -96,16 +97,3 @@ them.
 \textsc{Migrate} demotes the largest resident when HBM is full and requests are
 waiting, which makes room for smaller ones, and it treats every move as
 provisional.
-
-\gap{the runtime controller does not yet evaluate \cref{eq:decision}: it
-enforces the byte budget (line~\ref{alg:knee}) but computes neither the gate nor
-$\rmin$ (line~\ref{alg:commit}), and relies on the probe to undo moves that do
-not pay. To add: read $F$ and $c$ from the profile at line~\ref{alg:model}.}
-
-\gap{candidates are taken in arrival order, and demotion picks by a temporal
-score (idle time, remaining generation), which is off by default. Neither orders
-by context (lines~\ref{alg:res}, \ref{alg:order} and~\ref{alg:migr}). Demotion is triggered by
-inter-token-latency watermarks rather than by a full HBM with requests waiting.}
-
-\gap{$\Xlink$ is the configured link bandwidth, not a measured one, and the
-resident count is a configured cap rather than derived from $\Mkv$.}
