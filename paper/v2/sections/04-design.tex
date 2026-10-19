@@ -95,8 +95,8 @@ step. A per-layer device-to-host copy that the compute stream waits on is a
 synchronisation point in every layer, whatever its size: the GPU idles until a
 few kilobytes have crossed the link. We split the write in two
 (\cref{fig:rolling}a, \stepn{2} and \stepn{3}). During the step, each layer's new $K,V$ is
-copied \emph{without blocking} into pinned host staging on the device-to-host
-stream, and compute proceeds at once. The scatter from staging into the riders'
+copied \emph{without blocking} into pinned host staging, and compute proceeds
+at once; nothing waits on the copy during the step. The scatter from staging into the riders'
 authoritative host extents is \emph{deferred to the start of the next step},
 behind a single event wait. By then the copies have long finished, so the wait
 has already elapsed. Correctness rests on ordering, not on a guard. The scatter
