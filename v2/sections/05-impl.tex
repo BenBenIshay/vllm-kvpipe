@@ -1,25 +1,22 @@
 % =============================================================================
-% 5 Implementation. Outline agreed with Ben 2026-10-19
-% (paper_versions/sec5-impl-outline.md), with his decisions: rider-path line
-% count only; TP=1 and eager mode are one factual sentence each, not
-% limitations; the handover is described plainly as an emulation; the switch
-% table lives in Appendix B. HOW in vLLM terms only: no design argument (s4)
-% and no measured effect (s6, s7).
+% 5 Implementation. Trimmed 2026-10-19 to OSDI/MLSys norms (Ben): two
+% paragraphs, ~0.4-0.5 page. Only what s4 does not already say and a reproducer
+% would trip over. No implementation gaps in the body (Appendix C). The handover
+% emulation is described in the s7 Setup; the ablation switches are pointed to
+% from the s7 Method.
 % =============================================================================
 
 \section{Implementation}\label{sec:impl}
 
-\sysname{} is built on vLLM's V1 engine. The rider path adds about 5{,}800
-lines in nine files: a host pool (1{,}600 lines), changes to the scheduler, the
-model runner and the FlashAttention backend, the tier interface, and the
-admission controller. No model file is modified. A rider is one more row of
-the same forward pass, and only the attention backend sees that its KV lives
-elsewhere. The prototype runs on a single GPU (TP${=}1$). The design is
-per-GPU: under tensor parallelism each GPU holds $1/N$ of the weights and of
-every request's KV and has its own link, so the capacity model applies to
-each GPU. The engine runs in eager mode, without CUDA-graph capture, because
-the KV connector requires it; every baseline in this paper runs in the same
-eager mode.
+\paragraph{Prototype.} \sysname{} is a fork of vLLM's V1 engine at upstream
+commit \texttt{b89275d01}. The rider path is about 5{,}800 lines in nine
+files. It touches the scheduler, the model runner and the FlashAttention
+backend, and adds a host-pool module; no model code is modified. The prototype
+runs on a single GPU, and the design is per GPU: under tensor parallelism each
+GPU holds $1/N$ of the weights and of every request's KV and has its own link,
+so the capacity model applies to each GPU separately. The engine runs in eager
+mode, without CUDA-graph capture, and every baseline in this paper runs in the
+same eager mode.
 % src: git diff --numstat b89275d01..HEAD (upstream base 2026-01-15):
 %      hybrid_rungd_pool.py 1608, gpu_model_runner.py +789, scheduler.py +519,
 %      flash_attn.py +478, transfer_aware_admission.py 949, kv_tier_backend.py
@@ -29,103 +26,22 @@ eager mode.
 %      CUDA-graph capture)". Baselines: r=0 rows of rider_cost_curve.py, same
 %      engine and flags.
 
-\paragraph{The host pool.} Riders' KV is held by one object,
-\texttt{RungdHostPool}, which owns a block-id space of its own, separate from
-the device pool's. Each rider gets one contiguous \emph{extent} of host blocks,
-assigned on admission and returned only when the request finishes, so a host
-block id is never reused while its request runs. The host copy is block-major,
-with $K$ and $V$ in separate pinned tensors. All $L$ layers share one pinned
-allocation, viewed per layer. In this layout a run of consecutive blocks is
-one contiguous byte range on the host and in the slot, and one
-\texttt{cudaMemcpyAsync} moves it. The device side is $k$ slots for $K$ and
-$k$ for $V$, each sized to the packed region of \cref{sec:addressing}.
-% src: hybrid_rungd_pool.py: RungdHostPool.__init__ (block-major split K/V,
-%      _unified_mirror -> _host_k_all/_host_v_all with per-layer views,
-%      rolling_k/rolling_v), ensure_req, free_req;
-%      gpu_model_runner.py:_maybe_setup_rungd_pool (max_bpr from max_model_len,
-%      "a production version would size each extent at admission").
-
-\paragraph{Streams and events.} The prefetch of \cref{sec:rolling} runs on a
-second CUDA stream. When layer $\ell$ requests its slot, the pool makes the
-compute stream wait on layer $\ell$'s event, then issues layer $\ell{+}1$'s
-copies on the copy stream, after first making that stream wait on the compute
-stream so that a slot still being read is not overwritten. One event is
-recorded per layer and consumed once. Layer~0 issues its own copies, and the
-last layer issues none, so no copy crosses a step boundary. The write-back
-copies each layer's new $K,V$ rows into a pinned staging buffer of shape
-$[L, r, \dots]$, which grows but never shrinks. At the next step,
-\texttt{build\_step} first waits on one event and then scatters the staged rows
-into the extents. Because every layer of a rider writes the same row of its
-extent, the scatter is two vectorised index copies, one for $K$ and one for
-$V$, for all layers at once.
-% src: hybrid_rungd_pool.py: stream_layer (wait_event on the prefetched
-%      layer's event; else _issue_runs; prefetch guarded by layer_idx + 1 <
-%      len(self.layers)), _launch_prefetch (copy_stream.wait_stream(current),
-%      event per layer), _wt_staging ("Grown only, never shrunk"),
-%      write_token, flush_token_writes (called first in build_step;
-%      _wt_layer_off: global row = host_pos + layer*h_max*bs).
-
-\paragraph{Once per step.} \texttt{build\_step} packs the active riders' extents
-into the dense region $[0,W)$ and computes the copy runs, which are the
-maximal ranges contiguous on both sides. It also builds the rider block table,
-writing one slice per rider. The model runner calls it once per step, before
-the forward pass. It hands attention the table, each rider's valid key length,
-and the slot position of each rider's new token. All of these are fixed for
-the step and used unchanged by every layer.
-% src: hybrid_rungd_pool.py: build_step, _plan_extents, _runs_from_sorted;
-%      gpu_model_runner.py:_maybe_setup_rungd_pool (split.rolling_block_table,
-%      rolling_seqused_k, rolling_max_seqlen_k "loop-invariant across layers",
-%      cpu_slot_pos / cpu_host_pos derived once).
-
-\paragraph{Scheduler.} A rider must be schedulable with no device blocks. The
-scheduler admits a host-tier request with an empty block list, and only if its
-KV has been registered as delivered. The model runner refuses a registered
-request whose KV is not there, since otherwise it would decode from nothing.
-When the request at the head of the waiting queue cannot get blocks and a
-rider is queued behind it, the scheduler skips over the blocked request and
-then restores it to its place, rather than stopping as stock vLLM does. With
-no rider waiting, scheduling is unchanged.
-% src: scheduler.py: _rungd_admit_preloaded ("every condition is required and
-%      the default is False"), register_pool_preloaded, _rungd_defer_for_riders
-%      ("keeps its place rather than being sent to the back");
-%      hybrid_pool_admit.py module docstring ("refuses loudly if a request is
-%      marked here with nothing behind it").
-
-\paragraph{Attention.} The FlashAttention backend runs its standard call over
-all rows, with each rider row limited to one key. A per-layer hook,
-\texttt{\_pool\_cpu\_override}, then handles the riders. It gathers their
-query rows and writes this step's $K,V$ through the pool, then runs attention
-over the current slot with the step's rider table and scatters the results
-into the riders' output rows. The hook reaches the rider path only through a
-tier interface (\texttt{KVTierBackend}), which has four operations: prepare a
-layer, write a token, attend, and report bytes per step. Our rolling cache is
-one implementation of that interface. A kernel that reads host memory directly
-would be another, with no change to admission or to the scheduler.
-% src: flash_attn.py: FlashAttentionImpl._pool_cpu_override (backend
-%      .prepare_layer / .write_token / .attend through TierAttendCtx,
-%      index_select gather, scatter into out); kv_tier_backend.py:
-%      KVTierBackend protocol, StagedHostBackend.
-
-\paragraph{Admission.} The controller assigns each request a tier and decides
-promotions and demotions. It runs inside the scheduler, which calls it once
-per step, and executes \cref{alg:admit}.
-% src: transfer_aware_admission.py: TransferAwareAdmissionController
-%      (_tier_policy from VLLM_KVPIPE_TIER_POLICY, default "arrival");
-%      config/scheduler.py: hybrid_b_hbm_max, transfer_aware_max_effective_
-%      bw_bytes_per_sec ("Reserved for Phase 3 policy").
-
-\paragraph{The decode-node handover.} \sysname{} runs on the decode node of a
-disaggregated deployment, so a rider arrives with its KV already computed. Our
-measurements emulate the prefill node's delivery with a KV connector. Before a
-rider is admitted, the connector writes its KV into the rider's host extent
-and registers it as delivered, as a prefill node's transfer would. Every step
-of every measurement is then checked to be pure decode, with no prefill tokens
-and a constant running set.
-% src: pipelined_decode_bench_connector.py (PipelinedDecodeBenchConnector);
-%      rider_cost_curve.py --connector (kv_connector="PipelinedDecodeBench
-%      Connector"); hybrid_rungd_pool.py: preload_req / preload_layer;
-%      decode_purity.DecodePurityMonitor (per-step purity gate).
-
-\paragraph{Ablation switches.} Each ablation arm of \cref{sec:ablation} is a
-runtime switch of the same binary, not a separate build. The switches are
-listed in \cref{sec:switches}.
+\paragraph{Engineering details.} The host copy of every rider's KV is pinned
+memory, allocated once for all $L$ layers and viewed per layer. Pinning is what
+lets each run be a single \texttt{cudaMemcpyAsync} straight into the slot: a
+copy from pageable memory is staged through a driver buffer and blocks the
+host. A single allocation lets the deferred scatter
+(\cref{sec:rolling}) write every layer's new rows with two vectorised index
+copies, one for $K$ and one for $V$, rather than $2L$, because a rider's row
+in its extent is the same in every layer. The write-back needs no stream of
+its own. Its device-to-host copies are issued non-blocking on the compute
+stream behind one recorded event, and only the host-side scatter waits on that
+event at the start of the next step. The second stream carries the
+host-to-device prefetch alone.
+% src: hybrid_rungd_pool.py: RungdHostPool.__init__ (_unified_mirror:
+%      _host_k_all/_host_v_all pin_memory=True, per-layer views; _wt_layer_off
+%      "global row = host_pos + layer*h_max*bs"; _copy_stream is the only
+%      torch.cuda.Stream), write_token (copy_(non_blocking=True) on the current
+%      stream, then self._wt_event.record()), flush_token_writes
+%      (self._wt_event.synchronize() before the scatter); the code comment on
+%      the pre-T2 path: "two PAGEABLE (hence blocking) .to("cpu") copies".
