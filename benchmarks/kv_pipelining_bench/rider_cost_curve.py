@@ -423,6 +423,14 @@ def main() -> int:
                         "ceil((ctx + long_len) / block_size) for a tight "
                         "extent. A request needing more RAISES, which is "
                         "deliberate -- it must not silently truncate.")
+    p.add_argument("--trace-dir", default="",
+                   help="after measuring each rider count in --trace-riders, "
+                        "run ONE extra long generation under torch.profiler "
+                        "(CUDA+CPU) and export a chrome trace here. The "
+                        "measured rows are untouched; the trace is for the "
+                        "timeline only (CUPTI perturbs host timing).")
+    p.add_argument("--trace-riders", default="",
+                   help="rider counts to trace (default: all)")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--out", default="rider_cost_curve.json")
     p.add_argument("--outdir",
@@ -445,6 +453,7 @@ def main() -> int:
     os.makedirs(a.outdir, exist_ok=True)
 
     riders = [int(x) for x in a.riders.split(",") if x != ""]
+    trace_riders = [int(x) for x in a.trace_riders.split(",") if x != ""]
 
     os.environ["VLLM_KVPIPE_HYBRID_RUNGD"] = "1"
     os.environ["VLLM_KVPIPE_HYBRID_RUNGD_FREE"] = "1"
@@ -647,6 +656,23 @@ def main() -> int:
                      "usable": usable,
                      "n_reps": len(reps), "n_impure": n_impure,
                      "reps": reps})
+
+        # TIMELINE, after the measurement so it cannot perturb it. nsys is not
+        # installed on the nodes; torch.profiler records the same CUDA activity
+        # through CUPTI, with stream ids, which is what the questions need
+        # (which stream the write-back D2H runs on; where the GPU idles).
+        if a.trace_dir and (not trace_riders or r in trace_riders):
+            import torch
+            from torch.profiler import ProfilerActivity, profile
+            os.makedirs(a.trace_dir, exist_ok=True)
+            with profile(activities=[ProfilerActivity.CPU,
+                                     ProfilerActivity.CUDA]) as prof:
+                run_once(llm, prompts, a.long_len, a.seed)
+                torch.cuda.synchronize()
+            tpath = os.path.join(
+                a.trace_dir, f"{os.path.splitext(a.out)[0]}_r{r}.json.gz")
+            prof.export_chrome_trace(tpath)
+            print(f"      trace -> {tpath}")
 
     base = rows[0]["step_ms"] if rows else float("nan")
     print("\n" + "=" * 66)
