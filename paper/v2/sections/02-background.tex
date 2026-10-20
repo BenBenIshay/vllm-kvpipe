@@ -8,7 +8,11 @@
 
 \section{Background and Motivation}\label{sec:background}
 
-\subsection{Decode Reads Everything, Every Step}
+% Restructured 2026-10-20 (Ben's review): six short subsections merged into
+% three, following the argument -- the decode node is HBM-bound; host memory
+% over a fast link is a second tier that existing systems use one path at a
+% time; when riders pay.
+\subsection{The Decode Node Is Bound by HBM Capacity}
 
 A transformer layer's attention compares each new token's query with the keys
 of every earlier token and mixes their values. Serving engines keep those keys
@@ -22,19 +26,15 @@ not.
 % src: Qwen2.5-72B config: 80 layers, 8 KV heads, head dim 128 ->
 %      2*80*8*128*2 = 327,680 B (paper/model/overhead_model.py Q72).
 
-\subsection{Disaggregated Decode Nodes}
-
 Prefill and decode stress different resources, so production systems place
 them on separate nodes and hand each request's KV from one to the
 other~\cite{distserve,splitwise,mooncake}. This paper is about the decode
 node. Its KV arrives over the network once per request, and where it lands,
 HBM or host memory, is the decode node's choice.
 
-\subsection{Compute Idles as Context Grows}
-
 \input{figs/fig-util}
 
-Because the weights are read once per step, the work per byte read grows with
+On that node, because the weights are read once per step, the work per byte read grows with
 the batch, and so does the share of the GPU's compute a step can use. The
 batch, in turn, is what fits in the HBM the weights leave free: at most
 $\Mkv/(S\btok)$ requests of context $S$. \Cref{fig:util} combines the two into
@@ -45,21 +45,17 @@ agree that compute, not memory, is what goes unused~\cite{mindgap}.
 % src: figs/fig-util.tex data (paper/model/overhead_model.py constants; fp8
 %      dense peak 1979 TFLOP/s, HBM 4 TB/s, ridge 495 FLOP/B).
 
-\subsection{A Second Tier and a Faster Link}
+\subsection{Host Memory as a Second Tier}
 
-Host memory is an order of magnitude larger than HBM and is reachable over
-the CPU--GPU link. On PCIe that link is slow next to HBM. NVLink-C2C on a
-GH200 offers 450\,GB/s in each direction~\cite{gh200page,directkv}, and Pie
-measured 419\,GB/s from host to device~\cite{pie}. CXL memory adds capacity
-behind PCIe-class links. Whatever the tier, the bandwidth available to a GPU
-is that of the slower of the GPU's own host link and the tier's link; we call
-it $\Xlink$.
+The second tier is reached over a link: PCIe on most servers, NVLink-C2C on a
+GH200 (450\,GB/s per direction~\cite{gh200page,directkv}, 419\,GB/s measured
+from host to device~\cite{pie}), and a PCIe-class link to a CXL memory
+expander. Whatever the tier, the bandwidth available to a GPU is that of the
+slower of the GPU's own host link and the tier's link; we call it $\Xlink$.
 % src: directkv s2: "CPU-GPU transfers (900 GB/s, 450 GB/s per direction)";
 %      pie s2: "It achieves a data transfer rate of 419 GB/s from CPU to GPU".
 % TODO-verify: CXL 3.x and 4.0 per-x16 bandwidth (derived 128 / 256 GB/s per
 %      direction from 64 / 128 GT/s) awaits the CXL Consortium specification.
-
-\subsection{One Path per Byte}
 
 \input{figs/fig-tiers}
 

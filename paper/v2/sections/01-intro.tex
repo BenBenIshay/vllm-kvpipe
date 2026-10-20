@@ -37,8 +37,29 @@ is admitted. For a large model little is left. Qwen2.5-72B in fp8 occupies
 % TODO-verify: growth of context lengths in agentic and reasoning workloads is
 %      not claimed until a measured source is fetched.
 
-Host memory is an order of magnitude larger than HBM, and three lines of work
-use it to hold KV. The first moves attention off the GPU. CPU attention
+Host memory has always been an order of magnitude larger than HBM, but until
+recently it sat too far from the GPU to serve KV during decode. Over PCIe, the
+link to host memory is an order of magnitude slower than HBM: the A100 we
+measure moves 25\,GB/s from host to device, at which a single 16k-token
+request of Qwen2.5-72B, 5\,GB of KV, takes longer to arrive than several decode
+steps. Tightly coupled CPU--GPU platforms change this. On a GH200,
+NVLink-C2C connects the GPU to 480\,GB of host memory at 900\,GB/s in total,
+450\,GB/s in each direction, seven times a PCIe Gen5 link~\cite{gh200page};
+Pie measured 419\,GB/s from host to device~\cite{pie}. At that rate the link
+delivers gigabytes of KV within one decode step, and host memory becomes a
+second KV tier rather than an overflow area. CXL memory expanders extend the
+same opportunity, adding capacity behind PCIe-class links.
+% src: 25.1 GB/s = --link-gbps of every A100 run (measured H2D, M13-M22);
+%      Q72 b_tok 327,680 B x 16,384 = 5.37 GB -> 214 ms at 25 GB/s against a
+%      25-50 ms step. gh200page: "900 gigabytes per second (GB/s) of coherent
+%      interface, the superchip is 7X faster than PCIe Gen5"; 480 GB LPDDR5X and
+%      450 GB/s per direction: pie s5.1 ("480GB of LPDDR5X DRAM"), directkv s2
+%      ("900 GB/s, 450 GB/s per direction"); pie s2: "419 GB/s from CPU to GPU".
+% TODO-verify: CXL 3.x / 4.0 per-x16 bandwidth not stated until the CXL
+%      Consortium specification is cited.
+
+Three lines of prior work use host memory to hold KV. The first moves
+attention off the GPU. CPU attention
 offload pays off only when the GPU is weak relative to the CPU: NEO gains up
 to $7.5\times$ on a T4 but 14\% on an H100~\cite{neo}. Attention
 disaggregation instead runs attention on separate memory-optimised
@@ -77,28 +98,20 @@ the link~\cite{directkv}.
 %      ... remains bounded by CPU-GPU interconnect bandwidth".
 
 Each of these systems sends a given byte of KV through one path, HBM or the
-link, and none decides at runtime which requests should take which path.
-That decision matters more as links get faster. On a GH200 the GPU reaches
-480\,GB of host memory over NVLink-C2C at 900\,GB/s in total, 450\,GB/s in
-each direction~\cite{gh200page}; Pie measured 419\,GB/s from host to
-device~\cite{pie}. That is several times a PCIe Gen5 link, and enough to move
-gigabytes of KV within one decode step. CXL memory adds a further tier of
-capacity behind PCIe-class links.
-% src: gh200page: "900 gigabytes per second (GB/s) of coherent interface, the
-%      superchip is 7X faster than PCIe Gen5"; 480 GB LPDDR5X and 450 GB/s per
-%      direction: pie s5.1 ("480GB of LPDDR5X DRAM"), directkv s2 ("900 GB/s,
-%      450 GB/s per direction"); pie s2: "419 GB/s from CPU to GPU".
-% TODO-verify: CXL 3.x / 4.0 per-x16 bandwidth not stated until the CXL
-%      Consortium specification is cited.
+link, and none decides at runtime which requests should take which path. On a
+fast link that decision is what sets throughput. The requests whose KV fits in
+HBM are best served from it, untouched; the link's value is the requests it
+can add \emph{beyond} them, without taking any HBM capacity.
 
 We present \sysname{}, a decode engine that serves two classes of request in
 the same forward pass (\cref{fig:tiers}c). \emph{Residents} keep their KV in
 HBM and read it at HBM bandwidth. \emph{Riders} keep theirs in host memory,
 hold no HBM blocks, and stream it layer by layer into a small rotating window
 ahead of use, behind the whole batch's compute. Weights and all compute stay
-on the GPU. The link becomes a second source of KV bandwidth, and the extra
-batch it buys grows with the link and with the share of HBM the weights take
-(\cref{fig:potential}).
+on the GPU. Riders cost the link bytes instead of HBM capacity, so the link
+grows the batch beyond what HBM can hold, and every added request shares the
+step's single read of the weights. The extra batch grows with the link and with
+the share of HBM the weights take (\cref{fig:potential}).
 
 Riders are not free, and how many pay off depends on the model, the node and
 the step time. To our knowledge, \sysname{} is the first serving system that
