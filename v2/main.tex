@@ -85,21 +85,28 @@
 % Written 2026-10-20 from the approved outline; replaces an earlier opening
 % copied from DirectKV's abstract. Numbers that come from evaluation not yet
 % run are \torun placeholders.
-A decode step reads every weight and every running request's KV cache, so a
-decode node's throughput is its batch size, and its batch size is whatever KV
-fits in the HBM the weights leave free. For large models that is a handful of
-long-context requests, and most of the GPU's compute sits idle. Host memory is
-far larger, and CPU--GPU links now carry hundreds of GB/s, yet existing
-offloading systems route each request's KV through one path and so trade HBM
-bandwidth for link bandwidth rather than adding the two. We present
-\sysname{}, a decode engine that serves two classes of request in the same
-forward pass. Residents keep their KV in HBM. Riders keep theirs in host
-memory, hold no HBM blocks, and stream it layer by layer behind the batch's
-compute. A capacity model, built from a one-time profile and a measured step
-time, decides every step how many and which requests ride, within a budget of
-link bytes; attention stays exact. In vLLM on an A100, the model predicts
-measured rider cost within \torun{[err]}. Projected to a GH200 serving
-Qwen2.5-72B, riders raise decode throughput by \torun{[gain]}.
+% Revised 2026-10-20 after Ben's review: higher register; the model-accuracy
+% placeholder is gone (it belongs to s6); one \torun remains, the projected
+% gain, whose value waits on the M22 discussion (1.37x today, 1.28x corrected).
+The throughput of a disaggregated decode node is set by its batch size, and the
+batch size by how much KV cache fits in the HBM that the model weights leave
+free. For large models this is a handful of long-context requests, and most of
+the GPU's compute sits idle. Tightly coupled CPU--GPU platforms change what lies
+beyond HBM: on a GH200, NVLink-C2C reaches hundreds of gigabytes of host memory
+at several hundred GB/s, fast enough to deliver KV within a single decode step.
+Existing offloading systems, however, send every request's KV through one path,
+and so exchange HBM bandwidth for link bandwidth instead of using the link to
+grow the batch. We present \sysname{}, a decode engine that partitions the
+batch \emph{by request} across memory tiers within one forward pass.
+\emph{Residents} keep their KV in HBM. \emph{Riders} keep theirs in host
+memory, occupy no HBM blocks, and stream it layer by layer behind the batch's
+compute. A capacity model, derived from a one-time profile and the measured
+step time, decides at every step how many requests ride and which ones, within
+the link bytes a step can hide; attention remains exact. We implement
+\sysname{} in vLLM, decompose its overhead by ablation on an A100, and validate
+the capacity model against those measurements. Projected to a GH200 serving
+Qwen2.5-72B at long context, riders raise decode throughput by
+\torun{[gain]}.
 \end{abstract}
 \ifdraft\linenumbers\fi
 
