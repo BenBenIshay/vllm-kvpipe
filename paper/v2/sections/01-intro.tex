@@ -1,0 +1,121 @@
+% =============================================================================
+% 1 Introduction. Written 2026-10-20 from Ben's structure, completed and checked
+% in /mnt/beegfs/benishay/paper_versions/sec0-2-outline.md and approved by Ben.
+% Every claim about another system carries a % src: with its quote and section.
+% Three passages of an earlier draft were copied from DirectKV (abstract, s1)
+% and DAK (s1); this text replaces them and must not drift back.
+% =============================================================================
+
+\section{Introduction}\label{sec:intro}
+
+LLM inference has two phases with opposite profiles. Prefill processes the
+whole prompt at once and is compute-bound. Decode emits one token per request
+per step, and every step reads all of the model's weights and every running
+request's KV cache. Decode therefore does few operations per byte and is
+memory-bound~\cite{splitwise}, and even large batches leave most of the GPU's
+compute unused~\cite{mindgap}. Production systems run the two phases on
+separate nodes~\cite{distserve,splitwise,mooncake}. On a decode node, one
+lever sets throughput: the batch size. The weights are read once per step
+whether the step serves one request or fifty.
+% src: splitwise abstract (arXiv 2311.18677): "a compute-intensive prompt
+%      computation and a memory-intensive token generation"; "the token
+%      generation phase underutilizes compute resources".
+%      mindgap abstract (arXiv 2503.08311): "large-batch inference remains
+%      memory-bound"; "DRAM bandwidth saturation as the primary bottleneck";
+%      "most GPU compute capabilities underutilized". TODO-verify: no
+%      utilisation percentage from either PDF is used, on purpose.
+
+The batch size is set by how much KV fits in HBM. A decode step reads every
+weight once, so the weights take their full share of HBM before any request
+is admitted. For a large model little is left. Qwen2.5-72B in fp8 occupies
+76\,GB of a 96\,GB GH200, which leaves about 16\,GB for KV: three requests at
+16k tokens. At that batch the compute the GPU can use is bounded below 1\%
+(\cref{fig:util}). A longer context shrinks the batch further, in proportion.
+% src: paper/model/overhead_model.py Q72 (w = 76.0 GB, b_tok 320 KiB with fp16
+%      KV), GH200 96 GB, 4 GB activation reserve: B(16384) = 16e9 /
+%      (327680*16384) = 2.98; roofline bound 0.95% (figs/fig-util.tex).
+% TODO-verify: growth of context lengths in agentic and reasoning workloads is
+%      not claimed until a measured source is fetched.
+
+Host memory is an order of magnitude larger than HBM, and three lines of work
+use it to hold KV. The first moves attention off the GPU. CPU attention
+offload pays off only when the GPU is weak relative to the CPU: NEO gains up
+to $7.5\times$ on a T4 but 14\% on an H100~\cite{neo}. Attention
+disaggregation instead runs attention on separate memory-optimised
+devices~\cite{lamina}, which is specialised hardware.
+% src: neo abstract: "NEO achieves up to 7.5x, 26%, and 14% higher throughput
+%      compared to GPU-only approach on T4, A10G, and H100 GPUs".
+%      lamina abstract (arXiv 2405.01814 v2): "leverages a collection of cheap,
+%      memory-optimized devices for the attention operator".
+
+The second line swaps KV through a staging buffer in HBM.
+FlexGen~\cite{flexgen} targets offline, latency-insensitive batches. Pie
+places a fixed share of every request's layers in host memory~\cite{pie}, so
+every request pays the link every step and none is served purely from HBM.
+When the GPU holds enough KV, Pie matches vLLM but does not exceed
+it~\cite{pie}. We read this as a bandwidth limit: every offloaded byte crosses
+a link far slower than HBM, so offloading extends capacity without adding
+bandwidth.
+% src: flexgen abstract: "Motivated by the emerging demand for
+%      latency-insensitive tasks with batched processing".
+%      pie s3.1: "We relocate m layers of the KV cache to the CPU, leaving n-m
+%      layers on the GPU. Pie uses per-layer KV cache as the basic management
+%      unit"; s5.3 (Fig. 7): "Pie outperforms vLLM at smaller GPU KV cache
+%      sizes and achieve similar performance at the largest memory capacity
+%      (12GB)". The bandwidth reading is OURS, stated as such.
+
+The third line reads host memory directly from the attention kernel.
+DirectKV keeps every request's KV in CPU memory and streams it into the
+kernel's shared memory~\cite{directkv}. When HBM suffices, it is slower than
+SGLang serving from HBM, and on PCIe it is a capacity extension bounded by
+the link~\cite{directkv}.
+% src: directkv s6 (l.1030-1033): "During prefill, the manager stores the
+%      initial K,V entries from each layer in CPU memory. During decode, the GPU
+%      reuses these cached entries directly"; s7.3.1: "SGLang provides the best
+%      performance when sufficient HBM is available"; s7.4.3: "on PCIe,
+%      DirectKV should be viewed primarily as a capacity-extension mechanism
+%      ... remains bounded by CPU-GPU interconnect bandwidth".
+
+Each of these systems sends a given byte of KV through one path, HBM or the
+link, and none decides at runtime which requests should take which path.
+That decision matters more as links get faster. On a GH200 the GPU reaches
+480\,GB of host memory over NVLink-C2C at 900\,GB/s in total, 450\,GB/s in
+each direction~\cite{gh200page}; Pie measured 419\,GB/s from host to
+device~\cite{pie}. That is several times a PCIe Gen5 link, and enough to move
+gigabytes of KV within one decode step. CXL memory adds a further tier of
+capacity behind PCIe-class links.
+% src: gh200page: "900 gigabytes per second (GB/s) of coherent interface, the
+%      superchip is 7X faster than PCIe Gen5"; 480 GB LPDDR5X and 450 GB/s per
+%      direction: pie s5.1 ("480GB of LPDDR5X DRAM"), directkv s2 ("900 GB/s,
+%      450 GB/s per direction"); pie s2: "419 GB/s from CPU to GPU".
+% TODO-verify: CXL 3.x / 4.0 per-x16 bandwidth not stated until the CXL
+%      Consortium specification is cited.
+
+We present \sysname{}, a decode engine that serves two classes of request in
+the same forward pass (\cref{fig:tiers}c). \emph{Residents} keep their KV in
+HBM and read it at HBM bandwidth. \emph{Riders} keep theirs in host memory,
+hold no HBM blocks, and stream it layer by layer into a small rotating window
+ahead of use, behind the whole batch's compute. Weights and all compute stay
+on the GPU. The link becomes a second source of KV bandwidth, and the extra
+batch it buys grows with the link and with the share of HBM the weights take
+(\cref{fig:potential}).
+
+Riders are not free, and how many pay off depends on the model, the node and
+the step time. To our knowledge, \sysname{} is the first serving system that
+decides online, every step, how many and which requests ride, from a capacity
+model of a measured step time and the link bytes the step can hide. This paper
+makes three contributions.
+\begin{itemize}\itemsep1pt
+\item \textbf{Heterogeneous KV memory management} (\S\ref{sec:mm}). Each
+  request is served from exactly one tier, and both tiers run in one forward
+  pass. It is built from two blocks: a rolling layer cache with a deferred
+  write-back, and step-invariant addressing.
+\item \textbf{A capacity model and online admission} (\S\ref{sec:model},
+  \S\ref{sec:admission}). A one-time profile and a measured step time decide
+  whether riders pay and how many link bytes they may use; admission fills
+  that budget every step.
+\item \textbf{An implementation in vLLM and its evaluation}
+  (\S\ref{sec:impl}--\S\ref{sec:analysis}). An ablation decomposes the cost of
+  a second tier, and A100 measurements are projected to GH200 by the
+  validated model.
+\end{itemize}

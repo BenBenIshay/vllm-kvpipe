@@ -1,0 +1,61 @@
+% Section 2.3: the compute a decode step can use, at the largest batch that fits,
+% as a roofline bound. At max batch B(S) = M_kv/(S b_tok) a step reads W + M_kv
+% bytes and does 2 P B FLOPs, so utilisation <= (2 P B / (W + M_kv)) / ridge.
+% Analytic, from paper/model/overhead_model.py (Q72: W 76.0 GB, P 72.7e9,
+% b_tok 327,680 B; Q32: W 65.53 GB, P 32.8e9, b_tok 262,144 B; 4 GB reserve).
+% GH200: fp8 dense 1979 TFLOP/s / 4 TB/s = ridge 495. A100: fp16 312 TFLOP/s /
+% 1.935 TB/s = ridge 161. Computed 2026-10-20 (outline sec0-2, 2.3).
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{loglogaxis}[
+  width=0.95\columnwidth, height=4.6cm,
+  xlabel={context $S$ (tokens)}, ylabel={compute usable (\%, bound)},
+  xmin=800, xmax=170000, ymin=0.08, ymax=40,
+  xtick={1024,4096,16384,65536}, xticklabels={1k,4k,16k,64k},
+  ytick={0.1,1,10}, yticklabels={0.1,1,10},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=white,
+                fill opacity=0.85, text opacity=1, at={(0.98,0.97)},
+                anchor=north east, inner sep=1pt, row sep=-1pt},
+  legend cell align=left,
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  every axis plot/.append style={line width=0.9pt},
+]
+\addplot[hbmD, mark=*, mark size=1.4pt] table[x=S, y=u] {
+S       u
+1024    15.23
+2048    7.62
+4096    3.81
+8192    1.90
+16384   0.95
+32768   0.48
+65536   0.24
+131072  0.12
+};
+\addlegendentry{GH200, Qwen2.5-72B fp8}
+\addplot[ddrD, mark=square*, mark size=1.3pt, densely dashed] table[x=S, y=u] {
+S       u
+1024    20.88
+2048    10.44
+4096    5.22
+8192    2.61
+16384   1.30
+32768   0.65
+65536   0.33
+131072  0.16
+};
+\addlegendentry{A100, Qwen2.5-32B fp16}
+\node[font=\sffamily\scriptsize, text=hbmD, anchor=north east]
+  at (axis cs:16384,0.80) {3 requests};
+\node[font=\sffamily\scriptsize, text=hbmD, anchor=south west]
+  at (axis cs:1100,15.5) {48 requests};
+\end{loglogaxis}
+\end{tikzpicture}
+\caption{\textbf{Decode leaves compute idle, and more so as context grows.}
+Roofline bound on the share of the GPU's compute a decode step can use at the
+largest batch that fits in the HBM left after the weights. Analytic.}
+\label{fig:util}
+\end{figure}

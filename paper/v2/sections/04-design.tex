@@ -122,7 +122,14 @@ and has the attention kernel stream it from host memory straight into the SMs'
 shared memory. Every byte of every request's KV therefore crosses the link every
 step, so decode attention runs at link bandwidth while HBM bandwidth goes unused
 for KV. And the overlap lives inside the attention kernel, so a fetch can hide
-only behind that kernel's own tiles. \sysname{} splits the batch instead. Residents
+only behind that kernel's own tiles. Concurrently, DAK~\cite{dak} also splits
+the batch by request, but with a fixed ratio given in advance, for offline
+batches, inside a custom Hopper TMA kernel, and with no runtime decision about
+how many or which requests leave HBM.
+% src: dak s5 ("partitions the KV cache along the batch dimension"), s3 ("Given
+%      this global offload ratio"), s6 ("offline, batched-inference setup"),
+%      abstract ("repurposes the Tensor Memory Accelerator (TMA)").
+\sysname{} splits the batch instead. Residents
 read their KV from HBM at HBM bandwidth. Only the riders that admission selects
 use the link, each byte once, and their fetch hides behind a whole layer of
 every row's compute. The two bandwidths add up rather than one replacing the
