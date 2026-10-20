@@ -50,19 +50,31 @@ The two coefficients are different kinds of work. $F$ is paid once per step as
 soon as one rider exists, independent of how many: per layer, the second
 attention call over the rider rows and the write of the new token's $K,V$ to the
 host copy (\S\ref{sec:mm}). $c$ is what each rider adds that cannot overlap
-with compute: its per-layer copy launches and its rows in that attention call.
-Neither contains the rider's bytes: below the knee the transfer hides entirely
-behind the previous layer, so $c$ depends neither on context nor on link speed
-(\S\ref{sec:ablation}).
+with compute. It has two parts. The \emph{mechanism} part, $c_{\mathrm{m}}$, is
+the rider's per-layer copy launches and its rows in that attention call; it
+depends neither on context nor on link speed. The second part is the rider's
+attention itself, which reads its $S$ keys and values from the device slot, the
+same HBM read a resident's attention performs:
+\begin{equation}
+  c(S) \;=\; c_{\mathrm{m}} + \frac{S\btok}{\BWkv},
+  \qquad
+  T_0 \;=\; \frac{W}{\BWw} + \sum_{\mathrm{res}} \frac{S_i\btok}{\BWkv},
+  \label{eq:cS}
+\end{equation}
+where $\BWw$ and $\BWkv$ are the HBM bandwidths that weight and KV reads
+achieve. The baseline step pays the same term for each resident. Neither
+coefficient contains the rider's link transfer: below the knee it hides
+entirely behind the previous layer (\S\ref{sec:ablation}).
 
-Two rules make the fit trustworthy. First, only points well below the knee are
+Three rules make the fit trustworthy. First, only points well below the knee are
 kept, those whose transfer time is at most a tenth of $T_0$. A sweep that crosses
 the knee adds exposed transfer at high $r$, which steepens the line and lowers
 its intercept, overstating $c$ and understating $F$ together. Second, the sweep
 is repeated at several depths, and both coefficients are expressed per layer,
 $F = f_L L$ and $c = c_0 + c_L L$, so one profile carries to a model of
-different depth. Because neither coefficient depends on context, the sweep runs
-at short context and serves every context.
+different depth. Third, the sweep is repeated at several contexts with the
+transfer's bytes removed, which separates $c_{\mathrm{m}}$ from the attention
+term of \cref{eq:cS}; $F$ does not depend on context.
 % src: OVERHEAD_CHARACTERISATION.md s0a (M13): retained points load <= 0.1;
 %      "fitting across the knee ... raises the slope and lowers the intercept";
 %      F/c decomposition s0a M14 (mirror write -> F, streaming -> c).
@@ -122,11 +134,15 @@ riders. Their ratio,
   \frac{\rstar}{B} \;=\; \frac{T_0\,\Xlink}{\Mkv},
   \label{eq:ratio}
 \end{equation}
-is the throughput riders add, and it does not depend on $S$. $T_0$ is dominated
-by reading the weights and barely moves with $S$. A longer context
+is the throughput riders add, and it does not depend on $S$. Nor does $T_0$ of a
+full cohort: it reads the weights and $\Mkv$ bytes of KV whatever the context.
+A longer context
 fits fewer residents \emph{and} fewer riders, and leaves the ratio unchanged:
 what riders can add is set by the hardware, by how many bytes the link moves
-in one step relative to how many bytes of KV HBM holds. Context does matter
+in one step relative to how many bytes of KV HBM holds. What riders \emph{cost}
+does depend on context, mildly and favourably: $\rstar$ riders read
+$\rstar S\btok = T_0\Xlink$ bytes of attention whatever $S$ is, while their
+mechanism cost $\rstar c_{\mathrm{m}}$ falls as $1/S$. Context also matters
 in two places. When choosing a workload, $\lfloor\rstar\rfloor$ is an integer
 (\S\ref{sec:opoint}). When admitting from a queue of mixed contexts, it decides
 \emph{which} requests should ride (\S\ref{sec:admission}).
@@ -139,27 +155,34 @@ $\Xlink$ and the profile, \cref{eq:gain,eq:decision} then give the gain at any
 context, and admission re-applies them every step against a $T_0$ it keeps
 measuring (\S\ref{sec:admission}).
 
-Because $\lfloor\rstar\rfloor$ is an integer, the gain is a sawtooth in context
-rather than a smooth curve. The knee falls as $1/S$, the admitted count drops by
-a whole rider at each integer crossing, and the gain peaks just below each
-crossing; a context 1\% above a crossing gives away one rider. The model is
-therefore used to place the workload. We choose the context at which the knee
-lands at $n(1+m)$ for an integer $n$, with $m = 10\%$. The margin absorbs
-step-to-step variation in $T_0$: at the bare crossing, a 2\% rise in measured
-step time already costs the rider.
+\input{figs/fig-gain-ctx}
 
-For Qwen-72B (fp8, $L{=}80$) on a GH200 the model selects context 14\,724.
-There $B = 3$ residents fit and $T_0 = 25.3$\,ms, so a token is worth
-$T_0/B = 8.44$\,ms. The knee is 2.2, so two riders hide. The per-rider cost
-$c = 0.61$\,ms clears the gate by $14\times$, break-even is $\rmin = 1$, and the
-two riders give $1.37\times$ throughput. What binds is the knee, not the gate.
-The ratio of \cref{eq:ratio} is largest where HBM is scarcest relative to the
-link, with heavy weights and few residents. That is the regime the design
-exists for.
-% src: paper/model/operating_point.py margin_point(Q72, GH200, 2) = 14724;
-%      evaluate(): t0 25.33, cap 3.32 -> B = 3, knee 2.20, r 2, c 0.609
-%      (= 0.177 + 0.0054*80), F 4.24 (= 0.053*80); gain with integer B = 1.371.
-%      FRAGILITY table: bare crossing loses the rider at a 2% T0 overestimate.
+Because residents and riders are whole requests, the gain is a sawtooth in
+context rather than a smooth curve (\cref{fig:gain-ctx}). The knee falls as
+$1/S$ and the admitted count drops by a whole rider at each integer crossing;
+$B$ drops by a whole resident at its own crossings. A context 1\% above a rider
+crossing gives away that rider, so admission keeps a margin $m$ on the byte
+budget: at the bare crossing, a 2\% rise in measured step time already costs
+the rider.
+
+For Qwen2.5-72B (fp8 weights, $L{=}80$) on a GH200 the envelope rises slowly,
+from $1.31\times$ at 8k tokens to $1.37\times$ at 24k, because the riders'
+mechanism cost falls with context (\S\ref{sec:context}). The sawtooth peaks
+above it, up to $1.51\times$ at 16.3k, lie where HBM strands most of one
+resident's KV, so the baseline is at its weakest; we report the envelope and
+treat those peaks as placement, not gain. At context 14\,724, for example,
+$B = 3$ residents fit and $T_0 = 31.0$\,ms, so a token is worth
+$T_0/B = 10.3$\,ms. The knee is 2.7, so two riders hide. Each costs
+$c = 2.51$\,ms, of which 1.89\,ms is its own attention; the gate holds by
+$4\times$, break-even is $\rmin = 1$, and the two riders give $1.28\times$
+throughput. What binds is the knee, not the gate. The ratio of
+\cref{eq:ratio} is largest where HBM is scarcest relative to the link, with
+heavy weights and few residents. That is the regime the design exists for.
+% src: paper/model/gain_curve.py (M22-corrected: c_m = 0.50*L/64, BW_kv = 0.64
+%      HBM peak, BW_w = 0.75 peak, F = 3.39*L/64 = 4.24, X = 419 GB/s, b_tok
+%      320 KiB): smooth 1.309 @8192, 1.351 @14724, 1.373 @24000; integer 1.507
+%      @16300 (cap 2.98 -> B 2); @14724 B 3, t0 30.99, c 2.510, r 2, G 1.283;
+%      knee 30.99 / 11.51 = 2.69. Replaces 1.37x (c 0.609, T0 = weights only).
 \torun{$T_0$ on the GH200 target has not been measured yet: the numbers above use
-$T_0$ from the weight-read model ($W/(0.75\cdot\mathrm{HBM\;bw})$). Measure the
-3-resident step time at ctx 14\,724 and re-place the context.}
+$T_0$ from \cref{eq:cS} with A100 bandwidth efficiencies. Measure the
+3-resident step time at ctx 14\,724.}

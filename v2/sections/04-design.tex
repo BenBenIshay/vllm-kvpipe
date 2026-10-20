@@ -48,9 +48,10 @@ writes each new token back to the authoritative host copy, off the critical path
 
 \paragraph{The design principle.} Each building block below removes one cost
 that would otherwise grow with the context or with the bytes moved. Together they
-leave a rider costing only the work that cannot be overlapped: a per-rider cost
-$c$ that is independent of context and of link speed, plus a fixed per-step cost
-$F$ (\S\ref{sec:profile}). The link then buys one thing only, the number of
+leave a rider costing only the work that cannot be overlapped: a per-rider
+mechanism cost $c_{\mathrm{m}}$ that is independent of context and of link
+speed, the rider's own attention, which any request pays, and a fixed per-step
+cost $F$ (\S\ref{sec:profile}). The link then buys one thing only, the number of
 riders whose transfer it can hide in a step, which is the quantity admission is
 built around.
 
@@ -180,7 +181,8 @@ needs no host-side gather. The copy engine does the packing.
 
 What remains is per-rider work that does not depend on context: one slice of
 the table and one set of copies per rider. That is the property the capacity
-model relies on, since it makes $c$ independent of $S$ (\S\ref{sec:profile}).
+model relies on: the mechanism part of $c$, $c_{\mathrm{m}}$, is independent of
+$S$, and only the rider's attention grows with it (\cref{eq:cS}).
 
 % ................................................................. block D
 \subsubsection{Fused Tier Attention}\label{sec:fused}
