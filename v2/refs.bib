@@ -31,12 +31,14 @@
 % titles in this file were found paraphrased the same day, so do not fill the
 % remaining two in from memory -- check each against its venue.
 @article{dak,
-  key     = {dak},
-  title   = {{DAK}: Direct Access to Offloaded Tensors for {LLM} Inference},
+  title   = {{DAK}: Direct-Access-Enabled {GPU} Memory Offloading with Optimal
+             Efficiency for {LLM} Inference},
+  author  = {Lin, Shouxu and Guo, Zhiyuan and Lin, Jiaxin},
   journal = {arXiv preprint arXiv:2604.26074},
   year    = {2026},
-  note    = {Per-operation offload ratios from a given global ratio},
 }
+% VERIFIED 2026-10-20 against the arXiv PDF (title page): the previous entry had
+% a paraphrased title and no authors. Cornell University; v1 28 Apr 2026.
 
 @article{omniserve,
   key     = {omniserve},
@@ -60,15 +62,17 @@
   note    = {arXiv:2508.13231; simulation with a simulated-annealing oracle},
 }
 
-@inproceedings{shadowkv,
-  key     = {shadowkv},
-  title     = {{ShadowKV}: {KV} Cache in Shadows for High-Throughput
-               Long-Context {LLM} Inference},
-  booktitle = {International Conference on Machine Learning (ICML)},
-  year      = {2025},
-  note      = {arXiv:2410.21465; lossy --- low-rank K plus sparse
-               reconstruction},
+@article{shadowkv,
+  title   = {{ShadowKV}: {KV} Cache in Shadows for High-Throughput
+             Long-Context {LLM} Inference},
+  author  = {Sun, Hanshi and Chang, Li-Wen and Bao, Wenlei and Zheng, Size and
+             Zheng, Ningxin and Liu, Xin and Dong, Harry and Chi, Yuejie and
+             Chen, Beidi},
+  journal = {arXiv preprint arXiv:2410.21465},
+  year    = {2024},
 }
+% VERIFIED 2026-10-20 against the arXiv abstract page (authors, title). The
+% arXiv page names no venue, so the ICML'25 venue was dropped until checked.
 
 @inproceedings{neo,
   author  = {Jiang, Xuanlin and Zhou, Yang and Cao, Shiyi and Stoica, Ion and
@@ -78,7 +82,7 @@
                Online {LLM} Inference},
   booktitle = {Proceedings of Machine Learning and Systems (MLSys)},
   year      = {2025},
-  note      = {arXiv:2411.01142; gains decay T4 7.5x to H100 14\%},
+  note      = {arXiv:2411.01142},
 }
 
 @article{bottlenecks,
@@ -101,8 +105,6 @@
              Stoica, Ion},
   journal = {arXiv preprint arXiv:2411.09317},
   year    = {2024},
-  note    = {UC Berkeley. Measures GH200 NVLink-C2C at 419\,GB/s CPU$\to$GPU
-             and 371\,GB/s GPU$\to$CPU},
 }
 
 @inproceedings{flexgen,
@@ -192,9 +194,6 @@
   title  = {{NVIDIA} {Grace} {Hopper} Superchip Architecture Whitepaper},
   author = {{NVIDIA}},
   year   = {2023},
-  note   = {NVLink-C2C: 900\,GB/s bidirectional, \textbf{450\,GB/s per
-            direction} --- the unidirectional figure is the one that bounds a
-            host-to-device KV stream},
 }
 
 % --- Added 2026-09-26. Papers a reviewer expects this section to engage. Each
@@ -316,4 +315,49 @@
   booktitle = {53rd International Conference on Parallel Processing (ICPP '24)},
   year      = {2024},
   note      = {\url{https://arxiv.org/abs/2407.07850}},
+}
+
+
+% ---------------------------------------------------------------------------
+% ADDED 2026-10-20 for sections 1, 2 and 8. Each VERIFIED against its arXiv
+% abstract page (title, full author list in order, date, comments field).
+% ---------------------------------------------------------------------------
+@article{lamina,
+  title   = {Efficient Heterogeneous Large Language Model Decoding with
+             Model-Attention Disaggregation},
+  author  = {Chen, Shaoyuan and Xiao, Wencong and Lin, Yutong and
+             Zhang, Mingxing and Shan, Yingdi and Jiang, Jinlei and
+             Chen, Kang and Wu, Yongwei},
+  journal = {arXiv preprint arXiv:2405.01814},
+  year    = {2024},
+}
+
+@inproceedings{mindgap,
+  title     = {Mind the Memory Gap: Unveiling {GPU} Bottlenecks in
+               Large-Batch {LLM} Inference},
+  author    = {Recasens, Pol G. and Agullo, Ferran and Zhu, Yue and
+               Wang, Chen and Lee, Eun Kyung and Tardieu, Olivier and
+               Torres, Jordi and Berral, Josep Ll.},
+  booktitle = {IEEE International Conference on Cloud Computing (CLOUD)},
+  year      = {2025},
+  note      = {arXiv:2503.08311},
+}
+
+@article{lmcache,
+  title   = {{LMCache}: An Efficient {KV} Cache Layer for Enterprise-Scale
+             {LLM} Inference},
+  author  = {Liu, Yuhan and Cheng, Yihua and Yao, Jiayi and An, Yuwei and
+             Chen, Xiaokun and Feng, Shaoting and Huang, Yuyang and
+             Shen, Samuel and Zhang, Rui and Du, Kuntai and Jiang, Junchen},
+  journal = {arXiv preprint arXiv:2510.09665},
+  year    = {2025},
+}
+
+% The product page, fetched 2026-10-20: "With 900 gigabytes per second (GB/s)
+% of coherent interface, the superchip is 7X faster than PCIe Gen5."
+@misc{gh200page,
+  title  = {{NVIDIA} {GH200} {Grace} {Hopper} Superchip},
+  author = {{NVIDIA}},
+  year   = {2026},
+  note   = {\url{https://www.nvidia.com/en-us/data-center/grace-hopper-superchip}},
 }

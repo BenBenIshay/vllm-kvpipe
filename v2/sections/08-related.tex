@@ -1,0 +1,105 @@
+% =============================================================================
+% 8 Related Work. Written 2026-10-20 from the approved outline. DAK is cited as
+% CONCURRENT work (Ben, 2026-10-20); there is no experimental comparison. The
+% OSDI '27 CFP has no concurrent-work window ("Prior or concurrent publication
+% in non-peer-reviewed contexts, like arXiv.org ... is permitted"), so the
+% explicit discussion below is what supports the label.
+% =============================================================================
+
+\section{Related Work}\label{sec:related}
+
+\paragraph{Swapping KV through HBM.} FlexGen places weights, KV and
+activations across GPU, CPU and disk for offline, latency-insensitive
+batches~\cite{flexgen}. Pie relocates a fixed number of every request's layers
+to host memory and prefetches them through HBM buffers ahead of use,
+swapping each back out after use; an adaptive expansion factor sets how many
+layers move~\cite{pie}. \sysname{} uses the same per-layer prefetch but changes
+the unit of placement from the layer to the request. No resident pays the link,
+the window is a cache rather than a swap area, and only one token per layer
+returns to the host. The axes are orthogonal: Pie's layer split could run
+inside our resident tier.
+% src: flexgen abstract (quoted in s1). pie s3.1 ("relocate m layers"; "per-
+%      layer KV cache as the basic management unit"), s3 ("prefetching data for
+%      upcoming layers through a FIFO queue"), s3.3 (swap in and swap out),
+%      s3.4 adaptive expansion.
+
+\paragraph{Reading host memory from the kernel.} DirectKV keeps all KV in
+CPU memory and has the attention kernel read it directly, tiling through
+shared memory to approach HBM-resident performance without staging
+buffers~\cite{directkv}. It changes the execution path, not the policy: by its
+own account it ``does not change scheduling, batching, or KV-management
+policies''~\cite{directkv}. A zero-copy kernel could serve as the rider path
+behind \sysname{}'s tier interface (\S\ref{sec:fused}).
+% src: directkv abstract ("enabling GPU kernels to directly access CPU-resident
+%      KV cache"); s1 ("By tiling through SMEM, we shift bandwidth pressure from
+%      the CPU-GPU interconnect to HBM"); s8.1 (quoted).
+
+\paragraph{Concurrent work.} Concurrent with our work, DAK gives the GPU
+direct access to host memory through Hopper's Tensor Memory
+Accelerator~\cite{dak}. Its attention kernel partitions the KV cache along
+the batch dimension, keeping a subset of requests in HBM and the rest in host
+memory, so both tiers serve one batch. The split is an input: DAK derives a
+global offload ratio from what does not fit in HBM and distributes it across
+operations, and it is evaluated on offline batched inference~\cite{dak}.
+BOOST places a fixed fraction of every request's KV heads in host memory, in
+proportion to the two tiers' bandwidths, so that each wave of thread blocks
+reads both tiers at once~\cite{boost}; it rejects placing whole requests on
+the host tier because long requests could land there and raise tail
+latency~\cite{boost}. \sysname{} makes the split a runtime decision instead.
+Every step, a capacity model fed by a measured step time chooses how many and
+which whole requests ride, and admission prefers long requests because the
+budget is in bytes. Residents keep the engine's stock attention kernel.
+% src: dak s5: "It partitions the KV cache along the batch dimension--storing
+%      the cache for a subset of requests in local GPU memory and the remainder
+%      in remote host memory"; s3: "Given this global offload ratio, DAK will
+%      calculate the optimal offloading ratio for each individual operation";
+%      s6: "Our experiments are conducted under an offline, batched-inference
+%      setup". arXiv v1 28 Apr 2026.
+%      boost abstract: "fully utilizing both host and HBM bandwidth requires
+%      each wave of GPU threadblocks to access both tiers concurrently and in
+%      proportion to their bandwidth ratio"; s4: "Placing an alpha fraction of
+%      whole requests on the host tier would satisfy proportionality, but
+%      unknown context lengths could let long requests land on the host tier
+%      and raise tail latency, so we partition at a finer granularity";
+%      DSR "maintains single-head-host and all-local blocks". arXiv 2609.13592.
+
+\paragraph{Moving attention off the GPU.} NEO offloads part of attention and
+its KV to the host CPU and balances the two with asymmetric
+pipelining~\cite{neo}; its gain shrinks as the GPU grows stronger relative to
+the CPU. Model--attention disaggregation runs attention on separate
+memory-optimised devices~\cite{lamina}. \sysname{} keeps all compute on the
+GPU and uses the host only as memory.
+% src: neo abstract ("offloads part of attention compute and KV cache states
+%      from the GPU to the local host CPU"; "up to 7.5x, 26%, and 14% ... on
+%      T4, A10G, and H100"). lamina abstract v2 ("a collection of cheap,
+%      memory-optimized devices for the attention operator").
+% TODO-verify: Lamina details beyond the abstract are not used until the PDF
+%      is read.
+
+\paragraph{Fetching less.} InfiniGen prefetches only the KV entries it
+predicts the next layer will need~\cite{infinigen}, and ShadowKV keeps a
+low-rank key cache on the GPU, offloads values, and reconstructs a small
+sparse set of KV pairs on the fly~\cite{shadowkv}. Both approximate attention
+over a subset of the context; \sysname{} moves every byte and attention stays
+exact. The two compose: fewer bytes per rider would let the link carry more
+riders.
+% src: infinigen abstract: prefetching "only the essential KV cache entries
+%      (without fetching them all)". shadowkv abstract: "stores the low-rank key
+%      cache and offloads the value cache"; "reconstructs minimal sparse KV
+%      pairs on-the-fly".
+% TODO-verify: KV compression / quantisation (e.g. KIVI) is not cited until its
+%      source is fetched.
+
+\paragraph{Caching KV for reuse.} LMCache moves KV out of the engine so other
+engines and later queries can reuse it, across GPU, CPU, storage and
+network~\cite{lmcache}. Mooncake builds a disaggregated KV cache from the
+cluster's CPU, DRAM and SSD~\cite{mooncake}, and CachedAttention keeps the KV
+of past conversation turns to avoid recomputing it~\cite{cachedattention}.
+These systems store KV for the next prefill. \sysname{} serves active decode
+from host memory; the KV it receives on a decode node could come from such a
+store.
+% src: lmcache abstract: "shares them across engines and queries"; "across
+%      GPU, CPU, storage, and network layers". mooncake abstract: "leverages
+%      the underutilized CPU, DRAM, and SSD resources of the GPU cluster";
+%      "disaggregated cache of KVCache". cachedattention abstract: "enables
+%      reuse of KV caches across multi-turn conversations".

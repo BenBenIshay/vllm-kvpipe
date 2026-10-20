@@ -1,0 +1,104 @@
+% Section 2.5 (Ben's diagram request): which tier serves which request, per
+% system. Six requests R1..R6 in every panel. Drawn from the systems' own text:
+%   (a) Pie s3.1 "We relocate m layers of the KV cache to the CPU, leaving n-m
+%       layers on the GPU"; s3.3 swap in and swap out through GPU buffers.
+%   (b) DirectKV s6 all K,V "in CPU memory"; abstract "GPU kernels to directly
+%       access CPU-resident KV cache"; s1 streamed through SMEM.
+%   (c) HeteroKV, s4: residents in HBM, riders in host DDR streamed into a
+%       k-slot window, one forward pass; the link budget is X T0 per step.
+% DAK, which also splits by request (concurrent work), is discussed in s8, not
+% drawn. Colours from figstyle: HBM teal, DDR orange, H2D blue, D2H purple.
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  req/.style={draw=#1D, fill=#1F, line width=0.5pt, minimum width=5.6mm,
+              minimum height=4.2mm, inner sep=0pt, font=\sffamily\tiny},
+  half/.style={draw=#1D, fill=#1F, line width=0.5pt, minimum width=5.6mm,
+               minimum height=2.1mm, inner sep=0pt},
+  wts/.style={draw=black!45, fill=black!10, minimum height=4.2mm,
+              inner sep=1pt, font=\sffamily\tiny},
+  fwd/.style={cmp, minimum height=4.6mm, inner sep=1pt, font=\sffamily\scriptsize},
+  tier/.style={font=\sffamily\scriptsize\bfseries, anchor=east},
+  note/.style={font=\sffamily\scriptsize, text=inkS, align=center},
+]
+% ---------------------------------------------------------------- layout
+% panel x offsets 0, 6.0, 12.0 cm; rows: compute 3.2, HBM 2.2, link 1.2, DDR 0.2
+\foreach \px/\ttl in {0/{(a) Swap via HBM buffer (Pie)},
+                      6.0/{(b) Zero-copy (DirectKV)},
+                      12.0/{(c) Split by request (\sysname{})}} {
+  \begin{scope}[xshift=\px cm]
+    \fill[bgA, rounded corners=3pt] (-0.15,-0.25) rectangle (5.55,3.75);
+    \node[hd, anchor=south] at (2.7,3.78) {\ttl};
+    \node[tier] at (0.9,2.2) {HBM};
+    \node[tier] at (0.9,0.2) {DDR};
+    \node[tier, font=\sffamily\scriptsize] at (0.9,1.2) {link};
+  \end{scope}
+}
+% ------------------------------------------------------------------ (a) Pie
+\begin{scope}[xshift=0cm]
+  \node[fwd, minimum width=4.3cm] (fa) at (3.15,3.2) {one forward pass, R1--R6};
+  \node[wts, minimum width=1.0cm] at (1.55,2.2) {weights};
+  \foreach \i in {1,...,6} {
+    \node[half=hbm] (ah\i) at ({1.95+0.5*\i},2.31) {};
+    \node[half=ddr] (ad\i) at ({1.95+0.5*\i},0.09) {};
+    \node[font=\sffamily\tiny] at ({1.95+0.5*\i},-0.1) {R\i};
+  }
+  \node[plain, minimum width=1.1cm, minimum height=2.1mm, inner sep=0pt,
+        font=\sffamily\tiny] (abuf) at (3.7,1.95) {};
+  \node[font=\sffamily\tiny, anchor=east] at (3.13,1.95) {buffer};
+  \draw[h2d] (3.45,0.25) -- (3.45,1.84);
+  \draw[d2h] (3.95,1.84) -- (3.95,0.25);
+  \node[font=\sffamily\tiny, text=d2hC, anchor=west] at (4.0,1.05) {swap out};
+  \draw[flow] (3.15,2.44) -- (3.15,2.96);
+  \node[note] at (2.7,-0.05) {};
+\end{scope}
+% ------------------------------------------------------------- (b) DirectKV
+\begin{scope}[xshift=6.0cm]
+  \node[fwd, minimum width=4.3cm] (fb) at (3.15,3.2) {one forward pass, R1--R6};
+  \node[wts, minimum width=1.0cm] at (1.55,2.2) {weights};
+  \node[draw=black!40, densely dashed, minimum width=2.9cm, minimum height=4.2mm,
+        font=\sffamily\tiny, text=inkS] at (3.65,2.2) {no KV in HBM};
+  \foreach \i in {1,...,6} {
+    \node[req=ddr] (bd\i) at ({1.95+0.5*\i},0.2) {R\i};
+  }
+  \draw[h2d, line width=1.3pt] (4.9,0.45) .. controls (5.35,1.4) and (5.35,2.6)
+    .. (4.95,2.95);
+  \node[font=\sffamily\tiny, text=h2dC, anchor=east, align=right]
+    at (5.0,1.5) {straight into\\SMEM};
+\end{scope}
+% -------------------------------------------------------------- (c) HeteroKV
+\begin{scope}[xshift=12.0cm]
+  \node[fwd, minimum width=4.3cm] (fc) at (3.15,3.2) {one forward pass, R1--R5};
+  \node[wts, minimum width=1.0cm] at (1.55,2.2) {weights};
+  \foreach \i in {1,2,3} {
+    \node[req=hbm] (ch\i) at ({1.95+0.5*\i},2.2) {R\i};
+  }
+  \node[draw=hbmD, fill=white, line width=0.5pt, minimum width=1.05cm,
+        minimum height=4.2mm, inner sep=0pt, font=\sffamily\tiny]
+    (cwin) at (4.55,2.2) {$k$ slots};
+  \foreach \i in {4,5} {
+    \node[req=ddr] (cd\i) at ({2.95+0.5*(\i-4)+0.75},0.2) {R\i};
+  }
+  \node[draw=black!40, densely dashed, fill=white, minimum width=5.6mm,
+        minimum height=4.2mm, inner sep=0pt, font=\sffamily\tiny, text=inkS]
+    (cd6) at (5.05,0.2) {R6};
+  \draw[h2d] (4.0,0.45) -- (4.3,1.98);
+  \draw[h2d] (4.45,0.45) -- (4.6,1.98);
+  \draw[decorate, decoration={brace, amplitude=2.5pt, mirror}, black!60]
+    (3.4,0.75) -- (3.4,1.65);
+  \node[font=\sffamily\tiny, anchor=east, align=right] at (3.32,1.2)
+    {at most $\Xlink T_0$\\bytes per step};
+  \draw[flow] (2.95,2.44) -- (2.95,2.96);
+  \draw[flow] (4.55,2.44) -- (4.55,2.96);
+  \node[font=\sffamily\tiny, text=inkS, anchor=north] at (5.05,-0.02) {waits};
+\end{scope}
+\end{tikzpicture}
+\caption{\textbf{One path per byte, or both.} (a) Pie keeps a fixed share of
+every request's layers in host memory and swaps them through an HBM buffer, in
+and back out. (b) DirectKV keeps all KV in host memory and streams it into the
+kernel's shared memory; HBM holds no KV. (c) \sysname{} splits the batch by
+request: residents (R1--R3) read HBM, riders (R4, R5) stream from DDR into a
+$k$-slot window within the link's per-step budget, and both run in one forward
+pass. R6 waits.}
+\label{fig:tiers}
+\end{figure*}

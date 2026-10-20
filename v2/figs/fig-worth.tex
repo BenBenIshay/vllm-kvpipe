@@ -1,0 +1,63 @@
+% Section 2.6: when riders pay, on one measured A100 sweep. Data: M13,
+% CF_c128_a (job 2181931, paper/data/overhead/15_clean_cf/CF_c128_a.json):
+% Qwen2.5-32B fp16, 16 residents at context 128, riders 1..8, T0 = 47.74 ms.
+% Fit from figs/data/fits.txt (abl_real_a): F = 6.050, c = 0.508.
+% Token worth T0/B = 2.98 ms per rider; r_min = 3; knee = T0 / link-per-rider
+% = 47.74 / 1.696 = 28.1 riders (link at 25.1 GB/s). Past the knee the curve is
+% the model F + c r + (r link - T0), NOT measured, and drawn dashed.
+% NO M22 data, and no claim about how c depends on context (Ben, 2026-10-20).
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.95\columnwidth, height=5.0cm,
+  xlabel={riders $r$}, ylabel={added step time (ms)},
+  xmin=0, xmax=32, ymin=0, ymax=60,
+  xtick={0,4,8,12,16,20,24,28,32},
+  tick label style={font=\sffamily\scriptsize},
+  /pgf/number format/assume math mode=true,
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  every axis plot/.append style={line width=0.9pt},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=none,
+                at={(0.5,-0.30)}, anchor=north, inner sep=1pt,
+                legend columns=3, column sep=4pt},
+  legend cell align=left,
+]
+% riders pay where the overhead lies below the tokens' worth
+\addplot[name path=worth, draw=none, forget plot, domain=2.44:28.1, samples=2]
+  {2.984*x};
+\addplot[name path=over, draw=none, forget plot, domain=2.44:28.1, samples=2]
+  {6.050+0.508*x};
+\addplot[cmpF, forget plot] fill between[of=worth and over];
+\addplot[cmpD, densely dashed, domain=0:20, samples=2] {2.984*x};
+\addlegendentry{tokens' worth, $r\,T_0/B$}
+\addplot[ddrD, domain=0:28.1, samples=2] {6.050+0.508*x};
+\addlegendentry{$F + c\,r$, fitted}
+\addplot[ddrD, mark=*, mark size=1.5pt, only marks]
+  table[x=r, y=dT, col sep=comma] {figs/data/abl_real_a.csv};
+\addlegendentry{measured (A100)}
+\addplot[ddrD, densely dotted, domain=28.1:32, samples=2, forget plot]
+  {6.050+0.508*x + (1.696*x-47.74)};
+% knee and break-even
+\draw[black!50, densely dashed, line width=0.6pt]
+  (axis cs:28.1,0) -- (axis cs:28.1,44);
+\node[font=\sffamily\scriptsize, text=black!70, anchor=south, align=center]
+  at (axis cs:28.1,44) {knee\\$r^\star{=}28$};
+\draw[black!50, line width=0.6pt] (axis cs:3,0) -- (axis cs:3,3.4);
+\node[font=\sffamily\scriptsize, text=black!70, anchor=south west, inner sep=1pt]
+  at (axis cs:3.2,0.3) {$r_{\min}{=}3$};
+\node[font=\sffamily\scriptsize, text=cmpD, anchor=center]
+  at (axis cs:16,25) {riders pay};
+\node[font=\sffamily\scriptsize, text=ddrD, anchor=south west, align=left]
+  at (axis cs:12.5,0.4) {intercept $F{=}6.05$\\slope $c{=}0.51$};
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{When riders pay}, on one A100 sweep (Qwen2.5-32B, 16
+residents, $T_0 = 47.7$\,ms). Each rider adds $c$ and the first adds $F$; each
+is worth $T_0/B$ of step time. Riders pay in the shaded region, from
+$\rmin$ to the knee, where their transfer stops hiding behind the step; the dotted line past the knee is the model,
+not a measurement.}
+\label{fig:worth}
+\end{figure}
