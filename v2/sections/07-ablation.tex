@@ -15,7 +15,7 @@ Qwen2.5-32B-Instruct in fp16 ($L{=}64$ layers, KV blocks of 16 tokens, a rolling
 of $k{=}4$ layer-slots). Block size 16 is the engine default. The prefetch
 runs one layer ahead, so $k{=}2$ is the minimum; $k{=}4$ is the default, and
 sweeps at $k{=}2$ and $k{=}8$ change the step time by under 1\,ms at every
-rider count. Each extra slot costs only $1/L$ of a rider's KV in HBM. The node is a decode node with the handover emulated:
+rider count, including counts past the knee. Each extra slot costs only $1/L$ of a rider's KV in HBM. The node is a decode node with the handover emulated:
 each rider's KV is delivered into host DDR through the KV connector before the
 rider is admitted, as it would arrive from a prefill node. Every step of every
 retained measurement is checked to be pure decode --- no prefill tokens, no
@@ -24,7 +24,9 @@ step is discarded, not corrected. Each rider count is run five times.
 % src: run records' rig "decode_node_pd_emulated", connector true, purity_gate
 %      "per-step, decode_purity.DecodePurityMonitor", repeats 5, dtype float16,
 %      block_size 16, k_window 4 (paper/data/overhead/*/*.json); k sweep:
-%      02_law/F_k2_c512 vs F_k8_c512, step times within 0.65 ms at r=0..8.
+%      02_law/F_k2_c512 vs F_k8_c512, step times within 0.65 ms at r=0..8;
+%      M22c (job 2190742, ctx 1024, 1 resident, real bytes, r=0..6 crossing
+%      the knee at ~4.6): k = 2/4/8 within 0.2 ms at every r.
 
 \paragraph{Method.} A sweep holds a fixed cohort of residents and adds riders
 one count at a time; $\Delta T(r)$ is the step time with $r$ riders minus the
@@ -61,6 +63,10 @@ transfer costs nothing, and $c$ is the host work around it.
 % src: fits.txt: T6_nofix c 0.927, ASYNC_off c 7.196 (job 2181632, ctx 512);
 %      link 6.17 ms per rider at ctx 512 (abl_overlap_on.csv link column);
 %      CF_c128_a/b c 0.508/0.536 (mean 0.522), MB_c128 c 0.532 -> -0.010.
+% OPEN 2026-10-20: M22c (ctx 1024, 1 resident, real bytes, link ~25-100%
+%      loaded) gives c 1.55, against ~0.72 interpolated from the minbytes M22
+%      ladder. If M23's interleaved real-vs-minbytes ladder confirms the gap,
+%      "below the knee the transfer costs nothing" holds only at light load.
 
 \paragraph{The deferred write-back is a fixed cost, and halves it.}
 \Cref{fig:abl-law}c replaces the deferred write-back with a blocking
@@ -75,29 +81,29 @@ cost was the synchronisation, not the transfer.
 
 \input{figs/fig-abl-addr}
 
-\paragraph{Step-invariant addressing removes the context term.}
+\paragraph{Step-invariant addressing removes the per-block term.}
 \Cref{fig:abl-addr}a times the host work of building the step's rider block
-table. Built one entry per rider block, it cost 7.65\,\textmu s per block, so a
-single rider at context 512 cost 0.275\,ms and the cost grew with context. Built
-one slice per rider, the same rider costs 0.024\,ms, and quadrupling the block
-size --- a $4\times$ change in block count at the same riders --- moves it by
-2--6\%. \Cref{fig:abl-addr}b carries this to the per-rider cost $c$, measured
-with the bytes removed so that no context is past the knee. The bottom line is
-a slope. With one slice per rider, a line through all four contexts rises
-0.05--0.08\,ms per thousand tokens. With the per-block table it rises
-0.48\,ms per thousand, six to ten times faster. From 512 to 4096 tokens, an
-$8\times$ range, $c$ is flat at 0.73, 0.69 and 0.79\,ms; only the shortest
-context is lower (0.51\,ms).
-% src: abl_table_build.csv (T1_c512_bs16 n=1: 0.0243 ms, 36 blocks; pre-T1
-%      0.00765 ms/block x 36 = 0.275); t1_effect.py ratio 0.94-0.98;
-%      abl_chost_ctx.csv (c_host_ladder.py, M21): 0.513 / 0.731 / 0.690 /
-%      0.788 +- 0.428; per-block line 0.513 -> 2.410 (+1.90 ms). Slopes:
-%      unweighted 0.048, inverse-variance weighted 0.079 +- 0.030 ms/1k tok;
-%      per-block 0.478 ms/1k tok (np.polyfit over the four points).
-\torun{$c$ has been measured up to 4096 tokens; the target runs at 14\,724. If
-the weighted slope (0.08\,ms per thousand) held that far, $c$ would be about
-1.7\,ms rather than 0.61 and the gain $1.28\times$ rather than $1.37\times$; the
-gate would still pass. Measure $c$ at the target context.}
+table. Built one entry per rider block, it costs 2.6\,\textmu s per block per
+step, so one rider at context 14\,724 costs 2.38\,ms, and the step grows by the
+same 2.38\,ms: the build sits wholly on the critical path. Built one slice per
+rider, the table costs 0.03--0.045\,ms per step at every context, and
+quadrupling the block size --- a $4\times$ change in block count at the same
+riders --- moves it by 2--6\%. \Cref{fig:abl-addr}b carries this to the
+per-rider cost $c$, measured with the bytes removed so that no context is past
+the knee. With one slice per rider, $c = 0.50 + 0.21$\,ms per thousand tokens.
+The slope is not addressing: a resident adds 0.20\,ms per thousand tokens to
+$T_0$, so the rider pays for its attention what a resident pays, and the
+intercept is the mechanism, $c_m$ of \cref{eq:cS}. With the per-block table the
+slope is 0.37\,ms per thousand, $1.8\times$ steeper, and at the target context
+$c$ is 6.0\,ms against 3.5--3.75\,ms.
+% src: M22 (job 2189932; paper_versions/m22_analysis/fit.py, M22_ANALYSIS.md
+%      s1): ours c slope 0.206 / 0.218 ms per 1k tok, icpt 0.504 / 0.490;
+%      T0 slope 0.199; pblk slope 0.374 / 0.373; c at 14724: ours 3.515 /
+%      3.751, pblk 6.022 / 6.010; pblk - ours = 2.6 us per block; phase timer
+%      on the table build 2.38 ms per rider at 14724 (pblk), ours 0.03-0.045.
+%      The 0.21 slope includes ~0.06 ms per 1k tok that is not the rider's
+%      attention kernel (M22b nokernel, s9); per Ben 2026-10-20 ("go with A")
+%      c is stated as the measured total and BW_kv absorbs it.
 
 \paragraph{Two arms not plotted.} The host layout is what lets each contiguous
 run be one copy: with $K$ and $V$ interleaved, every run became a host-side
@@ -124,20 +130,21 @@ therefore a range, not a number. \planned{fusion is not implemented; its row in
 \centering\small
 \caption{\textbf{The blocks carried to the target}: Qwen-72B fp8 on a GH200 at
 context 14\,724 (\S\ref{sec:opoint}), projected from the measured
-coefficients ($T_0 = 25.3$\,ms, $B = 3$, $T_0/B = 8.44$\,ms, knee
-$\lfloor 2.2\rfloor = 2$ riders).}
+coefficients ($T_0 = 31.0$\,ms, $B = 3$, $T_0/B = 10.33$\,ms, knee
+$\lfloor 2.69\rfloor = 2$ riders). Every $c$ includes the rider's attention,
+1.88\,ms at this context (\cref{eq:cS}).}
 \label{tab:ladder}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}l r r r r@{}}
 \toprule
 State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
 \midrule
-first build$^{*}$        & 8.67 & 13.44 & --- & gate fails \\
-+ addressing             & 1.64 & 13.44 & 2 & $1.00\times$ \\
-+ deferred write-back    & 1.64 &  5.90 & 1 & $1.22\times$ \\
-shipped$^{\dagger}$      & 0.61 &  4.24 & 1 & $1.37\times$ \\
-\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{0.44} &
-  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.39--1.46$\times$} \\
+first build$^{*}$        & 10.55 & 13.44 & --- & gate fails \\
++ addressing             & 3.52 & 13.44 & 2 & $1.00\times$ \\
++ deferred write-back    & 3.52 &  5.90 & 1 & $1.18\times$ \\
+shipped$^{\dagger}$      & 2.51 &  4.24 & 1 & $1.28\times$ \\
+\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{2.34} &
+  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.29--1.34$\times$} \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -148,14 +155,16 @@ deferred write-back. $^{\ddagger}$Low end: only the gather and scatter removed;
 high end: the second call's kernel and launches removed as well
 (\cref{fig:abl-fusion}), both scaled from 64 to 80 layers.}
 \end{table}
-% src: paper/model/overhead_model.py delivered(14724, Q72) for the first three
-%      rows' c/F; operating_point.evaluate(Q72, GH200, 14724) for T0, B, knee and
-%      the shipped row. Gains recomputed with integer counts (B=3, r=2):
-%      gate fails / 1.004 / 1.224 / 1.371. Fusion row from M19 (abl_fusion.csv),
-%      per-layer terms scaled by 80/64: c 0.609 - 0.134*80/64 = 0.442 -> 1.386x;
-%      F 4.24 - 1.163*80/64 = 2.79 -> 1.456x. This REPLACES the earlier 1.82 /
-%      1.49x, which used M18's 1.94 ms remainder obtained by subtracting arms;
-%      M19 measured it directly at 1.21 ms (commit 96bc5e49b: "high by 60%").
+% src: c_m and F of the first three rows: paper/model/overhead_model.py
+%      delivered(14724, Q72) (8.67 / 1.64 / 1.64; 13.44 / 13.44 / 5.90); shipped
+%      c_m = 0.50 * 80/64 = 0.625 (M22 intercept). Every row adds the attention
+%      term 1.885 ms = 14724 * 320 KiB / (0.64 * 4 TB/s), and T0 = 30.99 ms,
+%      both from paper/model/gain_curve.py point(14724). Gains with integer
+%      counts (B=3, r=2): 0.788 (gate fails, admission returns 1.00) / 1.003 /
+%      1.175 / 1.283. Fusion row from M19 (abl_fusion.csv), per-layer terms
+%      scaled by 80/64: c 2.510 - 0.134*80/64 = 2.342 -> 1.294x; F 4.24 -
+%      1.163*80/64 = 2.79 -> 1.343x. Replaces 2026-10-18's table (T0 = 25.3,
+%      weights only; c without the attention term; 1.37x shipped).
 
 \paragraph{The ladder.} \Cref{tab:ladder} carries each block to the target
 through the capacity model. As first built, a rider cost more than a token is
