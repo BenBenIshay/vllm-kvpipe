@@ -77,7 +77,7 @@
 \SetKwInOut{Output}{Output}
 \SetAlFnt{\small}
 
-\title{\textbf{HeteroKV: Request-Level KV Tiering Across Heterogeneous Memory for LLM Decode}}
+\title{\textbf{HeteroKV: Growing the Decode Batch by Tiering KV Across Heterogeneous Memory}}
 \author{Anonymous}
 \date{}
 
@@ -95,23 +95,27 @@
 The throughput of a disaggregated decode node is set by its batch size, and the
 batch size by how much KV cache fits in the HBM that the model weights leave
 free. For large models this is a handful of long-context requests, and most of
-the GPU's compute sits idle. Tightly coupled CPU--GPU platforms change what lies
-beyond HBM: on a GH200, NVLink-C2C reaches hundreds of gigabytes of host memory
-at several hundred GB/s, fast enough to deliver KV within a single decode step.
-Existing offloading systems, however, send every request's KV through one path,
-and so exchange HBM bandwidth for link bandwidth instead of using the link to
-grow the batch. We present \sysname{}, a decode engine that partitions the
-batch \emph{by request} across memory tiers within one forward pass.
-\emph{Residents} keep their KV in HBM. \emph{Riders} keep theirs in host
-memory, occupy no HBM blocks, and stream it layer by layer behind the batch's
-compute. A capacity model, derived from a one-time profile and the measured
-step time, decides at every step how many requests ride and which ones, within
-the link bytes a step can hide; attention remains exact. We implement
-\sysname{} in vLLM, decompose its overhead by ablation on an A100, and validate
-the capacity model against those measurements. Projected to a GH200 serving
-Qwen2.5-72B at long context, riders raise decode throughput by 20\%, after
-paying for the HBM bandwidth their copies consume: about twice the gain per
-unit of link bandwidth that reading the same requests faster could reach.
+the GPU's compute sits idle. Memory beyond HBM is moving closer: coherent
+CPU--GPU links such as NVLink-C2C reach hundreds of gigabytes at several
+hundred GB/s, fast enough to deliver KV within a single decode step, and
+memory expanders add capacity behind PCIe-class links. Existing offloading
+systems, however, send every request's KV through one path, and so exchange
+HBM bandwidth for link bandwidth instead of using the link to grow the batch.
+We present \sysname{}, a decode engine that partitions the batch \emph{by
+request} across memory tiers within one forward pass. \emph{Residents} keep
+their KV in HBM. \emph{Riders} keep theirs in a second tier, occupy no HBM
+blocks, and stream it layer by layer behind the batch's compute. Riders need
+only the GPU's ordinary asynchronous copies and the engine's existing attention
+kernel: \sysname{} modifies no kernel and relies on no architecture-specific
+hardware, so the same engine runs over PCIe and over NVLink-C2C. A capacity
+model, derived from a one-time profile and the measured step time, decides at
+every step how many requests ride and which ones, within the link bytes a step
+can hide; attention remains exact. We implement \sysname{} in vLLM, decompose
+its overhead by ablation on an A100, and validate the capacity model against
+those measurements. Projected to a GH200 serving Qwen2.5-72B at long context,
+riders raise decode throughput by 20\%, after paying for the HBM bandwidth
+their copies consume: about twice the gain per unit of link bandwidth that
+reading the same requests faster could reach.
 \end{abstract}
 \ifdraft\linenumbers\fi
 
