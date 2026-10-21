@@ -50,7 +50,7 @@ The two coefficients are different kinds of work. $F$ is paid once per step as
 soon as one rider exists, independent of how many: per layer, the second
 attention call over the rider rows and the write of the new token's $K,V$ to the
 host copy (\S\ref{sec:mm}). $c$ is what each rider adds that cannot overlap
-with compute. It has three parts. The \emph{mechanism} part, $c_{\mathrm{m}}$, is
+with compute. It has four parts. The \emph{mechanism} part, $c_{\mathrm{m}}$, is
 the rider's per-layer copy launches and its rows in that attention call; it
 depends neither on context nor on link speed. The second part is the rider's
 attention itself, which reads its $S$ keys and values from the device slot, the
@@ -58,11 +58,15 @@ same HBM read a resident's attention performs. The third is the price of
 landing those bytes in HBM. Below the knee the transfer's \emph{time} hides
 behind the previous layer, but its \emph{bytes} are written into HBM while the
 step runs, and a decode step is bound by HBM bandwidth: every byte the copy
-writes is bandwidth the step's own reads lose. So
+writes is bandwidth the step's own reads lose. The fourth is the one part of
+the transfer that cannot hide: the first layer has no previous layer to hide
+behind, so $1/L$ of the rider's bytes cross the link in the open. So
 \begin{equation}
-  c(S) \;=\; c_{\mathrm{m}} + \frac{S\btok}{\BWkv} + \kappa\,\frac{S\btok}{\mathit{BW}},
-  \qquad
-  T_0 \;=\; \frac{W}{\BWw} + \sum_{\mathrm{res}} \frac{S_i\btok}{\BWkv},
+\begin{aligned}
+  c(S) &\;=\; c_{\mathrm{m}} + \frac{S\btok}{\BWkv} + \kappa\,\frac{S\btok}{\mathit{BW}}
+           + \frac{S\btok}{L\,\Xlink},\\
+  T_0 &\;=\; \frac{W}{\BWw} + \sum_{\mathrm{res}} \frac{S_i\btok}{\BWkv},
+\end{aligned}
   \label{eq:cS}
 \end{equation}
 where $\BWw$ and $\BWkv$ are the HBM bandwidths that weight and KV reads
@@ -185,18 +189,20 @@ budget: at the bare crossing, a 2\% rise in measured step time already costs
 the rider.
 
 For Qwen2.5-72B (fp8 weights, $L{=}80$) on a GH200 the envelope rises slowly,
-from $1.21\times$ at 8k tokens to $1.27\times$ at 24k, because the riders'
+from $1.20\times$ at 8k tokens to $1.26\times$ at 24k, because the riders'
 mechanism cost falls with context (\S\ref{sec:context}). The sawtooth peaks
-above it, up to $1.41\times$ at 16.3k, lie where HBM strands most of one
+above it, up to $1.39\times$ at 16.3k, lie where HBM strands most of one
 resident's KV, so the baseline is at its weakest; we report the envelope and
 treat those peaks as placement, not gain. At context 14\,724, for example,
 $B = 3$ residents fit and $T_0 = 31.0$\,ms, so a token is worth
 $T_0/B = 10.3$\,ms. The knee is 2.7, so two riders hide. Each costs
-$c = 3.79$\,ms: 1.88\,ms of its own attention, 1.28\,ms of HBM bandwidth taken
-by its copy, and 0.63\,ms of mechanism. The gate holds by $2.7\times$,
-break-even is $\rmin = 1$, and the two riders give $1.21\times$ throughput.
-What binds is the knee, not the gate. Without the contention term the same
-point would give $1.28\times$ (dotted in \cref{fig:gain-ctx}).
+$c = 3.93$\,ms: 1.88\,ms of its own attention, 1.28\,ms of HBM bandwidth taken
+by its copy, 0.14\,ms for its exposed first layer, and 0.63\,ms of mechanism.
+The gate holds by $2.6\times$, break-even is $\rmin = 1$, and the two riders
+give $1.20\times$ throughput. What binds is the knee, not the gate. If the
+copies cost nothing, the same point would give $1.28\times$ (dotted in
+\cref{fig:gain-ctx}); \S\ref{sec:eval-proj} gives the projection's
+sensitivity to each input.
 
 \paragraph{What the link's bandwidth is worth.} The link adds $\Xlink/\mathit{BW}
 = 10.5\%$ to the GPU's memory bandwidth (419\,GB/s on 4\,TB/s). A useful
@@ -226,17 +232,18 @@ faster~\cite{directkv}.
 Riders spend the link on \emph{more requests}, each of
 which shares the weight read the batch already pays for; a rider's cost is its
 own attention and its bytes, never a share of $W$. At the example above
-$\eta = 2.0$, after paying the contention, and the envelope gives
-$\eta = 2.0$--$2.5$ across 8k--24k tokens. The ratio of
+$\eta = 1.9$, after paying the contention, and the envelope gives
+$\eta = 1.9$--$2.4$ across 8k--24k tokens. The ratio of
 \cref{eq:ratio} is largest where HBM is scarcest relative to the link, with
 heavy weights and few residents. That is the regime the design exists for.
 % src: paper/model/gain_curve.py (M22-corrected: c_m = 0.50*L/64, BW_kv = 0.64
 %      HBM peak, BW_w = 0.75 peak, F = 3.39*L/64 = 4.24, X = 419 GB/s, b_tok
 %      320 KiB, KAPPA 1.06 from E1, job 2191314): smooth 1.213 @8192, 1.249
 %      @14724, 1.267 @24000; integer 1.405 @16300 (cap 2.98 -> B 2); @14724 B 3,
-%      t0 30.99, c 3.788 = 0.625 + 1.885 + 1.279, r 2, G 1.207, eta 1.97;
-%      eta_smooth 2.03 @8192, 2.55 @24000. Without contention G 1.283 (eta 2.70).
+%      t0 30.99, c 3.932 = 0.625 + 1.885 + 1.279 + 0.144, r 2, G 1.199, eta
+%      1.90; smooth 1.203 @8192, 1.238 @14724, 1.256 @24000; integer 1.395
+%      @16300; eta_smooth 1.94 @8192, 2.44 @24000. Copies free: G 1.283.
 %      Replaces 1.28x (2026-10-20), which replaced 1.37x.
-\torun{$T_0$ on the GH200 target has not been measured yet: the numbers above use
-$T_0$ from \cref{eq:cS} with A100 bandwidth efficiencies. Measure the
-3-resident step time at ctx 14\,724.}
+On a GH200, $T_0$ would be measured, not computed. Here it comes from
+\cref{eq:cS} with the bandwidth efficiencies measured on A100; the projection's
+sensitivity to it, and to every other input, is in \S\ref{sec:eval-proj}.
