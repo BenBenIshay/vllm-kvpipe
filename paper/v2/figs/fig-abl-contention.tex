@@ -1,0 +1,52 @@
+% Section 7.1, the price of landing rider bytes in HBM (E1, job 2191314,
+% 2026-10-21; benchmarks/kv_pipelining_bench/e1_gemm_write_contention.py).
+% One decode step's weight GEMMs (Qwen2.5-32B shapes, 16 layers, 15.6 GB per
+% pass) timed while a side stream copies at a controlled rate. Points are the
+% mean of two runs of 3 shuffled repeats (figs/data/abl_e1.csv); the line is
+% the fit over device copies with traffic >= 60 GB/s, M = 4.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.95\columnwidth, height=4.6cm,
+  xmin=-5, xmax=365, ymin=-1, ymax=20,
+  xlabel={copy traffic in HBM (GB/s)},
+  ylabel={GEMM slowdown (\%)},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=white,
+                fill opacity=0.85, text opacity=1, at={(0.02,0.98)},
+                anchor=north west, row sep=-1pt},
+  legend cell align=left,
+  every axis plot/.append style={line width=0.8pt},
+]
+\addplot[hbmD, domain=0:360, samples=2] {-0.31+0.0555*x};
+\addlegendentry{fit: $\kappa = 1.06$}
+\addplot[only marks, hbmD, mark=*, mark size=1.5pt]
+  table[x=traffic, y=slow, col sep=comma,
+        restrict expr to domain={\coordindex}{0:6}] {figs/data/abl_e1.csv};
+\addlegendentry{device copies, 4 rows}
+\addplot[only marks, hbmD, mark=o, mark size=1.6pt]
+  table[x=traffic, y=slow, col sep=comma,
+        restrict expr to domain={\coordindex}{7:13}] {figs/data/abl_e1.csv};
+\addlegendentry{device copies, 16 rows}
+\addplot[only marks, ddrD, mark=square*, mark size=1.5pt]
+  table[x=traffic, y=slow, col sep=comma,
+        restrict expr to domain={\coordindex}{14:19}] {figs/data/abl_e1.csv};
+\addlegendentry{host copies over PCIe}
+\addplot[only marks, black!50, mark=x, mark size=2pt]
+  table[x=traffic, y=slow, col sep=comma,
+        restrict expr to domain={\coordindex}{20:25}] {figs/data/abl_e1.csv};
+\addlegendentry{spacing kernels only}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{Copies into HBM slow the decode step's GEMMs in proportion to
+their traffic.} A100-80, one decode step's weight GEMMs at Qwen2.5-32B shapes
+(15.6\,GB of weights read at 1.49\,TB/s), timed while a second stream copies
+into HBM at a controlled rate; a device copy counts its read and its write.
+The slope is $\kappa = 1.06$ in units of HBM peak. Copies from the host over
+PCIe cost about four times more per byte.}
+\label{fig:abl-contention}
+\end{figure}
