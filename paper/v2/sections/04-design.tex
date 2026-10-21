@@ -111,13 +111,15 @@ layer) become $2L$ asynchronous ones and one wait.
 %      layer_idx + 1 < len(self.layers).
 
 \paragraph{Why not swap, or zero-copy.} Both of the closest systems apply one
-mechanism to \emph{every} request alike, so neither can draw on HBM bandwidth
-and link bandwidth at the same time. Pie~\cite{pie} stages KV through device
-buffers with per-layer prefetch, but its unit is the layer, applied to every
-request, and its buffers hold the authoritative KV: it swaps out the layer that
-has just finished computing~\cite{pie}. Each offloaded byte therefore crosses
-the link twice per token, the second time in the slower direction
-(\cref{fig:rolling}b). DirectKV~\cite{directkv} keeps the KV cache in CPU memory
+mechanism to \emph{every} request alike. Pie~\cite{pie} stages KV through
+device buffers with per-layer prefetch and sizes the share of layers it
+offloads to what the link can hide, so it too grows the batch, under the same
+per-step ceiling as riders. But its unit is the layer, applied to every
+request, and its buffers hold the authoritative KV: it swaps the coldest layer
+back out once it has been computed~\cite{pie}. Each offloaded byte therefore
+crosses the link twice per token, the second time in the slower direction
+(371 against 419\,GB/s on GH200~\cite{pie}), and is written into HBM and read
+back out of it (\cref{fig:rolling}b). DirectKV~\cite{directkv} keeps the KV cache in CPU memory
 and has the attention kernel stream it from host memory straight into the SMs'
 shared memory. Every byte of every request's KV therefore crosses the link every
 step, so decode attention runs at link bandwidth while HBM bandwidth goes unused
@@ -126,6 +128,8 @@ only behind that kernel's own tiles. Concurrently, DAK~\cite{dak} also splits
 the batch by request, but with a fixed ratio given in advance, for offline
 batches, inside a custom Hopper TMA kernel, and with no runtime decision about
 how many or which requests leave HBM.
+% src: pie s2.4: "419 GB/s from CPU to GPU and 371 GB/s from GPU to CPU"; s3.3
+%      swap-out of the "coldest layer"; s1 adaptive expansion.
 % src: dak s5 ("partitions the KV cache along the batch dimension"), s3 ("Given
 %      this global offload ratio"), s6 ("offline, batched-inference setup"),
 %      abstract ("repurposes the Tensor Memory Accelerator (TMA)").

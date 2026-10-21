@@ -73,19 +73,20 @@ devices~\cite{lamina}, which is specialised hardware.
 
 The second line swaps KV through a staging buffer in HBM.
 FlexGen~\cite{flexgen} targets offline, latency-insensitive batches. Pie
-places a fixed share of every request's layers in host memory~\cite{pie}, so
-every request pays the link every step and none is served purely from HBM.
-When the GPU holds enough KV, Pie matches vLLM but does not exceed
-it~\cite{pie}. We read this as a bandwidth limit: every offloaded byte crosses
-a link far slower than HBM, so offloading extends capacity without adding
-bandwidth.
+keeps a share of every request's layers in host memory, sized online to what
+the link can hide, and swaps them through HBM buffers ahead of
+use~\cite{pie}. It grows the batch past HBM, but every request pays the link
+every step, none is served purely from HBM, and every swapped layer is written
+back after use.
 % src: flexgen abstract: "Motivated by the emerging demand for
 %      latency-insensitive tasks with batched processing".
 %      pie s3.1: "We relocate m layers of the KV cache to the CPU, leaving n-m
 %      layers on the GPU. Pie uses per-layer KV cache as the basic management
 %      unit"; s5.3 (Fig. 7): "Pie outperforms vLLM at smaller GPU KV cache
 %      sizes and achieve similar performance at the largest memory capacity
-%      (12GB)". The bandwidth reading is OURS, stated as such.
+%      (12GB)" -- the point where vLLM no longer preempts (s5.3), so NOT a
+%      bandwidth limit (an earlier draft read it as one). s1 adaptive
+%      expansion; s3.3 coldest-layer swap-out.
 
 The third line reads host memory directly from the attention kernel.
 DirectKV keeps every request's KV in CPU memory and streams it into the
@@ -135,22 +136,35 @@ introduced with Hopper~\cite{dak}.
 %      from remote memory into GPU shared memory (SMEM)"; dak s1: "a
 %      specialized hardware engine introduced in the Hopper architecture".
 
+Pie~\cite{pie} also grows the batch past HBM over the link, by swapping a share
+of every request's layers through HBM buffers, and it is bounded by the same
+per-step link budget. Riders reach that bound more cheaply. A swapped layer is
+written back after use, so each byte Pie moves crosses HBM twice and returns
+in the link's slower direction; a rider's KV crosses HBM once and only its
+new token returns, and residents never touch the link.
+
 Riders are not free, and how many pay off depends on the model, the node and
 the step time. To our knowledge, \sysname{} is the first serving system that
 decides online, every step, how many and which requests ride, from a capacity
 model of a measured step time and the link bytes the step can hide. This paper
-makes three contributions.
+makes four contributions.
 \begin{itemize}\itemsep1pt
-\item \textbf{Heterogeneous KV memory management} (\S\ref{sec:mm}). Each
-  request is served from exactly one tier, and both tiers run in one forward
-  pass. It is built from two blocks: a rolling layer cache with a deferred
-  write-back, and step-invariant addressing.
+\item \textbf{Request-level KV tiering} (\S\ref{sec:mm}). Each request is
+  served from exactly one tier, both tiers run in one forward pass, and no
+  rider KV is written back. It is built from two blocks, a rolling layer cache
+  with a deferred write-back and step-invariant addressing, and it uses the
+  engine's unmodified attention kernel.
 \item \textbf{A capacity model and online admission} (\S\ref{sec:model},
   \S\ref{sec:admission}). A one-time profile and a measured step time decide
   whether riders pay and how many link bytes they may use; admission fills
-  that budget every step.
+  that budget every step. The same model ranks the four ways of using a
+  second tier and shows which of them can grow the batch.
+\item \textbf{The cost of copying into HBM} (\S\ref{sec:ablation}). Copies into
+  HBM slow the decode GEMMs in proportion to their traffic, about four times
+  more per byte over PCIe than for bulk copies. This term prices every design
+  that stages KV through HBM, and it is what separates riders from layer swap.
 \item \textbf{An implementation in vLLM and its evaluation}
   (\S\ref{sec:impl}--\S\ref{sec:analysis}). An ablation decomposes the cost of
-  a second tier, and A100 measurements are projected to GH200 by the
-  validated model.
+  a second tier, A100 measurements validate the model, and the model projects
+  GH200 and compares riders with layer swap in steady state.
 \end{itemize}

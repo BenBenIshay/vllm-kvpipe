@@ -1,0 +1,51 @@
+% Section 6.5: steady-state simulation against Pie's mechanism (Ben,
+% 2026-10-21). Qwen2.5-72B fp8 weights, 16-bit KV, GH200, output 512 tokens,
+% overheads charged to both (HeteroKV's measured F and c_m). Values:
+% paper/model/out/steady_split.jsonl (model q72_16, O 512, ov true): fixed
+% 4-16k het 1.223 split 1.280 pie 1.216; fixed 16-44k 1.284/1.474/1.415;
+% lognormal median 6k sigma 1.0 1.204/1.182/1.149; median 12k 1.229/1.240/1.172.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.95\columnwidth, height=4.6cm,
+  ybar, bar width=5pt,
+  ymin=1.0, ymax=1.55,
+  xmin=0.5, xmax=4.5,
+  xtick={1,2,3,4},
+  xticklabels={{4k--16k}, {16k--44k}, {mixed, 6k}, {mixed, 12k}},
+  ylabel={throughput gain over HBM only},
+  ytick={1.0,1.1,1.2,1.3,1.4,1.5},
+  yticklabel style={/pgf/number format/.cd,fixed,fixed zerofill,precision=1},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=white,
+                fill opacity=0.85, text opacity=1, at={(0.5,-0.22)},
+                anchor=north, legend columns=3, column sep=6pt},
+  legend cell align=left,
+  nodes near coords={\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\pgfplotspointmeta}},
+  nodes near coords style={font=\sffamily\tiny, black!80, rotate=90, anchor=west},
+]
+\addplot[draw=black!60, fill=black!20]
+  coordinates {(1,1.216) (2,1.415) (3,1.149) (4,1.172)};
+\addlegendentry{layer swap (Pie)}
+\addplot[draw=ddrD, fill=ddrD]
+  coordinates {(1,1.223) (2,1.284) (3,1.204) (4,1.229)};
+\addlegendentry{\sysname{}}
+\addplot[draw=hbmD, fill=hbmD!35]
+  coordinates {(1,1.280) (2,1.474) (3,1.182) (4,1.240)};
+\addlegendentry{+ boundary request}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{Against layer swap, in steady state.} Simulated decode on a
+GH200 serving Qwen2.5-72B (fp8 weights, 16-bit KV): every design completes
+the same requests, each decoding 512 tokens. Contexts are fixed within a
+range (averaged over it) or lognormal with the median shown. Pie is modelled
+from its paper: write-back of every swapped layer, bounded by the measured
+GPU-to-CPU rate, and a two-layer swap buffer; it is given an ideal split and
+the same overheads as \sysname{}. With a boundary request, one request fills
+the HBM that whole residents leave over and streams the rest as a rider.}
+\label{fig:steady}
+\end{figure}

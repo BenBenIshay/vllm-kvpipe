@@ -93,8 +93,8 @@
   \node[font=\sffamily\tiny, text=inkS, anchor=north] at (5.05,-0.02) {waits};
 \end{scope}
 \end{tikzpicture}
-\caption{\textbf{One path per byte, or both.} (a) Pie keeps a fixed share of
-every request's layers in host memory and swaps them through an HBM buffer, in
+\caption{\textbf{One path per byte, or both.} (a) Pie keeps a share of every
+request's layers, sized online, in host memory and swaps them through an HBM buffer, in
 and back out. (b) DirectKV keeps all KV in host memory and streams it into the
 kernel's shared memory; HBM holds no KV. (c) \sysname{} splits the batch by
 request: residents (R1--R3) read HBM, riders (R4, R5) stream from DDR into a

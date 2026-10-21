@@ -10,18 +10,25 @@
 
 \paragraph{Swapping KV through HBM.} FlexGen places weights, KV and
 activations across GPU, CPU and disk for offline, latency-insensitive
-batches~\cite{flexgen}. Pie relocates a fixed number of every request's layers
-to host memory and prefetches them through HBM buffers ahead of use,
-swapping each back out after use; an adaptive expansion factor sets how many
-layers move~\cite{pie}. \sysname{} uses the same per-layer prefetch but changes
-the unit of placement from the layer to the request. No resident pays the link,
-the window is a cache rather than a swap area, and only one token per layer
-returns to the host. The axes are orthogonal: Pie's layer split could run
-inside our resident tier.
+batches~\cite{flexgen}. Pie moves a share of every request's layers to host
+memory, prefetches them through HBM buffers ahead of use and swaps each back
+out after use, and grows that share online while the swap still hides behind
+compute~\cite{pie}. Pie is the closest prior design: it grows the batch past
+HBM, and it is bounded by the same per-step link budget as riders.
+\sysname{} differs in the unit of placement, the request rather than the
+layer. No resident pays the link, a rider's window is a cache rather than a
+swap area, and only one token per layer returns to the host, so each moved
+byte crosses HBM once and the link only in its faster direction. Simulated in
+steady state, that leads layer swap on mixed-context workloads
+(\S\ref{sec:eval-pie}). The axes are orthogonal: a layer split could run inside
+the resident tier.
 % src: flexgen abstract (quoted in s1). pie s3.1 ("relocate m layers"; "per-
 %      layer KV cache as the basic management unit"), s3 ("prefetching data for
 %      upcoming layers through a FIFO queue"), s3.3 (swap in and swap out),
 %      s3.4 adaptive expansion.
+%      pie s1: "It starts with zero CPU memory and then gradually increases this
+%      memory as long as ... (2) the swapping latency remains lower than
+%      computation latency"; s2.4 (371 vs 419 GB/s).
 
 \paragraph{Reading host memory from the kernel.} DirectKV keeps all KV in
 CPU memory and has the attention kernel read it directly, tiling through
