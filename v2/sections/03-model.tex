@@ -86,15 +86,15 @@ expresses.
 %      cited, Ben 2026-10-21.)
 
 Three rules make the fit trustworthy. First, only points well below the knee are
-kept, those whose transfer time is at most a tenth of $T_0$. A sweep that crosses
+kept, those whose transfer time is at most a tenth of $T_0$. A run that crosses
 the knee adds exposed transfer at high $r$, which steepens the line and lowers
-its intercept, overstating $c$ and understating $F$ together. Second, the sweep
+its intercept, overstating $c$ and understating $F$ together. Second, the profile
 is repeated at several depths, and both coefficients are expressed per layer,
 $F = f_L L$ and $c = c_0 + c_L L$, so one profile carries to a model of
-different depth. Third, the sweep is repeated at several contexts with the
+different depth. Third, it is repeated at several contexts with the
 transfer's bytes removed, which separates $c_{\mathrm{m}}$ from the attention
 term of \cref{eq:cS}; $F$ does not depend on context. The contention
-coefficient $\kappa$ is not fitted from the sweep but measured directly: the
+coefficient $\kappa$ is not fitted from these runs but measured directly: the
 step's weight GEMMs are timed while a second stream copies into HBM at a
 controlled rate (\S\ref{sec:ablation}).
 % src: OVERHEAD_CHARACTERISATION.md s0a (M13): retained points load <= 0.1;

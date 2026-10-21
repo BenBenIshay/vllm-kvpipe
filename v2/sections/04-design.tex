@@ -58,9 +58,8 @@ built around.
 % -----------------------------------------------------------------------------
 \subsection{The Heterogeneous KV Memory Manager}\label{sec:mm}
 
-The memory manager has three building blocks. The first two make a rider cheap
-and are the core of the design. The third is designed but not yet built. What
-each block is worth is measured in \S\ref{sec:ablation}. The scheduler changes
+The memory manager has two building blocks, and together they make a rider
+cheap. What each is worth is measured in \S\ref{sec:ablation}. The scheduler changes
 that let a rider run without holding HBM blocks are described in
 \cref{sec:residency}.
 
@@ -184,29 +183,14 @@ the table and one set of copies per rider. That is the property the capacity
 model relies on: the mechanism part of $c$, $c_{\mathrm{m}}$, is independent of
 $S$, and only the rider's attention grows with it (\cref{eq:cS}).
 
-% ................................................................. block D
-\subsubsection{Fused Tier Attention}\label{sec:fused}
-
-\input{figs/fig-fused}
-
-\planned{This block is designed and priced, not implemented. Everything measured
-in this paper uses the two-call path described first below.}
-
-\paragraph{Today.} Attention runs as two calls per layer (\cref{fig:fused}a).
+\paragraph{Attention over two sources.} Attention runs as two calls per layer.
 The first covers every row against the paged pool, with each rider's sequence
 length masked to a single key so that its rows do no wasted work. The second
-gathers the rider rows, attends them against the slot, and scatters the outputs
-back. The second call exists only because the window is a separate tensor and
-the kernel takes one KV pointer.
+gathers the rider rows, attends them against the slot, and scatters the
+outputs back. The second call exists because the window is a separate tensor
+and the kernel takes one KV pointer; \cref{sec:fusion-app} describes a fused
+kernel that would remove it.
 % src: ARCHITECTURE.md s3 (opt #5, seqused_k masking)
-
-\paragraph{Planned.} A single call in which each row carries its own KV region,
-the paged pool or the current slot, selected inside the kernel, with no gather
-or scatter (\cref{fig:fused}b). Because the rider table is already built once
-per step (\S\ref{sec:addressing}), fusion needs $k$ tables per step, not a
-per-layer rebuild. The second call is the larger part of the fixed cost $F$
-that remains; \S\ref{sec:ablation} measures it and projects what removing it
-is worth.
 
 % -----------------------------------------------------------------------------
 \input{sections/04b-admission}
