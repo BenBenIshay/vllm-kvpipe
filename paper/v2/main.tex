@@ -109,7 +109,7 @@ step time, decides at every step how many requests ride and which ones, within
 the link bytes a step can hide; attention remains exact. We implement
 \sysname{} in vLLM, decompose its overhead by ablation on an A100, and validate
 the capacity model against those measurements. Projected to a GH200 serving
-Qwen2.5-72B at long context, riders raise decode throughput by 21\%, after
+Qwen2.5-72B at long context, riders raise decode throughput by 20\%, after
 paying for the HBM bandwidth their copies consume: about twice the gain per
 unit of link bandwidth that reading the same requests faster could reach.
 \end{abstract}
@@ -125,8 +125,7 @@ unit of link bandwidth that reading the same requests faster could reach.
 
 \input{sections/05-impl}
 
-\section{Evaluation}\label{sec:eval}
-\textcolor{red}{[To be written.]}
+\input{sections/06-eval}
 
 \section{Analysis}\label{sec:analysis}
 \input{sections/07-ablation}

@@ -41,6 +41,20 @@ the batch dimension, keeping a subset of requests in HBM and the rest in host
 memory, so both tiers serve one batch. The split is an input: DAK derives a
 global offload ratio from what does not fit in HBM and distributes it across
 operations, and it is evaluated on offline batched inference~\cite{dak}.
+DAK argues that prefetching into HBM introduces HBM contention, squanders
+capacity and leaves pipeline bubbles~\cite{dak}. \sysname{} prefetches, and
+each of the three is a measured term here: the contention is $\kappa$ in the
+capacity model (\S\ref{sec:ablation}); a rider's window holds $k/L$ of its KV,
+2.5\% at the target; and the transfer that does not hide is the first layer,
+$1/L$ of it (\S\ref{sec:eval-pred}). Direct access has its own cost: DAK
+observes that unconstrained host accesses ``stall the GPU's local HBM
+accesses'' and adds congestion control~\cite{dak}.
+% src: dak abstract: "existing memory offloading frameworks rely on prefetching
+%      data into local GPU HBM. This approach underutilizes system resources by
+%      introducing HBM contention, squandering memory capacity, and creating
+%      pipeline bubbles"; s1: "unconstrained in-flight TMA accesses to host
+%      memory can trigger severe intra-GPU interconnect congestion and stall the
+%      GPU's local HBM accesses". k/L = 2/80 at the target.
 BOOST places a fixed fraction of every request's KV heads in host memory, in
 proportion to the two tiers' bandwidths, so that each wave of thread blocks
 reads both tiers at once~\cite{boost}; it rejects placing whole requests on

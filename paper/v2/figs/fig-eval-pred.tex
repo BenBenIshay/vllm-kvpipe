@@ -1,0 +1,50 @@
+% Section 6.2: the model's prediction of the step overhead for runs it was not
+% fitted on. Points: real-bytes sweeps at ctx 1024, 1 resident (M22c job
+% 2190742, six runs; M23 job 2190851, two runs), and the matching bytes-removed
+% sweeps (M23, two runs); figs/data/eval_dt.csv, rows 0-31 real, 32-39 removed.
+% Lines: the model, with the profile from the bytes-removed ladder (M22, job
+% 2189932: c_m 0.497, 0.2121 ms per 1k tok, F 5.0) and kappa from the
+% microbenchmark at the PCIe rate (4.55). paper/model/validate_a100.py.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.95\columnwidth, height=4.6cm,
+  xmin=0.6, xmax=4.4, ymin=4, ymax=12,
+  xtick={1,2,3,4},
+  xlabel={riders $r$},
+  ylabel={step overhead $\Delta T$ (ms)},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=white,
+                fill opacity=0.85, text opacity=1, at={(0.5,-0.30)},
+                anchor=north, row sep=-1pt, legend columns=2,
+                column sep=6pt},
+  legend cell align=left,
+  every axis plot/.append style={line width=0.8pt},
+]
+\addplot[ddrD, domain=1:4, samples=2] {5.0+1.512*x};
+\addlegendentry{model, real bytes}
+\addplot[only marks, ddrD, mark=*, mark size=1.3pt, opacity=0.7]
+  table[x=r, y=dT, col sep=comma,
+        restrict expr to domain={\coordindex}{0:31}] {figs/data/eval_dt.csv};
+\addlegendentry{measured (8 runs)}
+\addplot[hbmD, domain=1:4, samples=2] {5.0+0.714*x};
+\addlegendentry{model, no transfer terms}
+\addplot[only marks, hbmD, mark=o, mark size=1.6pt]
+  table[x=r, y=dT, col sep=comma,
+        restrict expr to domain={\coordindex}{32:39}] {figs/data/eval_dt.csv};
+\addlegendentry{bytes removed (2 runs)}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{The model predicts runs it was not fitted on.} A100-80,
+Qwen2.5-32B, context 1024, one resident, link loaded up to 98\% of the step.
+The profile comes from a different sweep (bytes removed, contexts 512--14\,724)
+and $\kappa$ from the microbenchmark of \cref{fig:abl-contention}. With real
+bytes the prediction is within 1.7\% of the measured step; the same profile
+without the contention and first-layer terms falls on the bytes-removed line,
+up to 6\% low.}
+\label{fig:eval-pred}
+\end{figure}

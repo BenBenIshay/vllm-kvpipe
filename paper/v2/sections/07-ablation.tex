@@ -12,10 +12,11 @@
 
 \paragraph{Setup.} All ablations run on one A100-80 (PCIe) serving
 Qwen2.5-32B-Instruct in fp16 ($L{=}64$ layers, KV blocks of 16 tokens, a rolling window
-of $k{=}4$ layer-slots). Block size 16 is the engine default. The prefetch
-runs one layer ahead, so $k{=}2$ is the minimum; $k{=}4$ is the default, and
-sweeps at $k{=}2$ and $k{=}8$ change the step time by under 1\,ms at every
-rider count, including counts past the knee. Each extra slot costs only $1/L$ of a rider's KV in HBM. The node is a decode node with the handover emulated:
+of $k$ layer-slots). Block size 16 is the engine default. The prefetch
+runs one layer ahead, so $k{=}2$ is the minimum, and it is the default: sweeps
+at $k{=}2$, 4 and 8 change the step time by under 1\,ms at every rider count,
+including counts past the knee, so a deeper window buys nothing. Runs not
+marked otherwise use $k{=}4$, which the sweeps show is equivalent. Each extra slot costs only $1/L$ of a rider's KV in HBM. The node is a decode node with the handover emulated:
 each rider's KV is delivered into host DDR through the KV connector before the
 rider is admitted, as it would arrive from a prefill node. Every step of every
 retained measurement is checked to be pure decode --- no prefill tokens, no
@@ -77,10 +78,11 @@ hides; what it takes is HBM bandwidth. \Cref{fig:abl-contention} isolates
 this outside the engine: the decode step's weight GEMMs, timed while a second
 stream copies into HBM at a controlled rate, slow down linearly in the copy's
 traffic, by $\kappa = 1.06$ times its share of HBM peak bandwidth. This is the
-contention term of \cref{eq:cS}. Two terms of the step's structure add to it
-here: the first layer of each rider is copied on the compute stream, and the
-deferred write-back grows with real bytes. Together the three account for
-0.71 of the 0.83\,ms. Copies from the host over PCIe cost about four times
+contention term of \cref{eq:cS}. The exposed first layer of \cref{eq:cS}
+adds to it, visible in a trace as each rider's first-layer copy on the
+compute stream, and the deferred write-back grows slightly with real bytes.
+Priced at the PCIe rate, the three account for 0.71 of the 0.83\,ms;
+\S\ref{sec:eval} tests the same terms as a prediction. Copies from the host over PCIe cost about four times
 more per byte than device copies, so the A100 link is a pessimistic case; the
 projection uses $\kappa = 1.06$, consistent with the up to 10\% that DAK
 reports for background copies on GH200 (\S\ref{sec:profile}).
@@ -144,7 +146,9 @@ removes the second attention call's kernel, then the whole call. The call costs
 (1.16\,ms), and 0.13\,ms per rider for gathering and scattering rider rows. A
 fused kernel removes the gather and scatter outright; it removes at most the
 $F$ share, since it still performs the attention arithmetic. Fusion's value is
-therefore a range, not a number. \planned{fusion is not implemented; its row in
+therefore a range, not a number, and its upper end grows with context: with
+one resident, the second call's kernel costs 1.3\,ms of $F$ at context 512
+and 1.6\,ms at 14\,724. \planned{fusion is not implemented; its row in
 \cref{tab:ladder} is a projection from these ablation arms.}
 % src: abl_fusion.csv / fusion_bound.py (M19, job 2182025): base F 3.32/3.35/3.42
 %      (mean 3.36), noattend F 2.15 c 0.322, nokernel F 2.20; c base mean 0.455;
@@ -156,20 +160,20 @@ therefore a range, not a number. \planned{fusion is not implemented; its row in
 context 14\,724 (\S\ref{sec:opoint}), projected from the measured
 coefficients ($T_0 = 31.0$\,ms, $B = 3$, $T_0/B = 10.33$\,ms, knee
 $\lfloor 2.69\rfloor = 2$ riders). Every $c$ includes the rider's attention,
-1.88\,ms at this context, and the HBM bandwidth its copy takes, 1.28\,ms
-(\cref{eq:cS}).}
+1.88\,ms at this context, the HBM bandwidth its copy takes, 1.28\,ms, and its
+exposed first layer, 0.14\,ms (\cref{eq:cS}).}
 \label{tab:ladder}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}l r r r r@{}}
 \toprule
 State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
 \midrule
-first build$^{*}$        & 11.83 & 13.44 & --- & gate fails \\
-+ addressing             & 4.80 & 13.44 & 3 & $1.00\times$ \\
-+ deferred write-back    & 4.80 &  5.90 & 2 & $1.11\times$ \\
-shipped$^{\dagger}$      & 3.79 &  4.24 & 1 & $1.21\times$ \\
-\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{3.62} &
-  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.22--1.26$\times$} \\
+first build$^{*}$        & 11.97 & 13.44 & --- & gate fails \\
++ addressing             & 4.94 & 13.44 & 3 & $1.00\times$ \\
++ deferred write-back    & 4.94 &  5.90 & 2 & $1.10\times$ \\
+shipped$^{\dagger}$      & 3.93 &  4.24 & 1 & $1.20\times$ \\
+\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{3.76} &
+  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.21--1.25$\times$} \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -183,13 +187,15 @@ high end: the second call's kernel and launches removed as well
 % src: c_m and F of the first three rows: paper/model/overhead_model.py
 %      delivered(14724, Q72) (8.67 / 1.64 / 1.64; 13.44 / 13.44 / 5.90); shipped
 %      c_m = 0.50 * 80/64 = 0.625 (M22 intercept). Every row adds the attention
-%      term 1.885 ms = 14724 * 320 KiB / (0.64 * 4 TB/s) and the contention
-%      term 1.279 ms = 1.06 * 14724 * 320 KiB / 4 TB/s (E1), and T0 = 30.99 ms,
-%      all from paper/model/gain_curve.py point(14724). Gains with integer
-%      counts (B=3, r=2): 0.759 (gate fails) / 0.956 (r_min 3 > knee 2, so
-%      admission admits none: 1.00) / 1.111 / 1.207. Fusion row from M19
-%      (abl_fusion.csv), per-layer terms scaled by 80/64: c 3.788 -
-%      0.134*80/64 = 3.62 -> 1.216x; F 4.24 - 1.163*80/64 = 2.79 -> 1.259x.
+%      term 1.885 ms = 14724 * 320 KiB / (0.64 * 4 TB/s), the contention
+%      term 1.279 ms = 1.06 * 14724 * 320 KiB / 4 TB/s (E1) and the first layer
+%      0.144 ms = 14724 * 320 KiB / 80 / 419 GB/s; T0 = 30.99 ms; all from
+%      paper/model/gain_curve.py point(14724). Gains with integer counts (B=3,
+%      r=2): 0.755 (gate fails) / 0.951 (r_min 3 > knee 2, admission admits
+%      none: 1.00) / 1.104 / 1.199. Fusion row from M19 (abl_fusion.csv),
+%      per-layer terms scaled by 80/64: c 3.932 - 0.134*80/64 = 3.76 ->
+%      1.208x; F 4.24 - 1.163*80/64 = 2.79 -> 1.250x. M22b kernel share of F
+%      (nokernel arm): 1.32 @512, 1.58 @14724, 1 resident.
 %      Replaces 2026-10-20's table (no contention term; 1.28x shipped), which
 %      replaced 2026-10-18's (T0 weights only; 1.37x).
 
@@ -201,5 +207,6 @@ break-even needed three riders, and the knee admits two. The deferred write-back
 them pay. Admission (\cref{alg:admit}) turns any failing state into $1.00\times$
 rather than a loss, by admitting no riders.
 
-\torun{\cref{tab:ladder} is a projection to GH200 from coefficients measured on
-A100; the GH200 run replaces it.}
+\Cref{tab:ladder} is a projection to GH200 from coefficients measured on A100;
+\S\ref{sec:eval} tests the model's predictions on A100 and gives the
+projection's sensitivity to each coefficient.

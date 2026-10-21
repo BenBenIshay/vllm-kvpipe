@@ -1,0 +1,121 @@
+% =============================================================================
+% 6 Evaluation. Written 2026-10-21 (Ben: "let's continue to evaluation"). The
+% paper is published before any GH200 run (Ben, 2026-10-19), so s6 shows that
+% the capacity model is accurate on A100 evidence and states what it projects,
+% with its sensitivity. Numbers: paper/model/validate_a100.py (A100 checks) and
+% paper/model/gain_curve.py point(..., overrides) (projection); analysis in
+% paper_versions/m22_analysis/M22_ANALYSIS.md.
+% =============================================================================
+
+\section{Evaluation}\label{sec:eval}
+
+\sysname{} is meant for a GH200; the measurements in this paper are from an
+A100. The evaluation therefore asks three questions. Does the capacity model
+predict the step time of configurations it was not fitted on? Does its
+decision admit the right number of riders? And what does the model, so
+tested, project for the target, and how much does that projection depend on
+each of its inputs?
+
+\subsection{Setup}
+
+The rig is that of \S\ref{sec:ablation}: one A100-80 (PCIe, 25.1\,GB/s measured
+host to device) serving Qwen2.5-32B in fp16 as a decode node, with the
+handover emulated and every step checked to be pure decode. The model's
+profile comes from one sweep, with the transfer's bytes removed: a single
+resident, contexts 512 to 14\,724, up to five riders. It gives
+$c_{\mathrm{m}} = 0.50$\,ms, the attention slope of \cref{eq:cS}, and
+$F = 5.0$\,ms. The contention coefficient comes from the microbenchmark of
+\cref{fig:abl-contention}; on A100 the copies arrive over PCIe, so the model
+uses the PCIe value, $\kappa = 4.55$. Nothing in the test set below was used to
+fit any of these.
+
+\input{figs/fig-eval-pred}
+
+\subsection{Does the Model Predict the Step?}\label{sec:eval-pred}
+
+The test set is eight sweeps with real bytes at context 1024, one resident and
+one to four riders, from two jobs on different days: 32 step times with the
+link carrying up to 98\% of a step. \Cref{fig:eval-pred} shows them against
+the model's prediction. The mean error is $-0.5\%$ and the largest is 1.7\%
+(0.9\,ms); the throughput gain each point implies is predicted within 1.7\%.
+Both transfer terms are needed. Without the contention and first-layer terms
+of \cref{eq:cS} the same profile predicts the bytes-removed sweep, which it
+matches within 1.1\%, and falls up to 6.1\% below the real one.
+
+At sixteen residents and contexts 128 to 512 the model predicts the per-rider
+cost $c$ with real bytes within 0.14\,ms (0.49, 0.47 and 0.83\,ms predicted
+against 0.41, 0.56 and 0.97 measured), starting from that configuration's own
+bytes-removed sweep, whose $c$ itself varies by up to 0.3\,ms between repeats.
+The baseline step $T_0$ computed from \cref{eq:cS} is within 0.6\% of the
+measured one with one resident, at both 1024 and 14\,724 tokens, but 5\% low
+with sixteen: per-request work beyond the weight and KV reads is not in the
+equation. This is why the method measures $T_0$ on the node rather than
+computing it (\S\ref{sec:opoint}), and why the projection below varies it.
+% src: validate_a100.py: real n=32 err mean -0.48% max 1.65% (0.92 ms); gain
+%      err max 1.68%; bytes removed n=8 max 1.05%; without the two terms mean
+%      -4.11% max 6.12%. 16 residents (M20, paper_runs/20260930/overhead/
+%      22_c_context): MB c 0.394/0.269/0.430, predicted 0.493/0.469/0.829,
+%      measured CC 0.413/0.559/0.967 (ctx 128/256/512); MB_c128 repeats 0.24
+%      and 0.54. T0: predicted 45.37 vs 45.20 (B1 c1024), 48.27 vs 47.96-48.02
+%      (B1 c14724), 45.59 vs 47.84 (B16 c128), 46.89 vs 49.50 (B16 c512).
+%      kappa_PCIe = 0.235 %/(GB/s) x 1935 GB/s / 100 = 4.55 (E1 h2d).
+
+\subsection{Does the Decision Admit the Right Riders?}\label{sec:eval-knee}
+
+The decision of \cref{eq:decision} admits riders up to the knee,
+$\lfloor T_0\Xlink/(S\btok)\rfloor$. At context 1024 with one resident the
+knee is 4.09, so it admits four. Past it, a sweep to six riders shows where
+the transfer stops hiding: four riders lie on the line of \cref{eq:law}, the
+fifth adds 4\,ms above it, and from there the step is the link time plus
+7\,ms. The measured knee is therefore at about 4.6 riders, and the rule's
+choice is conservative by 12\%: it never admits a rider whose transfer is
+exposed. That caution has a price here. Throughput at four riders is 8\% below
+the best measured count, five; six riders lower it again. Window depth does
+not move the knee: at $k = 2$, 4 and 8 the step times at every rider count,
+including past the knee, agree within 0.2\,ms.
+% src: M22c (job 2190742, 6 runs): F 5.11-5.21, c 1.53-1.56 over r=1..4;
+%      excess over the line at r=5 +3.8..+4.2 ms; step - link 6.8 (r=5),
+%      7.5-7.6 (r=6); knee from link*r + 6.8 = T0 + F + c*r -> 4.58; decode
+%      tok/s 88.4-88.8 (r=4), 96.6-96.7 (r=5), 94.7-94.8 (r=6).
+
+\subsection{What the Model Projects}\label{sec:eval-proj}
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{4pt}
+\caption{\textbf{Sensitivity of the projection} at the operating point of
+\S\ref{sec:opoint} (Qwen2.5-72B, fp8 weights, 16-bit KV, GH200, context
+14\,724, $B{=}3$, $r{=}2$): each row changes one input of the model.}
+\label{tab:sens}
+\begin{tabular}{@{}l r r r@{}}
+\toprule
+Input changed & $c$ (ms) & gain & $\eta$ \\
+\midrule
+none (the model as stated)                  & 3.93 & $1.20\times$ & 1.9 \\
+copies cost HBM nothing, $\kappa = 0$         & 2.65 & $1.27\times$ & 2.6 \\
+$\kappa = 0.89$ (DAK's GH200 figure)         & 3.73 & $1.21\times$ & 2.0 \\
+$\kappa = 1.5$                                & 4.46 & $1.17\times$ & 1.6 \\
+weight-read time $\pm 5\%$                    & 3.93 & $1.18$--$1.21\times$ & 1.8--2.0 \\
+KV read at 50\% of peak, not 64\%             & 4.46 & $1.19\times$ & 1.8 \\
+$F = 3.6$\,ms (16-resident profile)           & 3.93 & $1.22\times$ & 2.1 \\
+$F = 6.3$\,ms (1-resident profile)            & 3.93 & $1.15\times$ & 1.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+% src: gain_curve.py point(14724, ...): base c 3.932 G 1.199 eta 1.90;
+%      kappa 0: 2.649/1.274/2.62 (first layer kept); 0.89: 3.730/1.210/2.01
+%      (dak s2.3: up to 10% at 450/4000 = 11.25% -> 0.89); 1.5: 4.457/1.170/
+%      1.62; t0_scale 0.95/1.05: 1.184/1.212, eta 1.76/2.02; eff_kv 0.50:
+%      4.457/1.187/1.79; F 2.9*80/64 = 3.63: 1.216/2.06; F 5.0*80/64 = 6.25:
+%      1.145/1.39. No row changes B (3) or r (2).
+
+Applied to the target with the GH200's bandwidths, the model gives
+$1.20\times$ at context 14\,724, and $\eta = 1.9$: the link's 10.5\% of added
+bandwidth buys 20\% more throughput (\S\ref{sec:opoint}).
+\Cref{tab:sens} varies each input over the range our measurements leave open.
+The gain stays between $1.15\times$ and $1.27\times$, and $\eta$ between 1.4
+and 2.6, above the bound of 1 that using the link to read the same requests
+faster cannot exceed. No row changes the number of residents or riders. The
+input that matters most is the fixed cost: $F$ measured with sixteen residents
+is 40\% lower than with one, and the target's three residents lie between.
+The contention coefficient comes next; DAK's figure for GH200 background
+copies~\cite{dak} lands within 0.01 of the stated gain.
