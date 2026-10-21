@@ -161,7 +161,7 @@ class CacheConfig:
     together with kv_offloading_size."""
 
     enable_kv_pipelining: bool = False
-    kv_k_window: int = 4
+    kv_k_window: int = 2
     """Number of KV cache layers to keep on GPU simultaneously during
     layer-wise pipelined decode.  Must be << num_model_layers to see a
     memory benefit.  The allocator inflates the block pool by

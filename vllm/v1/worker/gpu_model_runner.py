@@ -1040,7 +1040,7 @@ class GPUModelRunner(
             except Exception:
                 ordered = list(kv_dict.keys())
             ordered = [n for n in ordered if n in kv_dict]
-            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 2)
             streamer = HybridCpuStreamer(kv_dict, ordered)
             streamer.build_rolling_region(k_window, w_max_blocks=512)
             self._rungd_streamer = streamer
@@ -1341,7 +1341,7 @@ class GPUModelRunner(
             except Exception:
                 ordered = list(kv_dict.keys())
             ordered = [n for n in ordered if n in kv_dict]
-            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 4)
+            k_window = int(getattr(self.cache_config, "kv_k_window", 0) or 2)
             t0 = kv_dict[ordered[0]]
             # Size the pool so it CANNOT exhaust for a valid workload: every
             # concurrent CPU-tier request can hold its full sequence. h_max =

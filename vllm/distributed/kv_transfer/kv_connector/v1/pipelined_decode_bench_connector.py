@@ -137,7 +137,7 @@ class PipelinedDecodeBenchConnector(KVConnectorBase_V1, DirectKWindowMixin):
         self._block_size = cache_cfg.block_size
         self._init_direct_k_window(
             vllm_config,
-            k_window=int(getattr(cache_cfg, "kv_k_window", 4)),
+            k_window=int(getattr(cache_cfg, "kv_k_window", 2)),
             decode_only=self._decode_only,
         )
 
