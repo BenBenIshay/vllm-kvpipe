@@ -57,16 +57,40 @@ baseline any prefetching design improves on. A rider then costs 7.20\,ms of step
 link time: the transfer is fully exposed, plus its bookkeeping. With the
 overlap, the same sweep costs 0.93\,ms per rider, and that slope is an upper
 bound, since it includes counts approaching the knee. \Cref{fig:abl-law}b says
-what is left below the knee. Removing the bytes while keeping every launch moves
-$c$ from 0.522 to 0.532\,ms, inside the noise: below the knee the rider's
-transfer costs nothing, and $c$ is the host work around it.
+what is left below the knee, at light load. Removing the bytes while keeping
+every launch moves $c$ from 0.522 to 0.532\,ms, inside the noise: with the link
+busy for under a fifth of the step, the rider's transfer costs nothing, and $c$
+is the host work around it.
 % src: fits.txt: T6_nofix c 0.927, ASYNC_off c 7.196 (job 2181632, ctx 512);
 %      link 6.17 ms per rider at ctx 512 (abl_overlap_on.csv link column);
 %      CF_c128_a/b c 0.508/0.536 (mean 0.522), MB_c128 c 0.532 -> -0.010.
-% OPEN 2026-10-20: M22c (ctx 1024, 1 resident, real bytes, link ~25-100%
-%      loaded) gives c 1.55, against ~0.72 interpolated from the minbytes M22
-%      ladder. If M23's interleaved real-vs-minbytes ladder confirms the gap,
-%      "below the knee the transfer costs nothing" holds only at light load.
+%      Load: 16 residents, ctx 128, r <= 8 -> link <= 28% of T0 (fits.txt).
+
+\input{figs/fig-abl-contention}
+
+\paragraph{Landing the bytes in HBM is not free.} At higher load the bytes
+cost something. At context 1024 with the link busy for up to 98\% of the step,
+real bytes raise $c$ from 0.76 to 1.59\,ms over the same sweep with the bytes
+removed, two arms interleaved in one job; at contexts 256 and 512 the
+increase is 0.29 and 0.53\,ms, in proportion to the bytes. The transfer still
+hides; what it takes is HBM bandwidth. \Cref{fig:abl-contention} isolates
+this outside the engine: the decode step's weight GEMMs, timed while a second
+stream copies into HBM at a controlled rate, slow down linearly in the copy's
+traffic, by $\kappa = 1.06$ times its share of HBM peak bandwidth. This is the
+contention term of \cref{eq:cS}. Two terms of the step's structure add to it
+here: the first layer of each rider is copied on the compute stream, and the
+deferred write-back grows with real bytes. Together the three account for
+0.71 of the 0.83\,ms. Copies from the host over PCIe cost about four times
+more per byte than device copies, so the A100 link is a pessimistic case; the
+projection uses $\kappa = 1.06$, in line with what BOOST measures for
+host-to-HBM migration on GH200 (\S\ref{sec:profile}).
+% src: M23 RB_{real,minb}_c1024_{a,b} (job 2190851): c 1.605/1.571 vs
+%      0.749/0.771, F unchanged 5.05-5.24; M20 refit (paper_runs/20260930/
+%      overhead/22_c_context, 16 residents): extra 0.29 @256, 0.53 @512.
+%      E1 (job 2191314): 0.0555 %/(GB/s) x 1935 GB/s = 1.06; PCIe 0.22-0.25
+%      %/(GB/s); budget (paper_versions/m22_analysis/M22_ANALYSIS.md s6.3-6.4):
+%      GEMM contention 0.45 + layer-0 copy on compute stream 0.18 + larger
+%      write-back 0.08 = 0.71 of 0.83 ms per rider.
 
 \paragraph{The deferred write-back is a fixed cost, and halves it.}
 \Cref{fig:abl-law}c replaces the deferred write-back with a blocking
@@ -132,19 +156,20 @@ therefore a range, not a number. \planned{fusion is not implemented; its row in
 context 14\,724 (\S\ref{sec:opoint}), projected from the measured
 coefficients ($T_0 = 31.0$\,ms, $B = 3$, $T_0/B = 10.33$\,ms, knee
 $\lfloor 2.69\rfloor = 2$ riders). Every $c$ includes the rider's attention,
-1.88\,ms at this context (\cref{eq:cS}).}
+1.88\,ms at this context, and the HBM bandwidth its copy takes, 1.28\,ms
+(\cref{eq:cS}).}
 \label{tab:ladder}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}l r r r r@{}}
 \toprule
 State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
 \midrule
-first build$^{*}$        & 10.55 & 13.44 & --- & gate fails \\
-+ addressing             & 3.52 & 13.44 & 2 & $1.00\times$ \\
-+ deferred write-back    & 3.52 &  5.90 & 1 & $1.18\times$ \\
-shipped$^{\dagger}$      & 2.51 &  4.24 & 1 & $1.28\times$ \\
-\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{2.34} &
-  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.29--1.34$\times$} \\
+first build$^{*}$        & 11.83 & 13.44 & --- & gate fails \\
++ addressing             & 4.80 & 13.44 & 3 & $1.00\times$ \\
++ deferred write-back    & 4.80 &  5.90 & 2 & $1.11\times$ \\
+shipped$^{\dagger}$      & 3.79 &  4.24 & 1 & $1.21\times$ \\
+\textcolor{red}{+ fusion (planned)$^{\ddagger}$} & \textcolor{red}{3.62} &
+  \textcolor{red}{2.79--4.24} & 1 & \textcolor{red}{1.22--1.26$\times$} \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -158,19 +183,21 @@ high end: the second call's kernel and launches removed as well
 % src: c_m and F of the first three rows: paper/model/overhead_model.py
 %      delivered(14724, Q72) (8.67 / 1.64 / 1.64; 13.44 / 13.44 / 5.90); shipped
 %      c_m = 0.50 * 80/64 = 0.625 (M22 intercept). Every row adds the attention
-%      term 1.885 ms = 14724 * 320 KiB / (0.64 * 4 TB/s), and T0 = 30.99 ms,
-%      both from paper/model/gain_curve.py point(14724). Gains with integer
-%      counts (B=3, r=2): 0.788 (gate fails, admission returns 1.00) / 1.003 /
-%      1.175 / 1.283. Fusion row from M19 (abl_fusion.csv), per-layer terms
-%      scaled by 80/64: c 2.510 - 0.134*80/64 = 2.342 -> 1.294x; F 4.24 -
-%      1.163*80/64 = 2.79 -> 1.343x. Replaces 2026-10-18's table (T0 = 25.3,
-%      weights only; c without the attention term; 1.37x shipped).
+%      term 1.885 ms = 14724 * 320 KiB / (0.64 * 4 TB/s) and the contention
+%      term 1.279 ms = 1.06 * 14724 * 320 KiB / 4 TB/s (E1), and T0 = 30.99 ms,
+%      all from paper/model/gain_curve.py point(14724). Gains with integer
+%      counts (B=3, r=2): 0.759 (gate fails) / 0.956 (r_min 3 > knee 2, so
+%      admission admits none: 1.00) / 1.111 / 1.207. Fusion row from M19
+%      (abl_fusion.csv), per-layer terms scaled by 80/64: c 3.788 -
+%      0.134*80/64 = 3.62 -> 1.216x; F 4.24 - 1.163*80/64 = 2.79 -> 1.259x.
+%      Replaces 2026-10-20's table (no contention term; 1.28x shipped), which
+%      replaced 2026-10-18's (T0 weights only; 1.37x).
 
 \paragraph{The ladder.} \Cref{tab:ladder} carries each block to the target
 through the capacity model. As first built, a rider cost more than a token is
 worth, so the gate failed and no rider count could pay at any bandwidth.
-Addressing passed the gate, but with the fixed cost still at 13.4\,ms the two
-riders the knee admits only broke even. The deferred write-back is what made
+Addressing passed the gate, but with the fixed cost still at 13.4\,ms
+break-even needed three riders, and the knee admits two. The deferred write-back is what made
 them pay. Admission (\cref{alg:admit}) turns any failing state into $1.00\times$
 rather than a loss, by admitting no riders.
 

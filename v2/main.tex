@@ -90,6 +90,8 @@
 % Revised 2026-10-20 after Ben's review: higher register; the model-accuracy
 % placeholder is gone (it belongs to s6); one \torun remains, the projected
 % gain, whose value waits on the M22 discussion (1.37x today, 1.28x corrected).
+% 2026-10-21 (Ben approved E1 contention term): 1.207x at ctx 14724 -> "21%";
+% eta = 1.97 vs the aggregation bound 1 (s3.4, eq:eta).
 The throughput of a disaggregated decode node is set by its batch size, and the
 batch size by how much KV cache fits in the HBM that the model weights leave
 free. For large models this is a handful of long-context requests, and most of
@@ -107,8 +109,9 @@ step time, decides at every step how many requests ride and which ones, within
 the link bytes a step can hide; attention remains exact. We implement
 \sysname{} in vLLM, decompose its overhead by ablation on an A100, and validate
 the capacity model against those measurements. Projected to a GH200 serving
-Qwen2.5-72B at long context, riders raise decode throughput by
-\torun{[gain]}.
+Qwen2.5-72B at long context, riders raise decode throughput by 21\%, after
+paying for the HBM bandwidth their copies consume: about twice the gain per
+unit of link bandwidth that reading the same requests faster could reach.
 \end{abstract}
 \ifdraft\linenumbers\fi
 
