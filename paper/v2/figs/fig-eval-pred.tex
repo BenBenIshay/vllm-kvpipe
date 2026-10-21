@@ -39,12 +39,10 @@
 \addlegendentry{bytes removed (2 runs)}
 \end{axis}
 \end{tikzpicture}
-\caption{\textbf{The model predicts runs it was not fitted on.} A100-80,
+\caption{\textbf{Predicted and measured step overhead.} A100-80,
 Qwen2.5-32B, context 1024, one resident, link loaded up to 98\% of the step.
-The profile comes from a different sweep (bytes removed, contexts 512--14\,724)
-and $\kappa$ from the microbenchmark of \cref{fig:abl-contention}. With real
-bytes the prediction is within 1.7\% of the measured step; the same profile
-without the contention and first-layer terms falls on the bytes-removed line,
-up to 6\% low.}
+With real bytes the prediction is within 1.7\% of the measured step; without
+the contention and first-layer terms of \cref{eq:cS} it falls on the
+bytes-removed line, up to 6\% low.}
 \label{fig:eval-pred}
 \end{figure}

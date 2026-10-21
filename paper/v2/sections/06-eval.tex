@@ -11,8 +11,8 @@
 
 \sysname{} is meant for a GH200; the measurements in this paper are from an
 A100. The evaluation therefore asks three questions. Does the capacity model
-predict the step time of configurations it was not fitted on? Does its
-decision admit the right number of riders? And what does the model, so
+predict the measured step time? Does its decision admit the right number of
+riders? And what does the model, so
 tested, project for the target, and how much does that projection depend on
 each of its inputs?
 
@@ -21,31 +21,30 @@ each of its inputs?
 The rig is that of \S\ref{sec:ablation}: one A100-80 (PCIe, 25.1\,GB/s measured
 host to device) serving Qwen2.5-32B in fp16 as a decode node, with the
 handover emulated and every step checked to be pure decode. The model's
-profile comes from one sweep, with the transfer's bytes removed: a single
-resident, contexts 512 to 14\,724, up to five riders. It gives
+profile comes from runs with the transfer's bytes removed: a single resident,
+contexts 512 to 14\,724, up to five riders. It gives
 $c_{\mathrm{m}} = 0.50$\,ms, the attention slope of \cref{eq:cS}, and
 $F = 5.0$\,ms. The contention coefficient comes from the microbenchmark of
 \cref{fig:abl-contention}; on A100 the copies arrive over PCIe, so the model
-uses the PCIe value, $\kappa = 4.55$. Nothing in the test set below was used to
-fit any of these.
+uses the PCIe value, $\kappa = 4.55$.
 
 \input{figs/fig-eval-pred}
 
 \subsection{Does the Model Predict the Step?}\label{sec:eval-pred}
 
-The test set is eight sweeps with real bytes at context 1024, one resident and
-one to four riders, from two jobs on different days: 32 step times with the
-link carrying up to 98\% of a step. \Cref{fig:eval-pred} shows them against
+We compare the prediction with eight runs with real bytes at context 1024,
+one resident and one to four riders, from two jobs on different days: 32 step
+times with the link carrying up to 98\% of a step. \Cref{fig:eval-pred} shows them against
 the model's prediction. The mean error is $-0.5\%$ and the largest is 1.7\%
 (0.9\,ms); the throughput gain each point implies is predicted within 1.7\%.
 Both transfer terms are needed. Without the contention and first-layer terms
-of \cref{eq:cS} the same profile predicts the bytes-removed sweep, which it
+of \cref{eq:cS} the same profile predicts the bytes-removed runs, which it
 matches within 1.1\%, and falls up to 6.1\% below the real one.
 
 At sixteen residents and contexts 128 to 512 the model predicts the per-rider
 cost $c$ with real bytes within 0.14\,ms (0.49, 0.47 and 0.83\,ms predicted
 against 0.41, 0.56 and 0.97 measured), starting from that configuration's own
-bytes-removed sweep, whose $c$ itself varies by up to 0.3\,ms between repeats.
+bytes-removed runs, whose $c$ itself varies by up to 0.3\,ms between repeats.
 The baseline step $T_0$ computed from \cref{eq:cS} is within 0.6\% of the
 measured one with one resident, at both 1024 and 14\,724 tokens, but 5\% low
 with sixteen: per-request work beyond the weight and KV reads is not in the
@@ -64,15 +63,13 @@ computing it (\S\ref{sec:opoint}), and why the projection below varies it.
 
 The decision of \cref{eq:decision} admits riders up to the knee,
 $\lfloor T_0\Xlink/(S\btok)\rfloor$. At context 1024 with one resident the
-knee is 4.09, so it admits four. Past it, a sweep to six riders shows where
+knee is 4.09, so it admits four. Past it, a run to six riders shows where
 the transfer stops hiding: four riders lie on the line of \cref{eq:law}, the
 fifth adds 4\,ms above it, and from there the step is the link time plus
 7\,ms. The measured knee is therefore at about 4.6 riders, and the rule's
 choice is conservative by 12\%: it never admits a rider whose transfer is
 exposed. That caution has a price here. Throughput at four riders is 8\% below
-the best measured count, five; six riders lower it again. Window depth does
-not move the knee: at $k = 2$, 4 and 8 the step times at every rider count,
-including past the knee, agree within 0.2\,ms.
+the best measured count, five; six riders lower it again.
 % src: M22c (job 2190742, 6 runs): F 5.11-5.21, c 1.53-1.56 over r=1..4;
 %      excess over the line at r=5 +3.8..+4.2 ms; step - link 6.8 (r=5),
 %      7.5-7.6 (r=6); knee from link*r + 6.8 = T0 + F + c*r -> 4.58; decode

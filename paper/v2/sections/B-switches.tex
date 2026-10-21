@@ -25,13 +25,13 @@ Switch & Measured & Ablation arm \\
 \texttt{HYBRID\_RUNGD}, \texttt{\_FREE}, \texttt{\_TWOPASS} & 1 & rider path on \\
 \texttt{RUNGD\_ASYNC} & 1 & 0: copy serialised with compute (\cref{fig:abl-law}a) \\
 \texttt{RUNGD\_D2H\_ASYNC} & 1 & 0: blocking write-back (\cref{fig:abl-law}c) \\
-\texttt{--kv-k-window} & 4 & 2, 8: window sweep \\
+\texttt{--kv-k-window} & 4 & 2, 8: window test \\
 \midrule
 \multicolumn{3}{@{}l}{\emph{Ablation only}} \\
 \texttt{RUNGD\_XFER\_MODE} & \texttt{real} & \texttt{minbytes}: one block row per copy, every launch kept (\cref{fig:abl-law}b, \cref{fig:abl-addr}b) \\
 \texttt{RUNGD\_PERBLOCK\_BT} & 0 & 1: rider table built one entry per block (\cref{fig:abl-addr}) \\
 \texttt{RUNGD\_ATTEND\_MODE} & \texttt{full} & \texttt{nokernel}, \texttt{noattend}: second call's kernel, or whole call, removed (\cref{fig:abl-fusion}) \\
-\texttt{RUNGD\_LAYERS} & $L$ & $N{<}L$: rider path on the first $N$ layers only (depth sweep) \\
+\texttt{RUNGD\_LAYERS} & $L$ & $N{<}L$: rider path on the first $N$ layers only (depth test) \\
 \texttt{PHASE\_TIMERS} & 0 & 1: host timers on the table build \\
 \bottomrule
 \end{tabular}
