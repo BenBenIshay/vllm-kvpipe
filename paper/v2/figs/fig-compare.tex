@@ -1,0 +1,55 @@
+% Section 6.4: projected gain of each design class at the operating point
+% (Qwen2.5-72B fp8, 16-bit KV, GH200, ctx 14724, B=3, r=2). Ben, 2026-10-21:
+% "projected graph comparison with DirectKV/Pie/DAK". Values printed by
+% paper/model/compare_designs.py; each is the capacity model applied to the
+% mechanism the paper describes, not a model of the system.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.72\columnwidth, height=5.0cm,
+  xbar, bar width=5pt,
+  xmin=0.8, xmax=1.85,
+  ymin=0.4, ymax=5.6,
+  ytick={1,2,3,4,5},
+  yticklabels={HBM only, aggregation (DAK), {zero-copy (DirectKV)},
+               layer swap (Pie), \sysname{}},
+  xtick={0.8,1.0,1.2,1.4,1.6},
+  xticklabel style={/pgf/number format/.cd,fixed,fixed zerofill,precision=1},
+  xlabel={projected throughput gain over HBM only},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  xmajorgrids, grid style={black!10},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=white,
+                fill opacity=0.85, text opacity=1, at={(0.5,-0.32)},
+                anchor=north, legend columns=2, column sep=6pt},
+  legend cell align=left,
+  nodes near coords={\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\pgfplotspointmeta}},
+  nodes near coords style={font=\sffamily\tiny, black!80},
+  point meta=x,
+]
+\addplot[draw=hbmD, fill=hbmD!35, bar shift=3pt]
+  coordinates {(1.000,1) (1.105,2) (0.897,3) (1.295,4) (1.373,5)};
+\addlegendentry{mechanism only}
+\addplot[draw=ddrD, fill=ddrD, bar shift=-3pt]
+  coordinates {(1.139,4) (1.199,5)};
+\addlegendentry{with \sysname{}'s measured overheads}
+\draw[black!60, densely dashed, line width=0.6pt]
+  (axis cs:1.667,0.4) -- (axis cs:1.667,5.6);
+\node[font=\sffamily\tiny, black!70, anchor=south west, align=left]
+  at (axis cs:1.68,2.2) {link\\ceiling,\\no costs\\(1.67)};
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{Projected gain by design}, at the operating point of
+\S\ref{sec:opoint} on a GH200 (context 14\,724, three residents). Each bar is
+the capacity model applied to the mechanism each paper describes, not a model
+of that system. Aggregation reads the same batch faster and is bounded by
+$1+\Xlink/BW$. Zero-copy of every request's KV is bounded by the link, $\Xlink/(S\btok)$
+requests per unit time. Layer swap and \sysname{} both add KV up to the
+link's per-step ceiling; swap-out writes each moved byte back, doubling its HBM
+traffic. Light bars omit implementation overheads; dark bars add
+\sysname{}'s measured $c_{\mathrm{m}}$ and $F$ to both, since none are
+published for Pie.}
+\label{fig:compare}
+\end{figure}
