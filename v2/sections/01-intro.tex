@@ -37,8 +37,8 @@ is admitted. For a large model little is left. Qwen2.5-72B in fp8 occupies
 % TODO-verify: growth of context lengths in agentic and reasoning workloads is
 %      not claimed until a measured source is fetched.
 
-Host memory has always been an order of magnitude larger than HBM, but until
-recently it sat too far from the GPU to serve KV during decode. Over PCIe, the
+Memory outside the GPU has always been an order of magnitude larger than HBM,
+but until recently it sat too far away to serve KV during decode. Over PCIe, the
 link to host memory is an order of magnitude slower than HBM: the A100 we
 measure moves 25\,GB/s from host to device, at which a single 16k-token
 request of Qwen2.5-72B, 5\,GB of KV, takes longer to arrive than several decode
@@ -48,7 +48,9 @@ NVLink-C2C connects the GPU to 480\,GB of host memory at 900\,GB/s in total,
 Pie measured 419\,GB/s from host to device~\cite{pie}. At that rate the link
 delivers gigabytes of KV within one decode step, and host memory becomes a
 second KV tier rather than an overflow area. CXL memory expanders extend the
-same opportunity, adding capacity behind PCIe-class links.
+same opportunity, adding capacity behind PCIe-class links. What matters for
+decode is not which memory forms the second tier but two numbers: its capacity
+and the bandwidth of the link that reaches it.
 % src: 25.1 GB/s = --link-gbps of every A100 run (measured H2D, M13-M22);
 %      Q72 b_tok 327,680 B x 16,384 = 5.37 GB -> 214 ms at 25 GB/s against a
 %      25-50 ms step. gh200page: "900 gigabytes per second (GB/s) of coherent
@@ -105,13 +107,33 @@ can add \emph{beyond} them, without taking any HBM capacity.
 
 We present \sysname{}, a decode engine that serves two classes of request in
 the same forward pass (\cref{fig:tiers}c). \emph{Residents} keep their KV in
-HBM and read it at HBM bandwidth. \emph{Riders} keep theirs in host memory,
+HBM and read it at HBM bandwidth. \emph{Riders} keep theirs in the second tier,
 hold no HBM blocks, and stream it layer by layer into a small rotating window
 ahead of use, behind the whole batch's compute. Weights and all compute stay
 on the GPU. Riders cost the link bytes instead of HBM capacity, so the link
 grows the batch beyond what HBM can hold, and every added request shares the
 step's single read of the weights. The extra batch grows with the link and with
 the share of HBM the weights take (\cref{fig:potential}).
+
+\sysname{} is agnostic to both the kernel and the tier. A rider's KV reaches
+HBM through the GPU's ordinary asynchronous copies, one per layer, and is
+attended by the engine's unmodified attention kernel. No kernel is written or
+changed, and no architecture-specific hardware is needed: any memory that the
+GPU's copies can reach at a known bandwidth can serve as the second tier, and
+the capacity model needs only that bandwidth. The same engine runs over the
+A100's PCIe link that we measure and over a GH200's NVLink-C2C. The
+direct-access systems, by contrast, build the access path into their own
+kernels: DirectKV into memory-aware CUDA kernels~\cite{directkv}, DAK into
+kernels that repurpose the Tensor Memory Accelerator, a hardware engine
+introduced with Hopper~\cite{dak}.
+% src: git diff b89275d01..HEAD: no attention kernel source changed (the only
+%      .cu added, vllm/v1/worker/signal_kernels.cu, is unreferenced); rider
+%      copies are cudaMemcpyAsync (s5 Engineering details). directkv abstract:
+%      "CPU-memory-aware CUDA kernels tailored for heterogeneous CPU-GPU
+%      platforms"; dak abstract: "repurposes the Tensor Memory Accelerator
+%      (TMA) to asynchronously fetch offloaded weights and KV caches directly
+%      from remote memory into GPU shared memory (SMEM)"; dak s1: "a
+%      specialized hardware engine introduced in the Hopper architecture".
 
 Riders are not free, and how many pay off depends on the model, the node and
 the step time. To our knowledge, \sysname{} is the first serving system that
