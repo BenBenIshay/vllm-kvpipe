@@ -180,18 +180,19 @@ measuring (\S\ref{sec:admission}).
 
 \input{figs/fig-gain-ctx}
 
-Because residents and riders are whole requests, the gain is a sawtooth in
-context rather than a smooth curve (\cref{fig:gain-ctx}). The knee falls as
-$1/S$ and the admitted count drops by a whole rider at each integer crossing;
-$B$ drops by a whole resident at its own crossings. A context 1\% above a rider
+Because residents and riders are whole requests, the gain does not vary
+smoothly with context (\cref{fig:gain-ctx}). The knee falls as $1/S$, and at
+each context where it crosses a whole number the admitted count drops by one
+rider and the gain falls abruptly; between two such contexts it recovers
+slowly. $B$ drops by a whole resident at its own crossings. A context 1\% above a rider
 crossing gives away that rider, so admission keeps a margin $m$ on the byte
 budget: at the bare crossing, a 2\% rise in measured step time already costs
 the rider.
 
 For Qwen2.5-72B (fp8 weights, $L{=}80$) on a GH200 the envelope rises slowly,
 from $1.20\times$ at 8k tokens to $1.26\times$ at 24k, because the riders'
-mechanism cost falls with context (\S\ref{sec:context}). The sawtooth peaks
-above it, up to $1.39\times$ at 16.3k, lie where HBM strands most of one
+mechanism cost falls with context (\S\ref{sec:context}). The isolated
+peaks above it, up to $1.39\times$ at 16.3k, lie where HBM strands most of one
 resident's KV, so the baseline is at its weakest; we report the envelope and
 treat those peaks as placement, not gain. At context 14\,724, for example,
 $B = 3$ residents fit and $T_0 = 31.0$\,ms, so a token is worth
