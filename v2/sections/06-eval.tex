@@ -136,3 +136,43 @@ that adds KV over the link could reach if moving and attending it cost nothing.
 %      ("the manager stores the initial K,V entries from each layer in CPU
 %      memory"); pie s3.1 (t_swap*m <= t_compute*n; "recently completed layers
 %      ... can be swapped out to CPU memory").
+
+\subsection{Against Layer Swap in Steady State}\label{sec:eval-pie}
+
+\input{figs/fig-steady}
+
+Layer swap is the design closest to riders, and the comparison above, at one
+context and a full batch, cannot separate them by much. Both grow the batch,
+and both are bounded by the KV the link can move within a step. We therefore
+simulate decode in steady state: requests arrive already prefilled, decode,
+and leave, and every design completes the same requests, admitted in arrival
+order. Step times come from the capacity model with the overheads measured for
+\sysname{}. Pie is modelled from its own description~\cite{pie}: the coldest
+layer is swapped back out after use, so each moved byte is written into HBM
+and read back out of it, and the swap-out runs in the link's slower direction,
+371 rather than 419\,GB/s. It keeps a swap buffer of two layers of the batch
+in HBM, and it is given an ideal split and \sysname{}'s overheads, since its
+paper reports none.
+
+\Cref{fig:steady} shows the result for Qwen2.5-72B. With mixed contexts,
+riders lead layer swap by 2.8 to 7.0\%, because each moved byte costs them HBM
+traffic once, not twice, and their capacity is bounded by the faster
+direction. With every context long and equal, whole requests pack HBM and the
+link's budget worse than a layer split, and layer swap leads by 8 to 9\%. One
+change removes that loss. If one \emph{boundary request} keeps its first
+layers in the HBM that whole residents leave over and streams the rest as a
+rider, \sysname{} packs as well as a layer split while still paying the link
+once. Across the 36 workloads we simulate (three models and KV precisions,
+four context distributions, outputs of 128 to 2048 tokens), riders with a
+boundary request lead layer swap in every one, by 1.4 to 8.3\% (median
+5.2\%); without it they lead in 25 of 36 and trail by up to 9.3\%.
+% src: paper/model/steady_state.py, steady_split.py -> model/out/
+%      steady_split.jsonl, overheads charged (ov true): hetero/pie
+%      min -9.3 med 3.9 max 8.5 (11 of 36 below zero); split/pie min 1.4 med
+%      5.2 max 8.3. q72_16 logn rows: hetero/pie +6.0/+7.0 (O 128), +4.8/+4.9
+%      (O 512), +2.8/+3.9 (O 2048); q72_16 fixed 16-44k: -8.3/-9.3/-9.1. Pie: s3.3
+%      ("another two layer computation times to swap out"; "both CPU and GPU
+%      use the memory space of two layers as a swapping buffer"); s2.4 ("419
+%      GB/s from CPU to GPU and 371 GB/s from GPU to CPU"); s5.5 controller
+%      within 2% of the best, so the oracle split is generous to Pie.
+

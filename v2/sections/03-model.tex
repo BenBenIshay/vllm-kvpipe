@@ -94,7 +94,7 @@ $F = f_L L$ and $c = c_0 + c_L L$, so one profile carries to a model of
 different depth. Third, it is repeated at several contexts with the
 transfer's bytes removed, which separates $c_{\mathrm{m}}$ from the attention
 term of \cref{eq:cS}; $F$ does not depend on context. The contention
-coefficient $\kappa$ is not fitted from these runs but measured directly: the
+coefficient $\kappa$ is measured directly: the
 step's weight GEMMs are timed while a second stream copies into HBM at a
 controlled rate (\S\ref{sec:ablation}).
 % src: OVERHEAD_CHARACTERISATION.md s0a (M13): retained points load <= 0.1;
@@ -216,20 +216,21 @@ bandwidth added,
 Using the link only to read the \emph{same} requests' KV faster is bounded by
 $\eta \le 1$: a step bound by memory bandwidth shortens by at most
 $(\mathit{BW}+\Xlink)/\mathit{BW}$, before any contention. That is the regime
-of the offloading systems we compare against. Pie swaps a share of every
-request's layers through HBM, so the same requests' bytes cross the
-link~\cite{pie}. DAK splits each operation's bytes between the tiers and
-defines the bandwidth available as that of HBM plus the link~\cite{dak}.
+of bandwidth aggregation: DAK splits each operation's bytes between the tiers
+and defines the bandwidth available as that of HBM plus the link~\cite{dak}.
 DirectKV reads all KV over the link, and its efficiency is, in its own words,
 ``fundamentally limited by the bandwidth of the CPU--GPU
 interconnect''~\cite{directkv}; when HBM suffices, the all-HBM engine is
-faster~\cite{directkv}.
+faster~\cite{directkv}. A design that uses the link to add \emph{requests} can
+exceed the bound. Pie does so by swapping a share of every request's layers
+through HBM~\cite{pie}; riders do so with whole requests. What separates the
+two is what each pays per byte moved (\S\ref{sec:eval-proj}).
 % src: dak footnote 1: "Total available system memory bandwidth is defined by
 %      GPU_HBM_BW + MIN(NVLink_C2C_BW, HOST_DRAM_BW)"; s4.2.1 optimal ratio
 %      Bh/(Bh+Bg). directkv s7.4.3: "The efficiency of zero-copy offloading is
 %      fundamentally limited by the bandwidth of the CPU-GPU interconnect";
 %      s7.3.1: "SGLang provides the best performance when sufficient HBM is
-%      available". pie s3.3 (swap per layer, quoted in s2).
+%      available". pie s3.4.2 adaptive expansion grows the batch (quoted in s2).
 Riders spend the link on \emph{more requests}, each of
 which shares the weight read the batch already pays for; a rider's cost is its
 own attention and its bytes, never a share of $W$. At the example above

@@ -60,10 +60,10 @@ slower of the GPU's own host link and the tier's link; we call it $\Xlink$.
 \input{figs/fig-tiers}
 
 Existing systems that use host memory for KV send each byte through one path
-(\cref{fig:tiers}). Pie keeps a fixed share of every request's layers in host
-memory and swaps them through an HBM buffer~\cite{pie}. Every request crosses
-the link every step, and the layer that has just been computed is swapped
-back out. DirectKV keeps all KV in host memory and streams it into the
+(\cref{fig:tiers}). Pie keeps a share of every request's layers in host memory,
+sized online to what the link can hide, and swaps them through an HBM
+buffer~\cite{pie}. Every request crosses the link every step, and each layer is
+swapped back out after use. DirectKV keeps all KV in host memory and streams it into the
 attention kernel's shared memory~\cite{directkv}. Its HBM holds weights and
 no KV. In both, a byte of KV is read either at HBM bandwidth or at link
 bandwidth; the two are never used for different requests in the same step.
@@ -72,6 +72,9 @@ bandwidth; the two are never used for different requests in the same step.
 %      two layer computation times to swap out". directkv s6 (all KV in CPU
 %      memory, quoted in s1); abstract: "enabling GPU kernels to directly
 %      access CPU-resident KV cache".
+%      pie s1 adaptive expansion: "It starts with zero CPU memory and then
+%      gradually increases this memory as long as ... the GPU-CPU interconnect
+%      is not saturated".
 
 \input{figs/fig-potential}
 
