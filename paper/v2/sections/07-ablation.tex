@@ -82,8 +82,8 @@ here: the first layer of each rider is copied on the compute stream, and the
 deferred write-back grows with real bytes. Together the three account for
 0.71 of the 0.83\,ms. Copies from the host over PCIe cost about four times
 more per byte than device copies, so the A100 link is a pessimistic case; the
-projection uses $\kappa = 1.06$, in line with what BOOST measures for
-host-to-HBM migration on GH200 (\S\ref{sec:profile}).
+projection uses $\kappa = 1.06$, consistent with the up to 10\% that DAK
+reports for background copies on GH200 (\S\ref{sec:profile}).
 % src: M23 RB_{real,minb}_c1024_{a,b} (job 2190851): c 1.605/1.571 vs
 %      0.749/0.771, F unchanged 5.05-5.24; M20 refit (paper_runs/20260930/
 %      overhead/22_c_context, 16 residents): extra 0.29 @256, 0.53 @512.

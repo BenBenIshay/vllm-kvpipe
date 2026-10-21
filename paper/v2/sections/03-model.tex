@@ -71,16 +71,15 @@ unit of HBM time the copy's writes occupy. The baseline step pays the
 attention term for each resident. The contention term does not depend on the
 link's speed: a faster link writes the same bytes in less time, at a
 proportionally higher rate. We measure $\kappa = 1.06$ on A100 for bulk copies
-(\S\ref{sec:ablation}). On GH200, BOOST measures prefetch writes reducing the
-read bandwidth available to the SMs by 7.8\% at an 8.3\% host
-share~\cite{boost}, $\kappa \approx 0.94$, and DAK reports background copies
-degrading local memory performance by up to 10\%~\cite{dak}.
-% src: boost s5.3: "Prefetching degrades the demand bandwidth utilization
-%      available to the SMs by 7.8% compared to HBM-only serving, as writes due
-%      to data migration contend with demand reads over the simplex HBM
-%      interface"; s5.1 host share 8.3%. dak s2.3: "Background copies can
-%      degrade local memory performance by up to 10% on a GH200".
-%      E1 (job 2191314): 0.055% per GB/s of copy traffic x 1935 GB/s = 1.06.
+(\S\ref{sec:ablation}). DAK observes the same on GH200: background copies
+degrade local memory performance by up to 10\%, and the degradation scales
+with the ratio of link to HBM bandwidth~\cite{dak}, which is what the term
+expresses.
+% src: dak s2.3: "This degradation scales with the interconnect-to-local
+%      bandwidth ratio. Background copies can degrade local memory performance
+%      by up to 10% on a GH200". E1 (job 2191314): 0.055% per GB/s of copy
+%      traffic x 1935 GB/s = 1.06. (BOOST's GH200 numbers deliberately not
+%      cited, Ben 2026-10-21.)
 
 Three rules make the fit trustworthy. First, only points well below the knee are
 kept, those whose transfer time is at most a tenth of $T_0$. A sweep that crosses
@@ -207,16 +206,23 @@ bandwidth added,
   \eta \;=\; \frac{G - 1}{\Xlink/\mathit{BW}} .
   \label{eq:eta}
 \end{equation}
-Using the link only to read the \emph{same} requests' KV faster, splitting each
-request's bytes across the two tiers, is bounded by $\eta \le 1$: a step bound
-by memory bandwidth shortens by at most $(\mathit{BW}+\Xlink)/\mathit{BW}$,
-before any contention. Both BOOST and DAK state this aggregate bound, and BOOST
-measures a 4.3\% improvement in time per output token at equal batch size with
-a 10\% link share, $\eta \approx 0.4$~\cite{boost,dak}.
-% src: boost abstract: "At iso-batch size, BOOST improves ... TPOT by 4.3% over
-%      HBM-only serving"; s5.1 alpha = 10%; fig 1d "Effective BW = HBM + C2G".
-%      dak footnote 1: "Total available system memory bandwidth is defined by
-%      GPU_HBM_BW + MIN(NVLink_C2C_BW, HOST_DRAM_BW)".
+Using the link only to read the \emph{same} requests' KV faster is bounded by
+$\eta \le 1$: a step bound by memory bandwidth shortens by at most
+$(\mathit{BW}+\Xlink)/\mathit{BW}$, before any contention. That is the regime
+of the offloading systems we compare against. Pie swaps a share of every
+request's layers through HBM, so the same requests' bytes cross the
+link~\cite{pie}. DAK splits each operation's bytes between the tiers and
+defines the bandwidth available as that of HBM plus the link~\cite{dak}.
+DirectKV reads all KV over the link, and its efficiency is, in its own words,
+``fundamentally limited by the bandwidth of the CPU--GPU
+interconnect''~\cite{directkv}; when HBM suffices, the all-HBM engine is
+faster~\cite{directkv}.
+% src: dak footnote 1: "Total available system memory bandwidth is defined by
+%      GPU_HBM_BW + MIN(NVLink_C2C_BW, HOST_DRAM_BW)"; s4.2.1 optimal ratio
+%      Bh/(Bh+Bg). directkv s7.4.3: "The efficiency of zero-copy offloading is
+%      fundamentally limited by the bandwidth of the CPU-GPU interconnect";
+%      s7.3.1: "SGLang provides the best performance when sufficient HBM is
+%      available". pie s3.3 (swap per layer, quoted in s2).
 Riders spend the link on \emph{more requests}, each of
 which shares the weight read the batch already pays for; a rider's cost is its
 own attention and its bytes, never a share of $W$. At the example above
