@@ -116,3 +116,23 @@ input that matters most is the fixed cost: $F$ measured with sixteen residents
 is 40\% lower than with one, and the target's three residents lie between.
 The contention coefficient comes next; DAK's figure for GH200 background
 copies~\cite{dak} lands within 0.01 of the stated gain.
+
+\input{figs/fig-compare}
+
+\Cref{fig:compare} places this projection beside the other ways of using the
+link, each modelled from the mechanism its paper describes. Reading the same
+batch over HBM and the link together~\cite{dak} is bounded by
+$1+\Xlink/BW = 1.105\times$, even if its copies cost nothing. Keeping every
+request's KV in host memory and reading it over the link~\cite{directkv}
+serves at most $\Xlink/(S\btok)$ requests per unit time, 0.90 of what HBM alone
+serves at this context. Swapping layers~\cite{pie} grows the batch under the
+same per-step ceiling as riders, $T_0\Xlink$, but swaps each layer back out
+after use, so every moved byte crosses HBM twice; that costs it 0.06 to 0.08
+of gain against \sysname{}. The ceiling itself, $1.67\times$, is what any design
+that adds KV over the link could reach if moving and attending it cost nothing.
+% src: paper/model/compare_designs.py: aggregation 1.105, zero-copy 0.897,
+%      swap 1.295 / 1.139 (with c_m, F), HeteroKV 1.373 / 1.199, ceiling 1.667.
+%      dak footnote 1 (bandwidth = HBM + min(C2C, DRAM)); directkv s6 l.1030
+%      ("the manager stores the initial K,V entries from each layer in CPU
+%      memory"); pie s3.1 (t_swap*m <= t_compute*n; "recently completed layers
+%      ... can be swapped out to CPU memory").
