@@ -264,8 +264,9 @@ S  integer  smooth  smoothnc
 \caption{\textbf{Gain against context} for Qwen2.5-72B (fp8 weights) on a
 GH200, from the capacity model with $c$ and $T_0$ as functions of context
 (\cref{eq:cS}), including the bandwidth the riders' copies take from HBM.
-Residents and riders are whole requests, so the gain is a sawtooth around a
-slowly rising envelope; the dotted line is the envelope if the copies cost HBM
+Residents and riders are whole requests, so the gain jumps up and down around
+a slowly rising envelope, falling at every context where one fewer rider or
+resident fits; the dotted line is the envelope if the copies cost HBM
 nothing. Projection, not measurement.}
 \label{fig:gain-ctx}
 \end{figure}
