@@ -1,0 +1,53 @@
+% Section 6.5: gain under background link traffic (Ben, 2026-10-22: "put the
+% graph show the potential degradation of Pie due to his write back"; the
+% host-to-device control is shown with it). Medians over the 36 steady-state
+% workloads of paper/model/steady_bg.py -> model/out/steady_bg.jsonl
+% (overheads charged to both). d2h: het 1.180 flat; pie 1.136 1.114 1.085
+% 1.031. h2d: het 1.180 1.156 1.103 1.025; pie 1.136 1.136 1.102 1.044.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.95\columnwidth, height=4.4cm,
+  xmin=0, xmax=0.5, ymin=1.0, ymax=1.2,
+  xtick={0,0.1,0.25,0.5},
+  xticklabels={0, 10\%, 25\%, 50\%},
+  ytick={1.0,1.05,1.1,1.15,1.2},
+  yticklabel style={/pgf/number format/.cd,fixed,fixed zerofill,precision=2},
+  xlabel={share of one link direction taken by other traffic},
+  ylabel={gain over HBM only (median)},
+  tick label style={font=\sffamily\scriptsize},
+  label style={font=\sffamily\scriptsize},
+  axis line style={black!60}, tick style={black!60},
+  ymajorgrids, grid style={black!10},
+  legend style={font=\sffamily\scriptsize, draw=none, fill=none,
+                at={(0.5,-0.36)}, anchor=north, legend columns=2,
+                column sep=8pt},
+  legend cell align=left,
+  mark size=1.6pt,
+]
+\addplot[ddrD, thick, mark=*]
+  coordinates {(0,1.180) (0.1,1.180) (0.25,1.180) (0.5,1.180)};
+\addlegendentry{\sysname{}, device to host}
+\addplot[ddrD, thick, dashed, mark=o, mark options={solid}]
+  coordinates {(0,1.180) (0.1,1.156) (0.25,1.103) (0.5,1.025)};
+\addlegendentry{\sysname{}, host to device}
+\addplot[black!60, thick, mark=square*]
+  coordinates {(0,1.136) (0.1,1.114) (0.25,1.085) (0.5,1.031)};
+\addlegendentry{layer swap (Pie), device to host}
+\addplot[black!60, thick, dashed, mark=square, mark options={solid}]
+  coordinates {(0,1.136) (0.1,1.136) (0.25,1.102) (0.5,1.044)};
+\addlegendentry{layer swap (Pie), host to device}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{Gain under background link traffic.} Simulated decode on a
+GH200 in steady state, median over 36 workloads (Qwen2.5-72B with 16-bit or
+fp8 KV and Qwen2.5-32B, four context distributions, outputs of 128 to 2048
+tokens).
+Other work takes a share of one link direction. Layer swap writes every
+swapped layer back, so it needs both directions and loses gain to traffic in
+either. Riders read host to device and write back only the new token, so
+traffic in the other direction leaves them unchanged, while traffic in their
+own direction costs them more than it costs layer swap.}
+\label{fig:linkload}
+\end{figure}

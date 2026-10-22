@@ -115,10 +115,9 @@ A100, measure that copies into HBM slow decode in proportion to their traffic,
 and validate the model against the measurements. Projected to a GH200 serving
 Qwen2.5-72B at long context, riders raise decode throughput by 20\%, about
 twice the gain per unit of link bandwidth that reading the same requests
-faster could reach. In steady-state simulation they lead layer swapping by
-3--7\% on mixed-context workloads, because each byte they move crosses HBM
-once and travels the link's faster direction; when one request may also span
-both tiers, they lead on every workload we test.
+faster could reach. Because a rider returns only its new token, riders keep
+that gain when other traffic loads the link toward the host, where swapping
+layers through HBM loses most of its own.
 \end{abstract}
 \ifdraft\linenumbers\fi
 
