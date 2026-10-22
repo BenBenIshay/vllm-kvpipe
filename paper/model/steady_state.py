@@ -22,6 +22,16 @@ request's final KV (S0 + O) on admission. Step time per design:
              byte is written into HBM and read back out: 2*kappa*moved/BW.
 'with overheads' charges both designs HeteroKV's measured F and c_m (per rider,
 or per request-equivalent of offloaded KV for Pie); 'mechanism' charges neither.
+Background link traffic: bg_d2h / bg_h2d is the fraction of each direction's
+rate taken by other work on the node (KV offload for reuse, preemption, other
+tenants); pie s3.4.1: "CPU-GPU communication can occur unpredictably due to
+concurrent tasks". Pie's swap needs both directions, so its rate is
+min(X_h2d*(1-bg_h2d), X_d2h*(1-bg_d2h)); riders read host to device and write
+back one token per layer per step device to host. Only the rate loss is
+modelled, not the stalls a late swap-out causes through the two-layer buffer.
+slack: both designs admit up to slack times the bytes that hide behind compute
+(slack 1: strict hiding). Past 1 the excess transfer is exposed every step but
+the batch is larger; best_slack() takes each design's best.
 """
 import math
 import random
@@ -49,13 +59,17 @@ Q72_BF16_144 = M("Qwen2.5-72B bf16w fp16kv", 80, 145.0, 327680)
 
 
 def run(hw, m, sample, n_req=400, W=8, stage=2, overheads=True,
-        seed=0, kappa=KAPPA, designs=("hbm", "hetero", "pie")):
+        seed=0, kappa=KAPPA, designs=("hbm", "hetero", "pie"), bg_d2h=0.0, bg_h2d=0.0,
+        slack=1.0):
     rnd = random.Random(seed)
     a = hw.cap - m.w - 4.0
     t_w = m.w / (hw.bw * 0.75) * 1e3
     cm = C_MECH64 * m.L / 64 if overheads else 0.0
     F = F64 * m.L / 64 if overheads else 0.0
     kvg = lambda S: m.b_tok * S / 1e9
+    xh = hw.x * (1 - bg_h2d)                    # riders' read rate
+    xd = hw.x_d2h * (1 - bg_d2h)                # write-back rate
+    xp = min(xh, xd)                            # Pie: in and out every step
     att = lambda S: kvg(S) / (hw.bw * EFF_KV) * 1e3
     out = {}
     for design in designs:
@@ -76,7 +90,7 @@ def run(hw, m, sample, n_req=400, W=8, stage=2, overheads=True,
                 g = kvg(S0 + O)
                 tier, fh = None, 0.0
                 if design in ("hbm", "hetero", "split"):
-                    budget = t0 * hw.x / 1e3
+                    budget = slack * t0 * xh / 1e3
                     if res_gb + g <= a:
                         tier, res_gb = "res", res_gb + g
                         t0 += att(S0)
@@ -92,7 +106,7 @@ def run(hw, m, sample, n_req=400, W=8, stage=2, overheads=True,
                 else:   # pie: one pool, checked below with the oracle split
                     K = res_gb + rid_gb + g
                     tc = t_w + sum(att(r[0]) for r in run_) + att(S0)
-                    if pie_fits(K, a, tc * hw.x_d2h / 1e3, m.L, stage):
+                    if pie_fits(K, a, slack * tc * xp / 1e3, m.L, stage):
                         tier, res_gb = "pie", res_gb + g
                 if tier:
                     taken.append(j)
@@ -110,17 +124,18 @@ def run(hw, m, sample, n_req=400, W=8, stage=2, overheads=True,
                 riders = [r for r in run_ if r[4] > 0]
                 if riders:
                     T += F + sum(cm + kappa * kvg(r[0]) * r[4] / hw.bw * 1e3
-                                 + (kvg(r[0]) / (m.L * hw.x) * 1e3 if r[3] == "rider"
+                                 + (kvg(r[0]) / (m.L * xh) * 1e3 if r[3] == "rider"
                                     else 0.0) for r in riders)
-                    T = max(T, sum(kvg(r[0]) * r[4] for r in riders) / hw.x * 1e3)
+                    T = max(T, sum(kvg(r[0]) * r[4] for r in riders) / xh * 1e3,
+                            len(riders) * m.b_tok / 1e9 / xd * 1e3)
             elif design == "pie":
                 K = sum(kvg(r[0]) for r in run_)
-                moved = pie_moved(K, a, T * hw.x_d2h / 1e3, m.L, stage)
+                moved = pie_moved(K, a, T * xp / 1e3, m.L, stage)
                 if moved > 0:
                     T += 2 * kappa * moved / hw.bw * 1e3
                     if overheads:
                         T += F + cm * moved / (K / len(run_))
-                    T = max(T, moved / hw.x_d2h * 1e3)
+                    T = max(T, moved / xp * 1e3)
             tok += len(run_)
             tim += T
             for r in run_:
@@ -183,3 +198,14 @@ if __name__ == "__main__":
         for st in (4, 0):
             print("\n== overheads=%s, Pie staging layers=%d" % (ov, st))
             table(cases, overheads=ov, stage=st)
+
+
+def best_slack(hw, m, sample, slacks=(1.0, 1.1, 1.2, 1.35, 1.5, 1.75, 2.0), **kw):
+    """Each design at the slack that maximises its throughput."""
+    best, arg = {}, {}
+    for sl in slacks:
+        o = run(hw, m, sample, slack=sl, **kw)
+        for d, v in o.items():
+            if v > best.get(d, 0.0):
+                best[d], arg[d] = v, sl
+    return best, arg
