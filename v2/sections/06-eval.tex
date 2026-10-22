@@ -137,42 +137,44 @@ that adds KV over the link could reach if moving and attending it cost nothing.
 %      memory"); pie s3.1 (t_swap*m <= t_compute*n; "recently completed layers
 %      ... can be swapped out to CPU memory").
 
-\subsection{Against Layer Swap in Steady State}\label{sec:eval-pie}
+\subsection{Under Link Contention}\label{sec:eval-pie}
 
-\input{figs/fig-steady}
+\input{figs/fig-linkload}
 
-Layer swap is the design closest to riders, and the comparison above, at one
-context and a full batch, cannot separate them by much. Both grow the batch,
-and both are bounded by the KV the link can move within a step. We therefore
-simulate decode in steady state: requests arrive already prefilled, decode,
+Layer swap is the design closest to riders: both grow the batch, and both are
+bounded by the KV the link can move within a step. They differ in which
+directions of the link they use. A swapped layer is written back after
+use~\cite{pie}, so layer swap moves as many bytes from device to host as from
+host to device, and its swap-out runs in the slower direction, 371 rather
+than 419\,GB/s on GH200~\cite{pie}. A rider returns only its new token. The
+link is rarely the decode step's alone: saving KV for later reuse,
+preemption and co-located work all write to the host, and Pie itself notes
+that host--device traffic ``can occur unpredictably due to concurrent
+tasks''~\cite{pie}.
+
+We simulate decode in steady state: requests arrive already prefilled, decode
 and leave, and every design completes the same requests, admitted in arrival
 order. Step times come from the capacity model with the overheads measured for
-\sysname{}. Pie is modelled from its own description~\cite{pie}: the coldest
-layer is swapped back out after use, so each moved byte is written into HBM
-and read back out of it, and the swap-out runs in the link's slower direction,
-371 rather than 419\,GB/s. It keeps a swap buffer of two layers of the batch
-in HBM, and it is given an ideal split and \sysname{}'s overheads, since its
-paper reports none.
-
-\Cref{fig:steady} shows the result for Qwen2.5-72B. With mixed contexts,
-riders lead layer swap by 2.8 to 7.0\%, because each moved byte costs them HBM
-traffic once, not twice, and their capacity is bounded by the faster
-direction. With every context long and equal, whole requests pack HBM and the
-link's budget worse than a layer split, and layer swap leads by 8 to 9\%. One
-change removes that loss. If one \emph{boundary request} keeps its first
-layers in the HBM that whole residents leave over and streams the rest as a
-rider, \sysname{} packs as well as a layer split while still paying the link
-once. Across the 36 workloads we simulate (three models and KV precisions,
-four context distributions, outputs of 128 to 2048 tokens), riders with a
-boundary request lead layer swap in every one, by 1.4 to 8.3\% (median
-5.2\%); without it they lead in 25 of 36 and trail by up to 9.3\%.
-% src: paper/model/steady_state.py, steady_split.py -> model/out/
-%      steady_split.jsonl, overheads charged (ov true): hetero/pie
-%      min -9.3 med 3.9 max 8.5 (11 of 36 below zero); split/pie min 1.4 med
-%      5.2 max 8.3. q72_16 logn rows: hetero/pie +6.0/+7.0 (O 128), +4.8/+4.9
-%      (O 512), +2.8/+3.9 (O 2048); q72_16 fixed 16-44k: -8.3/-9.3/-9.1. Pie: s3.3
-%      ("another two layer computation times to swap out"; "both CPU and GPU
-%      use the memory space of two layers as a swapping buffer"); s2.4 ("419
-%      GB/s from CPU to GPU and 371 GB/s from GPU to CPU"); s5.5 controller
-%      within 2% of the best, so the oracle split is generous to Pie.
+\sysname{}. Pie is modelled from its own description~\cite{pie}: the
+write-back, the slower swap-out and a swap buffer of two layers in HBM. It is
+given an ideal split and \sysname{}'s overheads, since its paper reports none.
+Other traffic then takes a share of one link direction (\cref{fig:linkload}).
+With no other traffic, riders lead layer swap by a median of 3.4\% over 36
+workloads. As traffic to the host grows, riders keep their gain, and layer
+swap loses most of its own: at half the direction taken, riders lead in all 36
+workloads, by a median of 11.7\% and up to 20\%. Traffic toward the device
+cuts the other way. Riders depend on that direction alone, and at the same
+load they trail layer swap by a median of 1.3\%.
+% src: paper/model/steady_state.py (bg_d2h, bg_h2d), steady_bg.py ->
+%      model/out/steady_bg.jsonl, overheads charged. hetero/pie: none med +3.4
+%      (25 of 36 ahead, -9.3..+8.5); d2h 0.5 med +11.7, 36/36, +0.8..+19.6;
+%      h2d 0.5 med -1.3, 12/36, -16.8..+2.7. Pie: s3.3 ("another two layer
+%      computation times to swap out"; "both CPU and GPU use the memory space
+%      of two layers as a swapping buffer"); s2.4 ("419 GB/s from CPU to GPU
+%      and 371 GB/s from GPU to CPU"); s3.4.1 (quoted); s5.5 controller within
+%      2% of the best, so the oracle split is generous to Pie. Only the rate
+%      lost to other traffic is modelled, not the stall a late swap-out causes
+%      through the two-layer buffer. Finished-request KV saved for reuse alone
+%      is < 1% of the link at the target (n*S*b/O per step); the larger shares
+%      need co-located work.
 

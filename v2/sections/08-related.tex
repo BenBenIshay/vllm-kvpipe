@@ -18,10 +18,10 @@ HBM, and it is bounded by the same per-step link budget as riders.
 \sysname{} differs in the unit of placement, the request rather than the
 layer. No resident pays the link, a rider's window is a cache rather than a
 swap area, and only one token per layer returns to the host, so each moved
-byte crosses HBM once and the link only in its faster direction. Simulated in
-steady state, that leads layer swap on mixed-context workloads
-(\S\ref{sec:eval-pie}). The axes are orthogonal: a layer split could run inside
-the resident tier.
+byte crosses HBM once and the link's device-to-host direction stays nearly
+idle. When other traffic loads that direction, layer swap loses most of its
+gain and riders keep theirs (\S\ref{sec:eval-pie}). The axes are orthogonal: a
+layer split could run inside the resident tier.
 % src: flexgen abstract (quoted in s1). pie s3.1 ("relocate m layers"; "per-
 %      layer KV cache as the basic management unit"), s3 ("prefetching data for
 %      upcoming layers through a FIFO queue"), s3.3 (swap in and swap out),

@@ -138,10 +138,22 @@ introduced with Hopper~\cite{dak}.
 
 Pie~\cite{pie} also grows the batch past HBM over the link, by swapping a share
 of every request's layers through HBM buffers, and it is bounded by the same
-per-step link budget. Riders reach that bound more cheaply. A swapped layer is
-written back after use, so each byte Pie moves crosses HBM twice and returns
-in the link's slower direction; a rider's KV crosses HBM once and only its
-new token returns, and residents never touch the link.
+per-step link budget. A swapped layer is written back after use, so each byte
+Pie moves crosses HBM twice and returns in the link's slower direction; a
+rider's KV crosses HBM once, only its new token returns, and residents never
+touch the link. Pie finds its share by probing, adding layers until compute
+waits on the swap and then backing off, because it judges the optimal swap
+schedule too complex to search~\cite{pie}; riders' budget is computed every
+step from the measured step time. Pie also adds a swap kernel of its own and
+a control loop to each model it supports~\cite{pie}; riders need neither.
+% src: pie s3.3 (swap out the coldest layer); s2.4 ("419 GB/s from CPU to GPU
+%      and 371 GB/s from GPU to CPU"); s3.4.1 ("Searching for the optimal value
+%      among these combinations is unrealistic"); s3.4.2 ("If the model has to
+%      wait for swapping to finish before continuing computation, Pie reduces
+%      the expansion"); s4 ("we developed a CUDA kernel for efficient per-layer
+%      KV cache swapping"); s4.2 ("Adding support for different models ...
+%      requires less than 50 lines of code to add a control loop"). Ours: no
+%      file under model_executor/models changed vs b89275d01.
 
 Riders are not free, and how many pay off depends on the model, the node and
 the step time. To our knowledge, \sysname{} is the first serving system that
@@ -166,5 +178,5 @@ makes four contributions.
 \item \textbf{An implementation in vLLM and its evaluation}
   (\S\ref{sec:impl}--\S\ref{sec:analysis}). An ablation decomposes the cost of
   a second tier, A100 measurements validate the model, and the model projects
-  GH200 and compares riders with layer swap in steady state.
+  GH200 and compares riders with layer swap under link contention.
 \end{itemize}
