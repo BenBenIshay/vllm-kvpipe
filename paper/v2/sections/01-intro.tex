@@ -159,7 +159,7 @@ Riders are not free, and how many pay off depends on the model, the node and
 the step time. To our knowledge, \sysname{} is the first serving system that
 decides online, every step, how many and which requests ride, from a capacity
 model of a measured step time and the link bytes the step can hide. This paper
-makes four contributions.
+makes three contributions.
 \begin{itemize}\itemsep1pt
 \item \textbf{Request-level KV tiering} (\S\ref{sec:mm}). Each request is
   served from exactly one tier, both tiers run in one forward pass, and no
@@ -168,15 +168,13 @@ makes four contributions.
   engine's unmodified attention kernel.
 \item \textbf{A capacity model and online admission} (\S\ref{sec:model},
   \S\ref{sec:admission}). A one-time profile and a measured step time decide
-  whether riders pay and how many link bytes they may use; admission fills
-  that budget every step. The same model ranks the four ways of using a
-  second tier and shows which of them can grow the batch.
-\item \textbf{The cost of copying into HBM} (\S\ref{sec:ablation}). Copies into
-  HBM slow the decode GEMMs in proportion to their traffic, about four times
-  more per byte over PCIe than for bulk copies. This term prices every design
-  that stages KV through HBM, and it is what separates riders from layer swap.
+  whether riders pay and how many to admit, including riders whose transfer
+  is partly exposed but which still raise throughput; admission applies that
+  test every step. The same model ranks the four ways of using a second tier
+  and shows which of them can grow the batch.
 \item \textbf{An implementation in vLLM and its evaluation}
   (\S\ref{sec:impl}--\S\ref{sec:analysis}). An ablation decomposes the cost of
-  a second tier, A100 measurements validate the model, and the model projects
-  GH200 beside the other ways of using a second tier.
+  a second tier, including the HBM bandwidth that copies into it take, A100
+  measurements validate the model, and the model projects GH200 beside the
+  other ways of using a second tier.
 \end{itemize}
