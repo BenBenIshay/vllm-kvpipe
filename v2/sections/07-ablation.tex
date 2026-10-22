@@ -140,20 +140,21 @@ attention, masking each rider row of the first call to a single key was worth
 \centering\small
 \caption{\textbf{The blocks carried to the target}: Qwen-72B fp8 on a GH200 at
 context 14\,724 (\S\ref{sec:opoint}), projected from the measured
-coefficients ($T_0 = 31.0$\,ms, $B = 3$, $T_0/B = 10.33$\,ms, knee
-$\lfloor 2.69\rfloor = 2$ riders). Every $c$ includes the rider's attention,
+coefficients ($T_0 = 31.0$\,ms, $B = 3$, $T_0/B = 10.33$\,ms, 11.5\,ms of
+link per rider, $\delta = 6.8$\,ms), with the rider count $r$ of
+\cref{eq:decision}. Every $c$ includes the rider's attention,
 1.88\,ms at this context, the HBM bandwidth its copy takes, 1.28\,ms, and its
 exposed first layer, 0.14\,ms (\cref{eq:cS}).}
 \label{tab:ladder}
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}l r r r r@{}}
+\begin{tabular}{@{}l r r r r r@{}}
 \toprule
-State & $c$ (ms) & $F$ (ms) & $\rmin$ & gain \\
+State & $c$ (ms) & $F$ (ms) & $\rmin$ & $r$ & gain \\
 \midrule
-first build$^{*}$        & 11.97 & 13.44 & --- & gate fails \\
-+ addressing             & 4.94 & 13.44 & 3 & $1.00\times$ \\
-+ deferred write-back    & 4.94 &  5.90 & 2 & $1.10\times$ \\
-shipped$^{\dagger}$      & 3.93 &  4.24 & 1 & $1.20\times$ \\
+first build$^{*}$        & 11.97 & 13.44 & --- & 0 & gate fails \\
++ addressing             & 4.94 & 13.44 & 3 & 6 & $1.23\times$ \\
++ deferred write-back    & 4.94 &  5.90 & 2 & 5 & $1.28\times$ \\
+shipped$^{\dagger}$      & 3.93 &  4.24 & 1 & 4 & $1.37\times$ \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -170,7 +171,8 @@ deferred write-back.}
 %      0.144 ms = 14724 * 320 KiB / 80 / 419 GB/s; T0 = 30.99 ms; all from
 %      paper/model/gain_curve.py point(14724). Gains with integer counts (B=3,
 %      r=2): 0.755 (gate fails) / 0.951 (r_min 3 > knee 2, admission admits
-%      none: 1.00) / 1.104 / 1.199. Fusion row from M19 (abl_fusion.csv),
+%      none: 1.00) / 1.104 / 1.199. 2026-10-22, past-knee rule (link 11.515,
+%      delta 6.8): 1.00 (gate) / 1.225 r 6 / 1.284 r 5 / 1.368 r 4. Fusion row from M19 (abl_fusion.csv),
 %      per-layer terms scaled by 80/64: c 3.932 - 0.134*80/64 = 3.76 ->
 %      1.208x; F 4.24 - 1.163*80/64 = 2.79 -> 1.250x. M22b kernel share of F
 %      (nokernel arm): 1.32 @512, 1.58 @14724, 1 resident.
@@ -180,9 +182,12 @@ deferred write-back.}
 \paragraph{The ladder.} \Cref{tab:ladder} carries each block to the target
 through the capacity model. As first built, a rider cost more than a token is
 worth, so the gate failed and no rider count could pay at any bandwidth.
-Addressing passed the gate, but with the fixed cost still at 13.4\,ms
-break-even needed three riders, and the knee admits two. The deferred write-back is what made
-them pay. Admission (\cref{alg:admit}) turns any failing state into $1.00\times$
+Addressing passed the gate. With the fixed cost still at 13.4\,ms, break-even
+needed three riders, and riders paid only because the long step that cost
+produces lets six of them ride: $1.23\times$. The deferred write-back cut the
+fixed cost to 5.9\,ms, and the shipped coefficients reach $1.37\times$ with
+four. Each cut lowers the step, so fewer riders fit before the link sets it,
+but each of them is worth more. Admission (\cref{alg:admit}) turns any failing state into $1.00\times$
 rather than a loss, by admitting no riders.
 
 \Cref{tab:ladder} is a projection to GH200 from coefficients measured on A100;

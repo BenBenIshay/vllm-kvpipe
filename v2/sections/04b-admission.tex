@@ -11,9 +11,10 @@
 \subsection{Admission}\label{sec:admission}
 
 The admission controller carries out the capacity model's decision
-(\cref{eq:decision}) every step. It keeps $T_0$ current, re-derives the byte
-budget $\beta$ and $\rmin$ from it, and assigns each request a tier so that the
-riders fill $\beta$ (\cref{alg:admit}).
+(\cref{eq:decision}) every step. It keeps $T_0$ current, re-derives $\rmin$
+from it, and assigns each request a tier, adding riders while the step-time
+law of \cref{eq:step} predicts that each one raises throughput
+(\cref{alg:admit}).
 
 \paragraph{Which requests ride: the largest.} When more requests are waiting
 than HBM can hold, the controller must decide which of them take HBM and which
@@ -22,23 +23,24 @@ capacity as a resident, or link bytes per step as a rider. Whichever budget it
 spends, it delivers one token per step. The tiers differ in what else they charge. A resident costs
 nothing beyond its bytes, while every rider also costs $c$ of step time,
 however long its context. A large rider spends that $c$ on many hidden bytes,
-and a small one on few. Filling $\beta$ with the largest candidates therefore
-hides the most bytes for the least added step time. It also leaves the smallest
+and a small one on few. Taking the largest candidates first therefore
+moves the most bytes for the least added step time. It also leaves the smallest
 requests for HBM, which is the larger budget and so holds the most of them. A
 cohort of large riders is also a small one, so the controller still checks
 $\rmin$. At our operating point $\rmin = 1$, so this check does not bind.
 
-\paragraph{Keeping $T_0$ honest.} The budget is proportional to $T_0$, and a step
+\paragraph{Keeping $T_0$ honest.} The prediction starts from $T_0$, and a step
 that already carries riders is slower. Measuring $T_0$ on such steps would
-inflate the budget, which would admit more riders and slow the step further. $T_0$
+count the riders' own cost as room for more riders, which would admit more
+and slow the step further. $T_0$
 is therefore an average over steps that carry no rider (line~\ref{alg:t0}).
 
-\paragraph{Every migration is a hypothesis.} The byte budget cannot see $F$, and a
-move that fits the budget can still be wrong for latency. On A100, a demotion
+\paragraph{Every migration is a hypothesis.} A move the model predicts to pay can
+still be wrong for latency. On A100, a demotion
 that passed the byte test raised inter-token latency from about 6 to 24\,ms. The
 controller therefore moves running requests between tiers provisionally. It
-records the best recent step time, demotes the largest resident that fits the
-budget, waits for the step time to settle, and undoes the move if latency rose.
+records the best recent step time, demotes the largest resident whose move the
+model predicts pays, waits for the step time to settle, and undoes the move if latency rose.
 Each undo doubles a back-off, so the same move is not retried at once.
 % src: transfer_aware_admission.py: hide_budget_ms (rider-free EMA),
 %      plan_migrations (probe, min-of-window baseline, exponential backoff);
@@ -48,24 +50,27 @@ Each undo doubles a back-off, so the same move is not retried at once.
 \caption{Admission: executing the capacity model's decision, once per
 scheduling step.}
 \label{alg:admit}
-\Input{profile $(F, c, \Xlink, \btok)$; KV memory $\Mkv$; margin $m$;
+\Input{profile $(F, c, \delta, \Xlink, \btok)$; KV memory $\Mkv$;
   waiting queue $\mathcal{W}$; running set $\mathcal{R}$}
 \Output{a tier for every request in $\mathcal{R}\cup\mathcal{W}$}
 \BlankLine
 \Proc{\textsc{Admit}$(\mathcal{W}, \mathcal{R})$}{
   $T_0 \leftarrow$ mean step time over rider-free steps\;\label{alg:t0}
-  $(\beta, \rmin) \leftarrow$ capacity model at $T_0$\cmt{Eq. \ref{eq:decision}}\label{alg:model}
+  $\rmin \leftarrow$ capacity model at $T_0$\cmt{Eq. \ref{eq:decision}}\label{alg:model}
   $\mathit{bytes} \leftarrow \btok \sum_{i \in \mathrm{riders}(\mathcal{R})} S_i$;\quad
+  $n \leftarrow |\mathrm{riders}(\mathcal{R})|$;\quad
   $\mathcal{N} \leftarrow \emptyset$\;
   \ForEach{$q \in \mathcal{W}$ \textnormal{by context, smallest first}}{\label{alg:res}
     \lIf{$q$ \textnormal{fits in free HBM}}{$\mathit{tier}(q) \leftarrow$ \textsf{resident}}
   }
   \ForEach{\textnormal{remaining} $q \in \mathcal{W}$ \textnormal{by context, largest first}}{\label{alg:order}
-    \eIf{$\beta = 0$ \textnormal{or} $\mathit{bytes} + S_q\btok > \beta$}{\label{alg:knee}
-      defer $q$\cmt{past the knee}
+    \eIf{$n + 1 \ge \rmin$ \textnormal{and}
+         $\Theta(\mathit{bytes} + S_q\btok,\, n+1) \le \Theta(\mathit{bytes}, n)$}{\label{alg:knee}
+      defer $q$\cmt{past the knee, no longer pays}
     }{
       $\mathcal{N} \leftarrow \mathcal{N}\cup\{q\}$;\quad
-      $\mathit{bytes} \leftarrow \mathit{bytes} + S_q\btok$\;
+      $\mathit{bytes} \leftarrow \mathit{bytes} + S_q\btok$;\quad
+      $n \leftarrow n+1$\;
     }
   }
   \eIf{$|\mathrm{riders}(\mathcal{R})| + |\mathcal{N}| < \rmin$}{\label{alg:commit}
@@ -83,16 +88,18 @@ scheduling step.}
     \Return\;
   }
   \If{\textnormal{HBM is full and $\mathcal{W}$ is not empty}}{\label{alg:migr}
-    $d \leftarrow$ largest resident that fits in $\beta$\;
+    $d \leftarrow$ largest resident whose demotion $\Theta$ predicts pays\;
     $\mathit{base} \leftarrow \min(\textnormal{recent ITL})$\cmt{not the mean}
     demote $d$; open a probe on $d$\;
   }
 }
 \end{algorithm}
 
-\Cref{alg:admit} states the controller. \textsc{Admit} places new requests in two passes:
-residents smallest first while HBM has room, then riders largest first until the
-budget is spent. The riders are committed only if there are at least $\rmin$ of
+\Cref{alg:admit} states the controller. $\Theta(\mathit{bytes}, n)$ is the
+predicted throughput, $(B + n)/T$ with $T$ from \cref{eq:step} for $n$ riders
+carrying $\mathit{bytes}$ ($T = T_0$ when $n = 0$). \textsc{Admit} places new
+requests in two passes: residents smallest first while HBM has room, then
+riders largest first while each still raises $\Theta$. The riders are committed only if there are at least $\rmin$ of
 them.
 \textsc{Migrate} demotes the largest resident when HBM is full and requests are
 waiting, which makes room for smaller ones, and it treats every move as

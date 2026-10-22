@@ -53,7 +53,8 @@ capacity and leaves pipeline bubbles~\cite{dak}. \sysname{} prefetches, and
 each of the three is a measured term here: the contention is $\kappa$ in the
 capacity model (\S\ref{sec:ablation}); a rider's window holds $k/L$ of its KV,
 2.5\% at the target; and the transfer that does not hide is the first layer,
-$1/L$ of it (\S\ref{sec:eval-pred}). Direct access has its own cost: DAK
+$1/L$ of it (\S\ref{sec:eval-pred}), plus any rider that admission lets run
+past the knee because it still pays (\S\ref{sec:eval-knee}). Direct access has its own cost: DAK
 observes that unconstrained host accesses ``stall the GPU's local HBM
 accesses'' and adds congestion control~\cite{dak}.
 % src: dak abstract: "existing memory offloading frameworks rely on prefetching
@@ -69,7 +70,7 @@ the host tier because long requests could land there and raise tail
 latency~\cite{boost}. \sysname{} makes the split a runtime decision instead.
 Every step, a capacity model fed by a measured step time chooses how many and
 which whole requests ride, and admission prefers long requests because the
-budget is in bytes. Residents keep the engine's stock attention kernel.
+link charges by the byte. Residents keep the engine's stock attention kernel.
 % src: dak s5: "It partitions the KV cache along the batch dimension--storing
 %      the cache for a subset of requests in local GPU memory and the remainder
 %      in remote host memory"; s3: "Given this global offload ratio, DAK will

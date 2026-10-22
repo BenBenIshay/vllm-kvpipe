@@ -83,8 +83,8 @@ request. Residents fill HBM as before. Riders keep their KV in host memory and
 stream it in one layer ahead, as many as the link can carry within a step:
 $\Xlink T_0$ bytes, for a step time $T_0$. For a workload of one context $S$,
 HBM holds $B = \Mkv/(S\btok)$ residents and the link carries
-$\rstar = T_0\Xlink/(S\btok)$ riders, so riders add
-$\rstar/B = T_0\Xlink/\Mkv$ to the batch. \Cref{fig:potential} plots that
+$r_0 = T_0\Xlink/(S\btok)$ riders, so riders add
+$r_0/B = T_0\Xlink/\Mkv$ to the batch. \Cref{fig:potential} plots that
 ratio. It is large only when the link is fast and the weights take most of
 HBM, since both lengthen $T_0$ and shrink $\Mkv$. On a GH200 serving
 Qwen2.5-72B in fp8, the link could carry two thirds as many requests again as
