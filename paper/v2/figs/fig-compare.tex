@@ -8,13 +8,13 @@
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=0.72\columnwidth, height=5.0cm,
+  width=0.72\columnwidth, height=4.2cm,
   xbar, bar width=5pt,
   xmin=0.8, xmax=2.0,
-  ymin=0.4, ymax=5.6,
-  ytick={1,2,3,4,5},
+  ymin=0.4, ymax=4.6,
+  ytick={1,2,3,4},
   yticklabels={HBM only, aggregation (DAK), {zero-copy (DirectKV)},
-               layer swap (Pie), \sysname{}},
+               \sysname{}},
   xtick={0.8,1.0,1.2,1.4,1.6,1.8},
   xticklabel style={/pgf/number format/.cd,fixed,fixed zerofill,precision=1},
   xlabel={projected throughput gain over HBM only},
@@ -31,15 +31,15 @@
   point meta=x,
 ]
 \addplot[draw=hbmD, fill=hbmD!35, bar shift=3pt]
-  coordinates {(1.000,1) (1.105,2) (0.897,3) (1.353,4) (1.499,5)};
+  coordinates {(1.000,1) (1.105,2) (0.897,3) (1.499,4)};
 \addlegendentry{mechanism only}
 \addplot[draw=ddrD, fill=ddrD, bar shift=-3pt]
-  coordinates {(1.229,4) (1.368,5)};
+  coordinates {(1.368,4)};
 \addlegendentry{with \sysname{}'s measured overheads}
 \draw[black!60, densely dashed, line width=0.6pt]
-  (axis cs:1.794,0.4) -- (axis cs:1.794,5.6);
+  (axis cs:1.794,0.4) -- (axis cs:1.794,4.6);
 \node[font=\sffamily\tiny, black!70, anchor=south west, align=left]
-  at (axis cs:1.81,2.2) {link\\ceiling,\\no costs\\(1.79)};
+  at (axis cs:1.81,1.6) {link\\ceiling,\\no costs\\(1.79)};
 \end{axis}
 \end{tikzpicture}
 \caption{\textbf{Projected gain by design}, at the operating point of
@@ -47,11 +47,9 @@
 the capacity model applied to the mechanism each paper describes, not a model
 of that system. Aggregation reads the same batch faster and is bounded by
 $1+\Xlink/BW$. Zero-copy of every request's KV is bounded by the link, $\Xlink/(S\btok)$
-requests per unit time. Layer swap and \sysname{} both add KV over the link,
-each with the rider count of \cref{eq:decision}; swap-out writes each moved
-byte back, doubling its HBM traffic, and runs in the link's slower
-direction. Light bars omit implementation overheads; dark bars add
-\sysname{}'s measured $c_{\mathrm{m}}$ and $F$ to both, since none are
-published for Pie.}
+requests per unit time. \sysname{} adds requests over the link, with the
+rider count of \cref{eq:decision}. The light bar omits implementation
+overheads; the dark bar adds \sysname{}'s measured $c_{\mathrm{m}}$ and
+$F$.}
 \label{fig:compare}
 \end{figure}

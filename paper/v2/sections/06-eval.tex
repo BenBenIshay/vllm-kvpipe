@@ -69,15 +69,19 @@ plus a tail: $\delta = 6.8$\,ms at five riders and 7.5\,ms at six. With that
 tail, \cref{eq:step} gives 88.4, 96.7 and 94.9 tokens/s at four, five and six
 riders, against 88.4, 96.7 and 94.8 measured. $F$, $c$ and $\delta$ come from
 the same runs, so the agreement is partly by construction. What the decision
-adds is the count: it picks five riders, the measured best. Admitting only
-riders whose transfer hides behind $T_0$ alone would stop at four, 8\% lower,
-and a sixth rider lowers throughput again. We have not decomposed $\delta$.
+adds is the count: it picks five riders, the measured best. Both of the knee's
+terms are needed. Without the riders' own step time, admitting only riders
+that hide behind $T_0$ stops at four, 8\% lower. Without $\delta$, the knee
+moves to 5.3 riders and the decision picks six, 2\% lower; the measured knee
+is 4.6, where \cref{eq:step} with $\delta$ places it. We have not decomposed $\delta$.
 The projection carries the A100 value to the GH200 unchanged, which is
 conservative if the tail shrinks with the step (\S\ref{sec:eval-proj}).
 % src: M22c (job 2190742, 6 runs): F 5.11-5.21, c 1.53-1.56 over r=1..4;
 %      excess over the line at r=5 +3.8..+4.2 ms; step - link 6.8 (r=5),
 %      7.5-7.6 (r=6); T0*X knee 4.09; decode tok/s 88.4-88.8 (r=4), 96.6-96.7
 %      (r=5), 94.7-94.8 (r=6). paper/model/knee_rule.py prints the check.
+%      delta = 0: r* = (45.2+5.16)/(11.05-1.55) = 5.30; predicted 103.3 tok/s
+%      at r 5 vs 105.6 at r 6 -> picks 6 (measured 94.8 vs 96.7, -2%).
 
 \subsection{What the Model Projects}\label{sec:eval-proj}
 
@@ -136,64 +140,15 @@ batch over HBM and the link together~\cite{dak} is bounded by
 $1+\Xlink/BW = 1.105\times$, even if its copies cost nothing. Keeping every
 request's KV in host memory and reading it over the link~\cite{directkv}
 serves at most $\Xlink/(S\btok)$ requests per unit time, 0.90 of what HBM alone
-serves at this context. Swapping layers~\cite{pie} grows the batch under the
-same per-step ceiling as riders, and we give it the same decision, but it
-swaps each layer back out after use: every moved byte crosses HBM twice, and
-past the knee its step is set by the swap-out, which runs at 371 rather than
-419\,GB/s~\cite{pie}. That costs it 0.14 of gain against \sysname{}, about
-half of it from the slower direction. The ceiling itself, $1.79\times$, is
+serves at this context. Riders use the link to add requests instead, and
+reach $1.37\times$ after their overheads. The ceiling, $1.79\times$, is
 what any design that adds KV over the link could reach if moving and
 attending it cost nothing.
 % src: paper/model/compare_designs.py: aggregation 1.105, zero-copy 0.897,
-%      swap 1.353 / 1.229 (with c_m, F), HeteroKV 1.499 / 1.368, ceiling 1.794
-%      (2026-10-22, past-knee rule for both; swap at 419 GB/s would give
-%      1.399 / 1.303).
+%      HeteroKV 1.499 / 1.368 (with c_m, F), ceiling 1.794 (past-knee rule).
+%      Layer swap (1.353 / 1.229) is not shown here: Pie is discussed in s1 and
+%      s8 only (Ben, 2026-10-22).
 %      dak footnote 1 (bandwidth = HBM + min(C2C, DRAM)); directkv s6 l.1030
 %      ("the manager stores the initial K,V entries from each layer in CPU
-%      memory"); pie s3.1 (t_swap*m <= t_compute*n; "recently completed layers
-%      ... can be swapped out to CPU memory").
-
-\subsection{Under Link Contention}\label{sec:eval-pie}
-
-\input{figs/fig-linkload}
-
-Layer swap is the design closest to riders: both grow the batch, and both are
-bounded by the KV the link can move within a step. They differ in which
-directions of the link they use. A swapped layer is written back after
-use~\cite{pie}, so layer swap moves as many bytes from device to host as from
-host to device, and its swap-out runs in the slower direction, 371 rather
-than 419\,GB/s on GH200~\cite{pie}. A rider returns only its new token. The
-link is rarely the decode step's alone: saving KV for later reuse,
-preemption and co-located work all write to the host, and Pie itself notes
-that host--device traffic ``can occur unpredictably due to concurrent
-tasks''~\cite{pie}.
-
-We simulate decode in steady state: requests arrive already prefilled, decode
-and leave, and every design completes the same requests, admitted in arrival
-order. Step times come from the capacity model with the overheads measured for
-\sysname{}. Pie is modelled from its own description~\cite{pie}: the
-write-back, the slower swap-out and a swap buffer of two layers in HBM. It is
-given an ideal split and \sysname{}'s overheads, since its paper reports none.
-Both designs admit only what hides behind the step, as Pie's controller
-does~\cite{pie}, so the comparison isolates the link's two directions rather
-than the decision of \cref{eq:decision}.
-Other traffic then takes a share of one link direction (\cref{fig:linkload}).
-With no other traffic, riders lead layer swap by a median of 3.4\% over 36
-workloads. As traffic to the host grows, riders keep their gain, and layer
-swap loses most of its own: at half the direction taken, riders lead in all 36
-workloads, by a median of 11.7\% and up to 20\%. Traffic toward the device
-cuts the other way. Riders depend on that direction alone, and at the same
-load they trail layer swap by a median of 1.3\%.
-% src: paper/model/steady_state.py (bg_d2h, bg_h2d), steady_bg.py ->
-%      model/out/steady_bg.jsonl, overheads charged. hetero/pie: none med +3.4
-%      (25 of 36 ahead, -9.3..+8.5); d2h 0.5 med +11.7, 36/36, +0.8..+19.6;
-%      h2d 0.5 med -1.3, 12/36, -16.8..+2.7. Pie: s3.3 ("another two layer
-%      computation times to swap out"; "both CPU and GPU use the memory space
-%      of two layers as a swapping buffer"); s2.4 ("419 GB/s from CPU to GPU
-%      and 371 GB/s from GPU to CPU"); s3.4.1 (quoted); s5.5 controller within
-%      2% of the best, so the oracle split is generous to Pie. Only the rate
-%      lost to other traffic is modelled, not the stall a late swap-out causes
-%      through the two-layer buffer. Finished-request KV saved for reuse alone
-%      is < 1% of the link at the target (n*S*b/O per step); the larger shares
-%      need co-located work.
+%      memory").
 

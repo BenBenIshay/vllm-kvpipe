@@ -19,9 +19,29 @@ HBM, and it is bounded by the same per-step link budget as riders.
 layer. No resident pays the link, a rider's window is a cache rather than a
 swap area, and only one token per layer returns to the host, so each moved
 byte crosses HBM once and the link's device-to-host direction stays nearly
-idle. When other traffic loads that direction, layer swap loses most of its
-gain and riders keep theirs (\S\ref{sec:eval-pie}). The axes are orthogonal: a
-layer split could run inside the resident tier.
+idle. That direction is rarely the decode step's alone: saving KV for reuse,
+preemption and co-located work all write to the host, and Pie notes that such
+traffic ``can occur unpredictably due to concurrent tasks''~\cite{pie}. We
+simulate both designs in steady state over 36 workloads, with Pie modelled
+from its own description (write-back, a swap-out at 371 rather than
+419\,GB/s, a two-layer swap buffer) and given an ideal split, our overheads
+and the same rule of admitting only what hides (\cref{fig:linkload}). With no
+other traffic, riders lead by a median of 3.4\%. As traffic toward the host
+grows, layer swap loses most of its gain and riders keep theirs: at half that
+direction taken they lead in every workload, by a median of 11.7\%. Traffic
+toward the device cuts the other way, since riders depend on that direction
+alone; at the same load they trail by a median of 1.3\%. The axes are
+orthogonal: a layer split could run inside the resident tier.
+% src: paper/model/steady_state.py (bg_d2h, bg_h2d), steady_bg.py ->
+%      model/out/steady_bg.jsonl, overheads charged. hetero/pie: none med +3.4
+%      (25 of 36 ahead, -9.3..+8.5); d2h 0.5 med +11.7, 36/36, +0.8..+19.6;
+%      h2d 0.5 med -1.3, 12/36, -16.8..+2.7. pie s3.3 (swap out the coldest
+%      layer; two-layer swapping buffer), s2.4 (419 / 371 GB/s), s3.4.1
+%      (quoted), s5.5 (controller within 2% of the best, so the ideal split is
+%      generous). Only the rate lost to other traffic is modelled, not the
+%      stall a late swap-out causes through the two-layer buffer.
+
+\input{figs/fig-linkload}
 % src: flexgen abstract (quoted in s1). pie s3.1 ("relocate m layers"; "per-
 %      layer KV cache as the basic management unit"), s3 ("prefetching data for
 %      upcoming layers through a FIFO queue"), s3.3 (swap in and swap out),

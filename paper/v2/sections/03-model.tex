@@ -93,7 +93,9 @@ is repeated at several depths, and both coefficients are expressed per layer,
 $F = f_L L$ and $c = c_0 + c_L L$, so one profile carries to a model of
 different depth. Third, it is repeated at several contexts with the
 transfer's bytes removed, which separates $c_{\mathrm{m}}$ from the attention
-term of \cref{eq:cS}; $F$ does not depend on context. The contention
+term of \cref{eq:cS}; $F$ does not depend on context. A single run past the knee gives the third coefficient: there the step is
+the link time plus $\delta$ (\cref{eq:step}), so $\delta$ is read off as their
+difference. The contention
 coefficient $\kappa$ is measured directly: the
 step's weight GEMMs are timed while a second stream copies into HBM at a
 controlled rate (\S\ref{sec:ablation}).
@@ -126,15 +128,19 @@ Three conditions follow, each of a different kind.
   $\rmin = \lfloor F/(T_0/B - c)\rfloor + 1$.
 \item \textbf{The knee}, where the link stops hiding. With $\Xlink$ the
   host-to-device bandwidth the copy stream achieves, the riders' transfer
-  takes $\sum_i S_i\btok/\Xlink$, and it hides while that fits in the step.
-  Past that point the link sets the step:
+  takes $\sum_i S_i\btok/\Xlink$. It hides behind the step, and the step is
+  not $T_0$: every admitted rider lengthens it, by $F$ for the first and $c$
+  for each, so each rider widens the window the next one's transfer hides in.
+  Not all of the step is window. A part of it, $\delta$, has no copy in
+  flight, and the profile measures it alongside $F$ and $c$
+  (\S\ref{sec:profile}). The riders hide while
+  $\sum_i S_i\btok/\Xlink \le T_0 + F + c\,r - \delta$; past that point the
+  link sets the step, so
   \begin{equation}
-    T(r) \;=\; \max\Bigl(T_0 + F + c\,r,\;\; \sum_i \frac{S_i\btok}{\Xlink} + \delta\Bigr),
+    T(r) \;=\; \max\Bigl(T_0 + F + c\,r,\;\; \sum_i \frac{S_i\btok}{\Xlink} + \delta\Bigr).
     \label{eq:step}
   \end{equation}
-  where $\delta$ is the part of the step that cannot overlap the transfer, which
-  we measure (\S\ref{sec:eval-knee}). For riders of equal context $S$ the two
-  terms meet at
+  For riders of equal context $S$ the knee is
   $\rstar = (T_0 + F - \delta)/(S\btok/\Xlink - c)$.
 \end{itemize}
 The throughput gain of \cref{eq:gain} is the general
@@ -244,9 +250,7 @@ DirectKV reads all KV over the link, and its efficiency is, in its own words,
 ``fundamentally limited by the bandwidth of the CPU--GPU
 interconnect''~\cite{directkv}; when HBM suffices, the all-HBM engine is
 faster~\cite{directkv}. A design that uses the link to add \emph{requests} can
-exceed the bound. Pie does so by swapping a share of every request's layers
-through HBM~\cite{pie}; riders do so with whole requests. What separates the
-two is what each pays per byte moved (\S\ref{sec:eval-proj}).
+exceed the bound, and riders do so.
 % src: dak footnote 1: "Total available system memory bandwidth is defined by
 %      GPU_HBM_BW + MIN(NVLink_C2C_BW, HOST_DRAM_BW)"; s4.2.1 optimal ratio
 %      Bh/(Bh+Bg). directkv s7.4.3: "The efficiency of zero-copy offloading is
