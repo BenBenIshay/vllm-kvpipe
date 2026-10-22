@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Export the paper without its appendices, as a folder and an Overleaf zip.
+r"""Export the paper without its appendices, as a folder and an Overleaf zip.
 
-    export_noappendix.py OUTDIR
+    export_noappendix.py OUTDIR [--final]
+
+--final builds without line numbers (\draftfalse); the body has no draft
+notes left, so it compiles either way.
 
 Copies main.tex, refs.bib, the body sections and the figures they use into
 OUTDIR/hetero-kv/, drops the \\appendix block, and rewrites the five body
@@ -42,7 +45,7 @@ that let a rider run without holding HBM blocks are described in
 ]
 
 
-def main(outdir):
+def main(outdir, final=False):
     dst = os.path.join(outdir, "hetero-kv")
     shutil.rmtree(dst, ignore_errors=True)
     os.makedirs(os.path.join(dst, "sections"))
@@ -52,6 +55,9 @@ def main(outdir):
     main_tex = open(os.path.join(SRC, "main.tex")).read()
     main_tex, n = re.subn(r"\n\\appendix\n(\\input\{sections/[A-C]-[^}]*\}\n)+", "\n", main_tex)
     assert n == 1, "appendix block not found"
+    if final:
+        assert main_tex.count("\\newif\\ifdraft\\drafttrue") == 1
+        main_tex = main_tex.replace("\\newif\\ifdraft\\drafttrue", "\\newif\\ifdraft\\draftfalse")
     open(os.path.join(dst, "main.tex"), "w").write(main_tex)
 
     # every section file except the appendices (A-, B-, C-): sections also
@@ -96,4 +102,4 @@ def main(outdir):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], final="--final" in sys.argv[2:])
