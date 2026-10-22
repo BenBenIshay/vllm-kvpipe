@@ -12,10 +12,15 @@ is a place where the code does not yet do what the body describes.}
 
 \begin{enumerate}\itemsep2pt
 \item \gap{Admission (\cref{sec:admission}, \cref{alg:admit}): the runtime
-  controller does not yet evaluate \cref{eq:decision}. It enforces the byte
-  budget (line~\ref{alg:knee}) but computes neither the gate nor $\rmin$
-  (line~\ref{alg:commit}), and relies on the probe to undo moves that do not
-  pay. To add: read $F$ and $c$ from the profile at line~\ref{alg:model}.}
+  controller does not yet evaluate \cref{eq:decision}. It enforces a byte
+  budget of $T_0\Xlink$, so it stops at the last rider that hides
+  (\texttt{hide\_budget\_headroom\_bytes}) instead of applying the
+  throughput test at line~\ref{alg:knee}; it computes neither the gate nor
+  $\rmin$ (line~\ref{alg:commit}), and relies on the probe to undo moves that do not
+  pay. To add: read $F$, $c$ and $\delta$ from the profile at
+  line~\ref{alg:model} and replace the byte budget with $\Theta$ (the
+  marginal hook \texttt{\_marginal\_ok} is where it goes). Every projection in
+  the body uses the throughput test.}
 \item \gap{Admission ordering: candidates are taken in arrival order, and
   demotion picks by a temporal score (idle time, remaining generation), which
   is off by default. Neither orders by context (lines~\ref{alg:res},

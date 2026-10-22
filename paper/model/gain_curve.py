@@ -20,7 +20,13 @@ hide behind, so 1/L of each rider's transfer is exposed, S*b_tok/(L*X). Seen in
 the M23 trace (H2D on the compute stream) and needed to predict the A100
 real-bytes runs within 1.7%.
 
-The knee stays at T0*X (the paper's definition); the full-step knee is not agreed.
+Fifth (Ben, 2026-10-22, "apply the 1.37x rule across the paper"): riders are
+admitted past the knee while throughput still rises. M22c (job 2190742) measured
+the step past the knee as the link time plus a tail, so
+    T(r) = max(T0 + F + c*r,  r*S*b_tok/X + DELTA)
+and the decision is the r that maximises (B + r)/T(r). DELTA = 6.8 ms is the
+A100 value, carried to the target unscaled (the conservative choice: scaled with
+the step it would be 4.7 ms). rule="hide" keeps the earlier T0*X knee.
 Prints the pgfplots table embedded in figs/fig-gain-ctx.tex: the integer gain
 (whole residents, whole riders) and the smooth envelope (fractional B and r).
 """
@@ -33,10 +39,11 @@ C_MECH64 = 0.50       # ms at L=64, M22 intercept of c(S)
 EFF_KV = 0.64         # M22: KV read at 0.64 of A100 peak HBM bandwidth
 MIN_RESIDENTS = 2
 KAPPA = 1.06          # E1: GEMM slowdown = KAPPA * (HBM write traffic / HBM peak)
+DELTA = 6.8           # M22c: step - link time past the knee, ms (A100, r = 5)
 
 
 def point(S, m=Q72, hw=GH200, kappa=KAPPA, first_layer=True, t0_scale=1.0,
-          eff_kv=None, f_ms=None):
+          eff_kv=None, f_ms=None, rule="max", delta=DELTA):
     kv = m.b_tok * S / 1e9                      # GB per request
     att = kv / (hw.hbm * (eff_kv or EFF_KV)) * 1e3  # ms to read one request's KV
     cont = kappa * kv / hw.hbm * 1e3            # ms of step lost to its HBM writes
@@ -47,20 +54,36 @@ def point(S, m=Q72, hw=GH200, kappa=KAPPA, first_layer=True, t0_scale=1.0,
     link = kv / hw.link * 1e3
     tw = m.t0_ms(hw) * t0_scale
 
+    def step(t0, r):
+        if r <= 0:
+            return t0
+        if rule == "hide":
+            return t0 + F + c * r
+        return max(t0 + F + c * r, r * link + delta)
+
     def gain(B, r):
         t0 = tw + B * att
-        return (1 + r / B) / (1 + (F + c * r) / t0) if r > 0 else 1.0
+        return ((B + r) / step(t0, r)) / (B / t0)
 
     t0s = tw + cap * att
-    smooth = gain(cap, t0s / link)
+    if rule == "hide":
+        rs = t0s / link
+    else:                       # where the two branches of step() meet
+        rs = max(0.0, (t0s + F - delta) / (link - c)) if link > c else 0.0
+    smooth = max(1.0, gain(cap, rs))
     B = math.floor(cap)
     if B < MIN_RESIDENTS:
         return None
     t0i = tw + B * att
-    r = math.floor(t0i / link)
+    if rule == "hide":
+        r = math.floor(t0i / link)
+    else:
+        r = max(range(13), key=lambda k: gain(B, k))
     g = gain(B, r)
     eta = (g - 1) / (hw.link / hw.hbm)          # gain per unit of added bandwidth
-    return dict(S=S, B=B, r=r, c=c, att=att, cont=cont, first=first, t0=t0i, integer=g,
+    return dict(S=S, B=B, r=r, c=c, F=F, att=att, cont=cont, first=first, t0=t0i,
+                link=link, exposed=max(0.0, r * link + delta - (t0i + F + c * r))
+                if rule != "hide" and r else 0.0, integer=g,
                 smooth=smooth, eta=eta, eta_smooth=(smooth - 1) / (hw.link / hw.hbm))
 
 

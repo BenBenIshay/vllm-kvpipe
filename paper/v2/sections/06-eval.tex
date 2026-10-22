@@ -61,19 +61,23 @@ computing it (\S\ref{sec:opoint}), and why the projection below varies it.
 
 \subsection{Does the Decision Admit the Right Riders?}\label{sec:eval-knee}
 
-The decision of \cref{eq:decision} admits riders up to the knee,
-$\lfloor T_0\Xlink/(S\btok)\rfloor$. At context 1024 with one resident the
-knee is 4.09, so it admits four. Past it, a run to six riders shows where
-the transfer stops hiding: four riders lie on the line of \cref{eq:law}, the
-fifth adds 4\,ms above it, and from there the step is the link time plus
-7\,ms. The measured knee is therefore at about 4.6 riders, and the rule's
-choice is conservative by 12\%: it never admits a rider whose transfer is
-exposed. That caution has a price here. Throughput at four riders is 8\% below
-the best measured count, five; six riders lower it again.
+The decision of \cref{eq:decision} admits the last rider that hides or the
+first that is partly exposed, whichever gives more throughput. We test it at
+context 1024 with one resident, running zero to six riders. Four riders lie
+on the line of \cref{eq:law}. From the fifth on, the step is the link time
+plus a tail: $\delta = 6.8$\,ms at five riders and 7.5\,ms at six. With that
+tail, \cref{eq:step} gives 88.4, 96.7 and 94.9 tokens/s at four, five and six
+riders, against 88.4, 96.7 and 94.8 measured. $F$, $c$ and $\delta$ come from
+the same runs, so the agreement is partly by construction. What the decision
+adds is the count: it picks five riders, the measured best. Admitting only
+riders whose transfer hides behind $T_0$ alone would stop at four, 8\% lower,
+and a sixth rider lowers throughput again. We have not decomposed $\delta$.
+The projection carries the A100 value to the GH200 unchanged, which is
+conservative if the tail shrinks with the step (\S\ref{sec:eval-proj}).
 % src: M22c (job 2190742, 6 runs): F 5.11-5.21, c 1.53-1.56 over r=1..4;
 %      excess over the line at r=5 +3.8..+4.2 ms; step - link 6.8 (r=5),
-%      7.5-7.6 (r=6); knee from link*r + 6.8 = T0 + F + c*r -> 4.58; decode
-%      tok/s 88.4-88.8 (r=4), 96.6-96.7 (r=5), 94.7-94.8 (r=6).
+%      7.5-7.6 (r=6); T0*X knee 4.09; decode tok/s 88.4-88.8 (r=4), 96.6-96.7
+%      (r=5), 94.7-94.8 (r=6). paper/model/knee_rule.py prints the check.
 
 \subsection{What the Model Projects}\label{sec:eval-proj}
 
@@ -81,41 +85,48 @@ the best measured count, five; six riders lower it again.
 \centering\small\setlength{\tabcolsep}{4pt}
 \caption{\textbf{Sensitivity of the projection} at the operating point of
 \S\ref{sec:opoint} (Qwen2.5-72B, fp8 weights, 16-bit KV, GH200, context
-14\,724, $B{=}3$, $r{=}2$): each row changes one input of the model.}
+14\,724, $B{=}3$, $r{=}4$): each row changes one input of the model.}
 \label{tab:sens}
-\begin{tabular}{@{}l r r r@{}}
+\begin{tabular}{@{}l r r r r@{}}
 \toprule
-Input changed & $c$ (ms) & gain & $\eta$ \\
+Input changed & $c$ (ms) & $r$ & gain & $\eta$ \\
 \midrule
-none (the model as stated)                  & 3.93 & $1.20\times$ & 1.9 \\
-copies cost HBM nothing, $\kappa = 0$         & 2.65 & $1.27\times$ & 2.6 \\
-$\kappa = 0.89$ (DAK's GH200 figure)         & 3.73 & $1.21\times$ & 2.0 \\
-$\kappa = 1.5$                                & 4.46 & $1.17\times$ & 1.6 \\
-weight-read time $\pm 5\%$                    & 3.93 & $1.18$--$1.21\times$ & 1.8--2.0 \\
-KV read at 50\% of peak, not 64\%             & 4.46 & $1.19\times$ & 1.8 \\
-$F = 3.6$\,ms (16-resident profile)           & 3.93 & $1.22\times$ & 2.1 \\
-$F = 6.3$\,ms (1-resident profile)            & 3.93 & $1.15\times$ & 1.4 \\
+none (the model as stated)                  & 3.93 & 4 & $1.37\times$ & 3.5 \\
+tail $\delta$ scaled with the step, 4.7\,ms   & 3.93 & 4 & $1.42\times$ & 4.0 \\
+tail $\delta = 10$\,ms                        & 3.93 & 3 & $1.32\times$ & 3.0 \\
+copies cost HBM nothing, $\kappa = 0$         & 2.65 & 3 & $1.44\times$ & 4.2 \\
+$\kappa = 0.89$ (DAK's GH200 figure)         & 3.73 & 4 & $1.37\times$ & 3.5 \\
+$\kappa = 1.5$                                & 4.46 & 4 & $1.36\times$ & 3.5 \\
+weight-read time $\pm 5\%$                    & 3.93 & 4 & $1.31$--$1.42\times$ & 3.0--4.1 \\
+KV read at 50\% of peak, not 64\%             & 4.46 & 4 & $1.39\times$ & 3.7 \\
+$F = 3.6$\,ms (16-resident profile)           & 3.93 & 4 & $1.37\times$ & 3.5 \\
+$F = 6.3$\,ms (1-resident profile)            & 3.93 & 4 & $1.37\times$ & 3.5 \\
+only riders that hide behind $T_0$            & 3.93 & 2 & $1.20\times$ & 1.9 \\
 \bottomrule
 \end{tabular}
 \end{table}
-% src: gain_curve.py point(14724, ...): base c 3.932 G 1.199 eta 1.90;
-%      kappa 0: 2.649/1.274/2.62 (first layer kept); 0.89: 3.730/1.210/2.01
-%      (dak s2.3: up to 10% at 450/4000 = 11.25% -> 0.89); 1.5: 4.457/1.170/
-%      1.62; t0_scale 0.95/1.05: 1.184/1.212, eta 1.76/2.02; eff_kv 0.50:
-%      4.457/1.187/1.79; F 2.9*80/64 = 3.63: 1.216/2.06; F 5.0*80/64 = 6.25:
-%      1.145/1.39. No row changes B (3) or r (2).
+% src: gain_curve.py point(14724, ...) rule "max", delta 6.8: base c 3.932
+%      r 4 G 1.368 eta 3.51; delta 4.66 (6.8*31.0/45.2): 1.419/4.00; delta 10:
+%      r 3 1.318/3.04; kappa 0: c 2.654 r 3 1.435/4.15 (first layer kept); 0.89:
+%      3.727 1.368/3.51; 1.5: 4.463 1.362/3.46; t0_scale 0.95/1.05: 1.312/
+%      1.424, eta 2.98/4.05; eff_kv 0.50: 4.460 1.391/3.73; F 2.9*80/64 = 3.63:
+%      1.368/3.51; F 5.0*80/64 = 6.25: 1.365/3.49; rule "hide": r 2 1.199/1.90.
+%      kappa 0.89 from dak s2.3 (up to 10% at 450/4000 = 11.25%).
 
 Applied to the target with the GH200's bandwidths, the model gives
-$1.20\times$ at context 14\,724, and $\eta = 1.9$: the link's 10.5\% of added
-bandwidth buys 20\% more throughput (\S\ref{sec:opoint}).
+$1.37\times$ at context 14\,724, and $\eta = 3.5$: the link's 10.5\% of added
+bandwidth buys 37\% more throughput (\S\ref{sec:opoint}).
 \Cref{tab:sens} varies each input over the range our measurements leave open.
-The gain stays between $1.15\times$ and $1.27\times$, and $\eta$ between 1.4
-and 2.6, above the bound of 1 that using the link to read the same requests
-faster cannot exceed. No row changes the number of residents or riders. The
-input that matters most is the fixed cost: $F$ measured with sixteen residents
-is 40\% lower than with one, and the target's three residents lie between.
-The contention coefficient comes next; DAK's figure for GH200 background
-copies~\cite{dak} lands within 0.01 of the stated gain.
+The gain stays between $1.31\times$ and $1.44\times$, and $\eta$ between 3.0
+and 4.2, above the bound of 1 that using the link to read the same requests
+faster cannot exceed. Past the knee the link sets the step, so the inputs that
+matter are the ones that set how long the step lasts and how much of it the
+transfer cannot overlap: the weight-read time and the tail $\delta$. The fixed
+cost, which dominated when only hidden riders were admitted, now moves the gain
+by less than 0.01, and so does the contention coefficient across the range
+measured for it, from DAK's GH200 figure~\cite{dak} to 1.5; only copies that
+cost HBM nothing at all would lift it to $1.44\times$. Admitting only the riders
+that hide behind $T_0$ would give $1.20\times$.
 
 \input{figs/fig-compare}
 
@@ -126,12 +137,17 @@ $1+\Xlink/BW = 1.105\times$, even if its copies cost nothing. Keeping every
 request's KV in host memory and reading it over the link~\cite{directkv}
 serves at most $\Xlink/(S\btok)$ requests per unit time, 0.90 of what HBM alone
 serves at this context. Swapping layers~\cite{pie} grows the batch under the
-same per-step ceiling as riders, $T_0\Xlink$, but swaps each layer back out
-after use, so every moved byte crosses HBM twice; that costs it 0.06 to 0.08
-of gain against \sysname{}. The ceiling itself, $1.67\times$, is what any design
-that adds KV over the link could reach if moving and attending it cost nothing.
+same per-step ceiling as riders, and we give it the same decision, but it
+swaps each layer back out after use: every moved byte crosses HBM twice, and
+past the knee its step is set by the swap-out, which runs at 371 rather than
+419\,GB/s~\cite{pie}. That costs it 0.14 of gain against \sysname{}, about
+half of it from the slower direction. The ceiling itself, $1.79\times$, is
+what any design that adds KV over the link could reach if moving and
+attending it cost nothing.
 % src: paper/model/compare_designs.py: aggregation 1.105, zero-copy 0.897,
-%      swap 1.295 / 1.139 (with c_m, F), HeteroKV 1.373 / 1.199, ceiling 1.667.
+%      swap 1.353 / 1.229 (with c_m, F), HeteroKV 1.499 / 1.368, ceiling 1.794
+%      (2026-10-22, past-knee rule for both; swap at 419 GB/s would give
+%      1.399 / 1.303).
 %      dak footnote 1 (bandwidth = HBM + min(C2C, DRAM)); directkv s6 l.1030
 %      ("the manager stores the initial K,V entries from each layer in CPU
 %      memory"); pie s3.1 (t_swap*m <= t_compute*n; "recently completed layers
@@ -158,6 +174,9 @@ order. Step times come from the capacity model with the overheads measured for
 \sysname{}. Pie is modelled from its own description~\cite{pie}: the
 write-back, the slower swap-out and a swap buffer of two layers in HBM. It is
 given an ideal split and \sysname{}'s overheads, since its paper reports none.
+Both designs admit only what hides behind the step, as Pie's controller
+does~\cite{pie}, so the comparison isolates the link's two directions rather
+than the decision of \cref{eq:decision}.
 Other traffic then takes a share of one link direction (\cref{fig:linkload}).
 With no other traffic, riders lead layer swap by a median of 3.4\% over 36
 workloads. As traffic to the host grows, riders keep their gain, and layer
