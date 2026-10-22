@@ -19,8 +19,15 @@
 \usepackage{newtxtext,newtxmath}           % Times body, as the venues use
 % Tectonic is XeTeX, so the sans face is set through fontspec, not helvet.sty
 % (helvet is a T1 font and silently falls back to Latin Modern under TU).
+% Under pdfLaTeX (Overleaf's default) the same face comes from helvet.
+\usepackage{iftex}
+\ifTUTeX
 \setsansfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold,
   ItalicFont=*-italic, BoldItalicFont=*-bolditalic, Scale=0.92]   % sans for figures only
+\else
+\usepackage[T1]{fontenc}
+\usepackage[scaled=0.92]{helvet}
+\fi
 \usepackage{sansmath}
 \usepackage{booktabs}
 \usepackage{array}
