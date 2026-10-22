@@ -119,8 +119,7 @@ asynchronous copies and the engine's existing attention kernel, so the same
 engine runs over PCIe and over NVLink-C2C. The capacity model, from a one-time
 profile and the measured step time, decides every step how many requests ride
 and which ones. We implement \sysname{} in vLLM, decompose its overhead on an
-A100, measure that copies into HBM slow decode in proportion to their traffic,
-and validate the model against the measurements. Projected to a GH200 serving
+A100, and validate the model against the measurements. Projected to a GH200 serving
 Qwen2.5-72B at long context, riders raise decode throughput by 37\%, three
 and a half times the gain per unit of link bandwidth that reading the same
 requests faster could reach. Because a rider returns only its new token, riders keep
