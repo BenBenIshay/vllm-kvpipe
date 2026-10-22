@@ -87,7 +87,7 @@
 \node[sub, anchor=south, align=center] at (2.65,0.05) {fetched per\\[-2pt]layer of compute};
 \node[sub, anchor=south, align=center] at (4.80,0.05) {to GPU /\\[-2pt]to host};
 
-\foreach \y/\nm/\sb in {-0.35/Pie/{swap, per layer},
+\foreach \y/\nm/\sb in {-0.35/{Layer swap}/{per layer},
                         -1.05/DirectKV/{zero-copy},
                         -1.75/\sysname/{cache, per request}} {
   \node[anchor=west, align=left, font=\sffamily\scriptsize] at (-0.10,\y)
@@ -131,7 +131,7 @@ blocking into pinned staging; nothing waits for it. \stepn{3}~The write into the
 host copy is \emph{deferred}: at the start of the next step the host waits on one
 event, already satisfied, and scatters every staged layer at once, before that
 step's first fetch reads the host copy.
-(b)~Pie streams a layer of every request and writes the same layer back;
+(b)~Layer swapping~\cite{pie} streams a layer of every request and writes the same layer back;
 zero-copy attention (DirectKV) streams all KV a tile at a time inside the kernel;
 \sysname{} streams only the riders' layer, behind a whole layer of compute, and
 writes back one token. The effect of each mechanism is measured in

@@ -111,8 +111,8 @@ layer) become $2L$ asynchronous ones and one wait.
 %      layer_idx + 1 < len(self.layers).
 
 \paragraph{Why not swap, or zero-copy.} Both of the closest systems apply one
-mechanism to \emph{every} request alike. Pie~\cite{pie} stages KV through
-device buffers with per-layer prefetch and sizes the share of layers it
+mechanism to \emph{every} request alike. Layer swapping~\cite{pie} stages KV
+through device buffers with per-layer prefetch and sizes the share of layers it
 offloads to what the link can hide, so it too grows the batch, under the same
 per-step ceiling as riders. But its unit is the layer, applied to every
 request, and its buffers hold the authoritative KV: it swaps the coldest layer
