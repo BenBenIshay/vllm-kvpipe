@@ -2,6 +2,7 @@
 # Build the v2 paper with tectonic. Output: paper/v2/out/main.pdf.
 #   ./build.sh            compile; exit 1 on errors or undefined refs/citations
 #   ./build.sh --figs     also rasterise every figure page to out/fig-*.png, to LOOK at
+#                       (needs pymupdf; set PYTHON to an interpreter that has it)
 set -euo pipefail
 D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$D/out"; rm -rf "$OUT"; mkdir -p "$OUT"
@@ -17,6 +18,6 @@ for pat in "Reference \`[^']*' on page .* undefined" "Citation \`[^']*' on page 
     echo "== $pat"; grep -E "$pat" main.log | head -10; status=1; fi
 done
 if [[ "${1:-}" == "--figs" ]]; then
-  "$D/../../.venv/bin/python" -I "$D/figs/rasterise.py" "$OUT/main.pdf" "$OUT"
+  "${PYTHON:-python3}" -I "$D/figs/rasterise.py" "$OUT/main.pdf" "$OUT"
 fi
 exit $status

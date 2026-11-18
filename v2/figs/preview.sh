@@ -25,7 +25,7 @@ if ! tectonic -X compile --keep-logs p.tex > c.out 2>&1; then
   grep -n -A4 '^!' p.log | head -30; echo "PREVIEW BUILD FAILED"; exit 1
 fi
 grep -E "Overfull \\\\hbox" p.log | head -5 || true
-"$D/../../.venv/bin/python" -I - "$T/p.pdf" "$OUTPNG" <<'PY'
+"${PYTHON:-python3}" -I - "$T/p.pdf" "$OUTPNG" <<'PY'
 import sys, pymupdf, numpy as np
 d = pymupdf.open(sys.argv[1])
 # the page with the most ink that is not filler: take every page, crop to ink
